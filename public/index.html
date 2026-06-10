@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chat Platform</title>
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%235865F2'/%3E%3Ctext x='50' y='62' font-size='48' text-anchor='middle' fill='white' font-family='Arial'%3EC%3C/text%3E%3C/svg%3E">
+
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
+body{height:100vh;background:#313338;color:white;overflow:hidden;}
+#loginScreen{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:350px;max-width:calc(100vw - 30px);background:#232428;padding:25px;border-radius:12px;}
+#loginScreen h2{margin-bottom:15px;}
+input{width:100%;padding:12px;margin-bottom:10px;background:#1e1f22;border:none;color:white;border-radius:6px;outline:none;}
+button{padding:10px;border:none;cursor:pointer;border-radius:6px;}
+button:disabled{opacity:.55;cursor:not-allowed;}
+.loginBtn{width:100%;background:#5865F2;color:white;margin-bottom:8px;}
+.registerBtn{width:100%;background:#3BA55C;color:white;}
+#status{margin-top:10px;color:#ccc;min-height:20px;}
+#app{display:none;height:100vh;}
+#servers{width:72px;background:#1e1f22;padding:10px;}
+.server{width:48px;height:48px;background:#5865F2;border-radius:50%;margin-bottom:10px;}
+.badge{float:right;background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
+#channels{width:240px;background:#2b2d31;padding:10px;overflow-y:auto;}
+.channel{padding:10px;cursor:pointer;border-radius:6px;margin-bottom:4px;}
+.channel:hover{background:#404249;}
+.channel.active{background:#5865F2;}
+#chat{flex:1;display:flex;flex-direction:column;min-width:0;}
+#chatHeader{height:44px;background:#383a40;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid #24262b;}
+#roomTitle{font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#messages{flex:1;overflow-y:auto;padding:20px;scrollbar-width:thin;scrollbar-color:#2b2d31 transparent;}
+#messages::-webkit-scrollbar{width:8px;}
+#messages::-webkit-scrollbar-track{background:transparent;}
+#messages::-webkit-scrollbar-thumb{background:#2b2d31;border-radius:6px;}
+.message{margin-bottom:12px;padding:10px;background:#2b2d31;border-radius:8px;max-width:100%;word-wrap:break-word;}
+.messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
+.messageText{white-space:pre-wrap;}
+.timeText{font-size:11px;color:#949ba4;}
+.dmTag{background:#f23f43;color:white;font-size:11px;padding:2px 6px;border-radius:999px;}
+.miniBtn{padding:6px 8px;background:#404249;color:white;font-size:12px;border-radius:6px;}
+.miniBtn:hover{background:#4f535c;}
+#typingIndicator{min-height:22px;padding:0 20px 8px 20px;color:#b5bac1;font-size:13px;}
+#inputArea{display:flex;padding:10px;background:#383a40;gap:8px;}
+#fileInput{display:none;}
+#uploadBarContainer{width:100%;height:6px;background:#2b2d31;overflow:hidden;}
+#uploadBar{height:100%;width:0%;background:#5865F2;transition:width .2s;}
+#messageInput{flex:1;margin-bottom:0;}
+#users{width:220px;background:#232428;padding:10px;overflow-y:auto;}
+#memberList{margin-top:10px;display:flex;flex-direction:column;gap:6px;}
+.userItem{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#2b2d31;border-radius:6px;cursor:pointer;}
+.userItem:hover{background:#404249;}
+.userItem.active{background:#5865F2;}
+.userName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.userControls{display:flex;align-items:center;gap:6px;}
+.dmBadge{background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
+#debugMenu{position:fixed;top:60px;right:20px;background:#1e1f22;padding:15px;border:2px solid #5865F2;border-radius:10px;display:none;z-index:9999;}
+#debugMenu button{width:100%;margin-top:5px;}
+.fileBox{margin-top:8px;padding:8px 10px;background:#1e1f22;border-radius:6px;}
+.fileBox img{max-width:220px;max-height:220px;border-radius:6px;display:block;margin-top:6px;object-fit:contain;}
+.fileLink{color:#7aa2ff;text-decoration:none;display:inline-block;margin-top:6px;}
+.errorLine{color:#ffb4b4;font-size:13px;padding:0 10px 8px 10px;}
+@media (max-width:800px){#servers{display:none;}#channels{width:150px;}#users{display:none;}#loginScreen{width:330px;}}
+</style>
+</head>
+
+<body>
+<div id="loginScreen">
+  <h2>Chat Platform</h2>
+  <input id="username" placeholder="Username" autocomplete="username">
+  <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+  <button class="loginBtn" onclick="login()">Login</button>
+  <button class="registerBtn" onclick="registerUser()">Create Account</button>
+  <div id="status"></div>
+</div>
+
+<div id="app">
+  <div id="servers">
+    <div class="server"></div>
+    <div class="server"></div>
+    <div class="server"></div>
+  </div>
+
+  <div id="channels">
+    <h3>Channels</h3>
+    <div class="channel active" data-room="general" onclick="joinRoom('general')"># general <span class="badge" id="badge-general"></span></div>
+    <div class="channel" data-room="gaming" onclick="joinRoom('gaming')"># gaming <span class="badge" id="badge-gaming"></span></div>
+    <div class="channel" data-room="coding" onclick="joinRoom('coding')"># coding <span class="badge" id="badge-coding"></span></div>
+  </div>
+
+  <div id="chat">
+    <div id="chatHeader">
+      <div id="roomTitle"># general</div>
+      <button class="miniBtn" onclick="logout()">Logout</button>
+    </div>
+
+    <div id="messages"></div>
+    <div id="typingIndicator"></div>
+
+    <div id="inputArea">
+      <input type="file" id="fileInput">
+      <button onclick="document.getElementById('fileInput').click()">📎</button>
+      <input id="messageInput" placeholder="Message" maxlength="4000">
+      <button onclick="sendMessage()">Send</button>
+    </div>
+
+    <div id="uploadBarContainer"><div id="uploadBar"></div></div>
+  </div>
+
+  <div id="users">
+    <h3>Members</h3>
+    <div id="memberList"></div>
+  </div>
+</div>
+
+<div id="debugMenu">
+  <h3>Debug Menu</h3>
+  <button onclick="location.reload()">Reload</button>
+  <button onclick="console.clear()">Clear Console</button>
+  <button onclick="alert(socket && socket.id ? socket.id : 'Not connected')">Socket ID</button>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+let socket = null;
+let currentRoom = 'general';
+let username = '';
+let token = '';
+let isFocused = true;
+let unreadChannels = { general:0, gaming:0, coding:0 };
+let unreadDMs = {};
+let typingTimer = null;
+let isTyping = false;
+let activeDMUser = '';
+
+window.addEventListener('focus', () => { isFocused = true; updateFavicon(false); });
+window.addEventListener('blur', () => { isFocused = false; });
+
+function setStatus(text){ document.getElementById('status').innerText = text || ''; }
+function authHeaders(){ return { 'Content-Type':'application/json', 'Authorization':'Bearer ' + token }; }
+function roomNameForDM(a,b){ return 'dm:' + [a,b].sort().join(':'); }
+
+async function registerUser(){
+  username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  setStatus('Creating account...');
+
+  try{
+    const response = await fetch('/register', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ username, password })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'register failed');
+    completeLogin(data.username, data.token);
+  }catch(err){
+    setStatus(err.message);
+  }
+}
+
+async function login(){
+  username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  setStatus('Logging in...');
+
+  try{
+    const response = await fetch('/login', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ username, password })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'login failed');
+    completeLogin(data.username, data.token);
+  }catch(err){
+    setStatus(err.message);
+  }
+}
+
+function completeLogin(returnedUsername, returnedToken){
+  username = returnedUsername;
+  token = returnedToken;
+
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+
+  connectSocket();
+}
+
+async function logout(){
+  try{
+    if(token){
+      await fetch('/logout', { method:'POST', headers:authHeaders(), body:'{}' });
+    }
+  }catch(e){}
+
+  if(socket) socket.disconnect();
+  token = '';
+  username = '';
+  activeDMUser = '';
+  currentRoom = 'general';
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'block';
+  setStatus('Logged out');
+}
+
+function connectSocket(){
+  socket = io({ auth:{ token } });
+
+  socket.on('connect', () => {
+    joinRoom('general');
+  });
+
+  socket.on('connect_error', (err) => {
+    setStatus(err.message || 'socket connection failed');
+  });
+
+  socket.on('message', msg => {
+    if(msg.room === currentRoom && !activeDMUser){
+      addMessage(msg);
+    }else if(msg.room && unreadChannels[msg.room] !== undefined){
+      unreadChannels[msg.room] += 1;
+      updateChannelBadges();
+      if(!isFocused) updateFavicon(true);
+    }
+  });
+
+  socket.on('dmMessage', msg => {
+    const otherUser = msg.user === username ? msg.to : msg.user;
+    if(activeDMUser && otherUser === activeDMUser){
+      addMessage(msg);
+    }else{
+      unreadDMs[otherUser] = (unreadDMs[otherUser] || 0) + 1;
+      updateDMBadges();
+      if(!isFocused) updateFavicon(true);
+    }
+  });
+
+  socket.on('file', msg => {
+    if(msg.room === currentRoom && !activeDMUser){
+      addFileMessage(msg);
+    }else if(msg.room && unreadChannels[msg.room] !== undefined){
+      unreadChannels[msg.room] += 1;
+      updateChannelBadges();
+      if(!isFocused) updateFavicon(true);
+    }
+  });
+
+  socket.on('dmFile', msg => {
+    const otherUser = msg.user === username ? msg.to : msg.user;
+    if(activeDMUser && otherUser === activeDMUser){
+      addFileMessage(msg);
+    }else{
+      unreadDMs[otherUser] = (unreadDMs[otherUser] || 0) + 1;
+      updateDMBadges();
+      if(!isFocused) updateFavicon(true);
+    }
+  });
+
+  socket.on('users', users => renderUsers(users));
+
+  socket.on('typing', data => {
+    if(data.user === username) return;
+    const sameRoom = data.room && data.room === currentRoom && !activeDMUser;
+    const sameDM = activeDMUser && data.user === activeDMUser;
+    if(sameRoom || sameDM){
+      document.getElementById('typingIndicator').innerText = data.user + ' is typing...';
+    }
+  });
+
+  socket.on('stopTyping', data => {
+    if(data.user === username) return;
+    const sameRoom = data.room && data.room === currentRoom && !activeDMUser;
+    const sameDM = activeDMUser && data.user === activeDMUser;
+    if(sameRoom || sameDM){
+      document.getElementById('typingIndicator').innerText = '';
+    }
+  });
+}
+
+function joinRoom(room){
+  if(!socket || !socket.connected) return;
+
+  currentRoom = room;
+  activeDMUser = '';
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('typingIndicator').innerText = '';
+  document.getElementById('roomTitle').innerText = '# ' + room;
+
+  document.querySelectorAll('.channel').forEach(el => {
+    el.classList.toggle('active', el.dataset.room === room);
+  });
+  highlightActiveUser('');
+
+  socket.emit('joinRoom', room, result => {
+    if(result && result.error){ showError(result.error); return; }
+    unreadChannels[room] = 0;
+    updateChannelBadges();
+    loadHistory(room);
+  });
+}
+
+function openDM(user){
+  if(!socket || !socket.connected || !user) return;
+
+  activeDMUser = user;
+  currentRoom = roomNameForDM(username, user);
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('typingIndicator').innerText = '';
+  document.getElementById('roomTitle').innerText = '@ ' + user;
+
+  document.querySelectorAll('.channel').forEach(el => el.classList.remove('active'));
+  highlightActiveUser(user);
+  unreadDMs[user] = 0;
+  updateDMBadges();
+
+  socket.emit('joinRoom', currentRoom, result => {
+    if(result && result.error){ showError(result.error); return; }
+    loadHistory(currentRoom);
+  });
+}
+
+async function loadHistory(room){
+  try{
+    const [msgRes, fileRes] = await Promise.all([
+      fetch('/messages?room=' + encodeURIComponent(room), { headers:{ 'Authorization':'Bearer ' + token } }),
+      fetch('/files?room=' + encodeURIComponent(room), { headers:{ 'Authorization':'Bearer ' + token } })
+    ]);
+
+    if(!msgRes.ok) throw new Error('cannot load messages');
+    if(!fileRes.ok) throw new Error('cannot load files');
+
+    const messages = await msgRes.json();
+    const files = await fileRes.json();
+    const combined = [];
+
+    if(Array.isArray(messages)) messages.forEach(m => combined.push({ type:'message', createdAt:m.createdAt, id:m.id, data:m }));
+    if(Array.isArray(files)) files.forEach(f => combined.push({ type:'file', createdAt:f.createdAt, id:f.id, data:f }));
+
+    combined.sort((a,b) => {
+      const time = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+      return time || ((a.id || 0) - (b.id || 0));
+    });
+
+    document.getElementById('messages').innerHTML = '';
+    combined.forEach(item => item.type === 'message' ? addMessage(item.data) : addFileMessage(item.data));
+  }catch(err){
+    showError(err.message);
+  }
+}
+
+function showError(text){
+  const div = document.createElement('div');
+  div.className = 'errorLine';
+  div.textContent = text;
+  document.getElementById('messages').appendChild(div);
+}
+
+function addMessage(msg){
+  const div = document.createElement('div');
+  div.className = 'message';
+
+
+  const header = document.createElement('div');
+  header.className = 'messageHeader';
+
+  const name = document.createElement('b');
+  name.textContent = msg.user || 'unknown';
+  header.appendChild(name);
+
+  if(msg.dmTo){
+    const tag = document.createElement('span');
+    tag.className = 'dmTag';
+    tag.textContent = 'DM';
+    header.appendChild(tag);
+  }
+
+  const time = document.createElement('span');
+  time.className = 'timeText';
+  time.textContent = formatTime(msg.createdAt);
+  header.appendChild(time);
+  div.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'messageText';
+  body.textContent = msg.text || '';
+  div.appendChild(body);
+
+  if(msg.dmTo){
+    const actions = document.createElement('div');
+    actions.style.marginTop = '8px';
+    const dmBtn = document.createElement('button');
+    dmBtn.className = 'miniBtn';
+    dmBtn.textContent = 'Open DM';
+    dmBtn.onclick = () => openDM(msg.user === username ? msg.to : msg.user);
+    actions.appendChild(dmBtn);
+    div.appendChild(actions);
+  }
+  document.getElementById('messages').appendChild(div);
+  scrollMessages();
+}
+
+function addFileMessage(msg){
+  const div = document.createElement('div');
+  div.className = 'message';
+
+  const header = document.createElement('div');
+  header.className = 'messageHeader';
+
+  const name = document.createElement('b');
+  name.textContent = msg.user || 'unknown';
+  header.appendChild(name);
+
+  if(msg.dmTo){
+    const tag = document.createElement('span');
+    tag.className = 'dmTag';
+    tag.textContent = 'DM';
+    header.appendChild(tag);
+  }
+
+  header.appendChild(document.createTextNode('📎 file'));
+
+  const time = document.createElement('span');
+  time.className = 'timeText';
+  time.textContent = formatTime(msg.createdAt);
+  header.appendChild(time);
+
+  div.appendChild(header);
+
+  const box = document.createElement('div');
+  box.className = 'fileBox';
+
+  if(msg.fileType && msg.fileType.startsWith('image/')){
+    const img = document.createElement('img');
+    img.src = msg.fileUrl;
+    img.alt = msg.fileName || 'image';
+    box.appendChild(img);
+  }
+
+  const link = document.createElement('a');
+  link.href = msg.fileUrl;
+  link.download = msg.fileName || 'file';
+  link.textContent = 'Download ' + (msg.fileName || 'file');
+  link.className = 'fileLink';
+  box.appendChild(link);
+
+  div.appendChild(box);
+  document.getElementById('messages').appendChild(div);
+  scrollMessages();
+}
+
+function scrollMessages(){
+  const messages = document.getElementById('messages');
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function formatTime(value){
+  if(!value) return '';
+  const d = new Date(String(value).replace(' ', 'T') + 'Z');
+  if(isNaN(d)) return '';
+
+  let hours = d.getHours();
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const suffix = hours >= 12 ? 'pm' : 'am';
+  hours = hours % 12 || 12;
+
+  return hours + ':' + minutes + suffix;
+}
+
+function sendMessage(){
+  if(!socket || !socket.connected) return;
+  const input = document.getElementById('messageInput');
+  const text = input.value.trim();
+  if(!text) return;
+
+  const payload = { text };
+
+  if(activeDMUser){
+    payload.to = activeDMUser;
+    socket.emit('dmMessage', payload, handleAck);
+  }else{
+    payload.room = currentRoom;
+    socket.emit('message', payload, handleAck);
+  }
+
+  input.value = '';
+  input.focus();
+  stopTyping();
+  document.getElementById('typingIndicator').innerText = '';
+}
+
+function handleAck(result){
+  if(result && result.error) showError(result.error);
+}
+
+const fileInput = document.getElementById('fileInput');
+fileInput.addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if(!file) return;
+  await uploadFile(file);
+  e.target.value = '';
+});
+
+function uploadFile(file){
+  return new Promise(resolve => {
+    if(file.size > 5 * 1024 * 1024){
+      showError('File is too large. Maximum is 5MB.');
+      resolve();
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onprogress = e => {
+      if(e.lengthComputable){
+        document.getElementById('uploadBar').style.width = ((e.loaded / e.total) * 100) + '%';
+      }
+    };
+    reader.onload = () => {
+      document.getElementById('uploadBar').style.width = '100%';
+      const payload = {
+        fileName:file.name,
+        fileType:file.type,
+        fileData:reader.result,
+        room:currentRoom,
+        to:activeDMUser || ''
+      };
+      socket.emit(activeDMUser ? 'dmFile' : 'file', payload, handleAck);
+      setTimeout(() => document.getElementById('uploadBar').style.width = '0%', 400);
+      resolve();
+    };
+    reader.onerror = () => {
+      showError('Could not read file.');
+      resolve();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderUsers(users){
+  const list = document.getElementById('memberList');
+  list.innerHTML = '';
+  if(!Array.isArray(users)) return;
+
+  users.filter(user => user && user !== username).forEach(user => {
+    const item = document.createElement('div');
+    item.className = 'userItem';
+    item.dataset.user = user;
+
+    const name = document.createElement('div');
+    name.className = 'userName';
+    name.textContent = user;
+
+    const controls = document.createElement('div');
+    controls.className = 'userControls';
+
+    const badge = document.createElement('span');
+    badge.className = 'dmBadge';
+    badge.id = 'dm-badge-' + user;
+    badge.textContent = unreadDMs[user] || '';
+    badge.style.display = unreadDMs[user] > 0 ? 'inline-block' : 'none';
+
+    controls.appendChild(badge);
+    item.appendChild(name);
+    item.appendChild(controls);
+    item.onclick = () => openDM(user);
+    list.appendChild(item);
+  });
+
+  highlightActiveUser(activeDMUser);
+  updateDMBadges();
+}
+
+function highlightActiveUser(user){
+  document.querySelectorAll('.userItem').forEach(el => {
+    el.classList.toggle('active', el.dataset.user === user);
+  });
+}
+
+function updateChannelBadges(){
+  for(const room in unreadChannels){
+    const badge = document.getElementById('badge-' + room);
+    if(!badge) continue;
+    const count = unreadChannels[room];
+    badge.style.display = count > 0 ? 'inline-block' : 'none';
+    badge.innerText = count > 0 ? count : '';
+  }
+}
+
+function updateDMBadges(){
+  Object.keys(unreadDMs).forEach(user => {
+    const badge = document.getElementById('dm-badge-' + user);
+    if(!badge) return;
+    const count = unreadDMs[user];
+    badge.style.display = count > 0 ? 'inline-block' : 'none';
+    badge.innerText = count > 0 ? count : '';
+  });
+}
+
+function updateFavicon(hasUnread){
+  const link = document.querySelector("link[rel='icon']");
+  if(!link) return;
+
+  if(!hasUnread){
+    link.href = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%235865F2'/%3E%3Ctext x='50' y='62' font-size='48' text-anchor='middle' fill='white' font-family='Arial'%3EC%3C/text%3E%3C/svg%3E";
+    return;
+  }
+
+  link.href = 'data:image/svg+xml,' + encodeURIComponent(`
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+      <circle cx="50" cy="50" r="45" fill="#5865F2"/>
+      <circle cx="75" cy="25" r="12" fill="red"/>
+      <text x="50" y="62" font-size="48" text-anchor="middle" fill="white" font-family="Arial">C</text>
+    </svg>
+  `);
+}
+
+function sendTyping(){
+  if(!socket || !socket.connected) return;
+  const input = document.getElementById('messageInput');
+  if(!input.value.trim()){
+    stopTyping();
+    return;
+  }
+
+  if(!isTyping){
+    isTyping = true;
+    socket.emit('typing', { room:currentRoom, to:activeDMUser || '' });
+  }
+
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(stopTyping, 1000);
+}
+
+function stopTyping(){
+  if(!isTyping || !socket) return;
+  isTyping = false;
+  socket.emit('stopTyping', { room:currentRoom, to:activeDMUser || '' });
+}
+
+document.addEventListener('keydown', e => {
+  if(e.key === '`'){
+    const menu = document.getElementById('debugMenu');
+    menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+  }
+});
+
+document.getElementById('messageInput').addEventListener('input', sendTyping);
+document.getElementById('messageInput').addEventListener('keydown', e => {
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    sendMessage();
+  }
+});
+document.getElementById('password').addEventListener('keydown', e => {
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    login();
+  }
+});
+window.addEventListener('beforeunload', stopTyping);
+</script>
+</body>
+</html>

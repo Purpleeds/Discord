@@ -459,14 +459,35 @@ function scrollMessages(){
 function formatTime(value){
   if(!value) return '';
   const d = new Date(String(value).replace(' ', 'T') + 'Z');
-  if(isNaN(d)) return '';
+  if(isNaN(d)) return value;
+  return d.toLocaleString([], { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'short' });
+}
 
-  let hours = d.getHours();
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  const suffix = hours >= 12 ? 'pm' : 'am';
-  hours = hours % 12 || 12;
+function setReplyTo(msg){
+  replyTo = {
+    user: msg.user,
+    text: msg.text || '[file]',
+    room: msg.room || currentRoom,
+    to: msg.to || '',
+    id: msg.id || ''
+  };
+  updateReplyPreview();
+  document.getElementById('messageInput').focus();
+}
 
-  return hours + ':' + minutes + suffix;
+function clearReply(){
+}
+
+function updateReplyPreview(){
+  const box = document.getElementById('replyPreview');
+  const text = document.getElementById('replyPreviewText');
+  if(!replyTo){
+    box.style.display = 'none';
+    text.innerText = '';
+    return;
+  }
+  box.style.display = 'block';
+  text.innerText = 'Replying to ' + replyTo.user + ': ' + replyTo.text;
 }
 
 function sendMessage(){

@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Google</title>
 
-<link rel="icon" type="image/png" href="/google.png">
-  
+<link rel="icon" type="image/png" href="/favicon.png">
+
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
 body{height:100vh;background:#313338;color:white;overflow:hidden;}
@@ -37,10 +37,15 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 .messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
 .messageText{white-space:pre-wrap;}
 .timeText{font-size:11px;color:#949ba4;}
+.replyQuote{background:#1e1f22;border-left:3px solid #5865F2;padding:8px 10px;border-radius:6px;margin-bottom:8px;color:#ccc;font-size:13px;}
 .dmTag{background:#f23f43;color:white;font-size:11px;padding:2px 6px;border-radius:999px;}
+.messageActions{margin-top:8px;display:flex;gap:8px;}
 .miniBtn{padding:6px 8px;background:#404249;color:white;font-size:12px;border-radius:6px;}
 .miniBtn:hover{background:#4f535c;}
 #typingIndicator{min-height:22px;padding:0 20px 8px 20px;color:#b5bac1;font-size:13px;}
+#replyPreview{display:none;margin:0 10px 10px 10px;padding:10px;background:#2b2d31;border-left:3px solid #5865F2;border-radius:8px;color:#ccc;font-size:13px;}
+#replyPreviewRow{display:flex;justify-content:space-between;align-items:center;gap:10px;}
+#replyPreviewText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #inputArea{display:flex;padding:10px;background:#383a40;gap:8px;}
 #fileInput{display:none;}
 #uploadBarContainer{width:100%;height:6px;background:#2b2d31;overflow:hidden;}
@@ -97,9 +102,16 @@ button:disabled{opacity:.55;cursor:not-allowed;}
     <div id="messages"></div>
     <div id="typingIndicator"></div>
 
+    <div id="replyPreview">
+      <div id="replyPreviewRow">
+        <div id="replyPreviewText"></div>
+        <button class="miniBtn" onclick="clearReply()">Cancel</button>
+      </div>
+    </div>
+
     <div id="inputArea">
       <input type="file" id="fileInput">
-      <button onclick="document.getElementById('fileInput').click()"> + </button>
+      <button onclick="document.getElementById('fileInput').click()">📎</button>
       <input id="messageInput" placeholder="Message" maxlength="4000">
       <button onclick="sendMessage()">Send</button>
     </div>
@@ -131,6 +143,7 @@ let unreadChannels = { general:0, gaming:0, coding:0 };
 let unreadDMs = {};
 let typingTimer = null;
 let isTyping = false;
+let replyTo = null;
 let activeDMUser = '';
 
 window.addEventListener('focus', () => { isFocused = true; updateFavicon(false); });
@@ -285,6 +298,8 @@ function joinRoom(room){
 
   currentRoom = room;
   activeDMUser = '';
+  replyTo = null;
+  updateReplyPreview();
   document.getElementById('messages').innerHTML = '';
   document.getElementById('typingIndicator').innerText = '';
   document.getElementById('roomTitle').innerText = '# ' + room;
@@ -307,6 +322,8 @@ function openDM(user){
 
   activeDMUser = user;
   currentRoom = roomNameForDM(username, user);
+  replyTo = null;
+  updateReplyPreview();
   document.getElementById('messages').innerHTML = '';
   document.getElementById('typingIndicator').innerText = '';
   document.getElementById('roomTitle').innerText = '@ ' + user;
@@ -362,6 +379,15 @@ function addMessage(msg){
   const div = document.createElement('div');
   div.className = 'message';
 
+  if(msg.replyTo){
+    const quote = document.createElement('div');
+    quote.className = 'replyQuote';
+    const quoteUser = document.createElement('b');
+    quoteUser.textContent = (msg.replyTo.user || 'unknown') + ': ';
+    quote.appendChild(quoteUser);
+    quote.appendChild(document.createTextNode(msg.replyTo.text || ''));
+    div.appendChild(quote);
+  }
 
   const header = document.createElement('div');
   header.className = 'messageHeader';
@@ -388,16 +414,24 @@ function addMessage(msg){
   body.textContent = msg.text || '';
   div.appendChild(body);
 
+  const actions = document.createElement('div');
+  actions.className = 'messageActions';
+
+  const replyBtn = document.createElement('button');
+  replyBtn.className = 'miniBtn';
+  replyBtn.textContent = 'Reply';
+  replyBtn.onclick = () => setReplyTo(msg);
+  actions.appendChild(replyBtn);
+
   if(msg.dmTo){
-    const actions = document.createElement('div');
-    actions.style.marginTop = '8px';
     const dmBtn = document.createElement('button');
     dmBtn.className = 'miniBtn';
     dmBtn.textContent = 'Open DM';
     dmBtn.onclick = () => openDM(msg.user === username ? msg.to : msg.user);
     actions.appendChild(dmBtn);
-    div.appendChild(actions);
   }
+
+  div.appendChild(actions);
   document.getElementById('messages').appendChild(div);
   scrollMessages();
 }
@@ -476,6 +510,8 @@ function setReplyTo(msg){
 }
 
 function clearReply(){
+  replyTo = null;
+  updateReplyPreview();
 }
 
 function updateReplyPreview(){
@@ -496,7 +532,7 @@ function sendMessage(){
   const text = input.value.trim();
   if(!text) return;
 
-  const payload = { text };
+  const payload = { text, replyTo };
 
   if(activeDMUser){
     payload.to = activeDMUser;
@@ -508,6 +544,7 @@ function sendMessage(){
 
   input.value = '';
   input.focus();
+  clearReply();
   stopTyping();
   document.getElementById('typingIndicator').innerText = '';
 }

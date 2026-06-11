@@ -7,3 +7,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20.18.0
+      - key: DATA_DIR
+        value: /var/data
+    disk:
+      name: chat-data
+      mountPath: /var/data
+      sizeGB: 100

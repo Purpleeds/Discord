@@ -6,7 +6,7 @@
 <title>Google</title>
 
 <link rel="icon" type="image/png" href="/google.png">
-
+  
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
 body{height:100vh;background:#313338;color:white;overflow:hidden;}
@@ -100,7 +100,7 @@ button:disabled{opacity:.55;cursor:not-allowed;}
     <div id="typingIndicator"></div>
     <div id="inputArea">
       <input type="file" id="fileInput">
-      <button onclick="document.getElementById('fileInput').click()">📎</button>
+      <button onclick="document.getElementById('fileInput').click()"> + </button>
       <input id="messageInput" placeholder="Message" maxlength="4000">
       <button onclick="sendMessage()">Send</button>
     </div>
@@ -332,7 +332,7 @@ async function createGroupChat(){
   if(!name) return;
 
   const examples = onlineUserList.filter(u => u !== username).join(', ');
-  const memberText = prompt('Add usernames separated by commas. Example: ' + (examples || 'William, Sam'));
+  const memberText = prompt('Add usernames separated by commas. Example: ' + (examples || 'Alex, Taylor'));
   if(!memberText) return;
 
   const members = memberText.split(',').map(x => x.trim()).filter(Boolean);

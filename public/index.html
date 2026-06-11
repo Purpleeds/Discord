@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Google</title>
 
-<link rel="icon" type="image/png" href="/favicon.png">
+<link rel="icon" type="image/png" href="/google.png">
 
 <style>
 *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
@@ -21,11 +21,13 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 #app{display:none;height:100vh;}
 #servers{width:72px;background:#1e1f22;padding:10px;}
 .server{width:48px;height:48px;background:#5865F2;border-radius:50%;margin-bottom:10px;}
-.badge{float:right;background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
-#channels{width:240px;background:#2b2d31;padding:10px;overflow-y:auto;}
-.channel{padding:10px;cursor:pointer;border-radius:6px;margin-bottom:4px;}
+#channels{width:250px;background:#2b2d31;padding:10px;overflow-y:auto;}
+.sectionTitle{font-size:14px;color:#b5bac1;margin:12px 0 6px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.channel{padding:10px;cursor:pointer;border-radius:6px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;}
 .channel:hover{background:#404249;}
 .channel.active{background:#5865F2;}
+.channelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.badge,.dmBadge,.groupBadge{background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
 #chat{flex:1;display:flex;flex-direction:column;min-width:0;}
 #chatHeader{height:44px;background:#383a40;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid #24262b;}
 #roomTitle{font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -37,35 +39,35 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 .messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
 .messageText{white-space:pre-wrap;}
 .timeText{font-size:11px;color:#949ba4;}
-.replyQuote{background:#1e1f22;border-left:3px solid #5865F2;padding:8px 10px;border-radius:6px;margin-bottom:8px;color:#ccc;font-size:13px;}
-.dmTag{background:#f23f43;color:white;font-size:11px;padding:2px 6px;border-radius:999px;}
-.messageActions{margin-top:8px;display:flex;gap:8px;}
+.dmTag,.groupTag{color:white;font-size:11px;padding:2px 6px;border-radius:999px;}
+.dmTag{background:#f23f43;}.groupTag{background:#3BA55C;}
 .miniBtn{padding:6px 8px;background:#404249;color:white;font-size:12px;border-radius:6px;}
 .miniBtn:hover{background:#4f535c;}
+.primaryMiniBtn{padding:6px 8px;background:#5865F2;color:white;font-size:12px;border-radius:6px;}
 #typingIndicator{min-height:22px;padding:0 20px 8px 20px;color:#b5bac1;font-size:13px;}
-#replyPreview{display:none;margin:0 10px 10px 10px;padding:10px;background:#2b2d31;border-left:3px solid #5865F2;border-radius:8px;color:#ccc;font-size:13px;}
-#replyPreviewRow{display:flex;justify-content:space-between;align-items:center;gap:10px;}
-#replyPreviewText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 #inputArea{display:flex;padding:10px;background:#383a40;gap:8px;}
 #fileInput{display:none;}
 #uploadBarContainer{width:100%;height:6px;background:#2b2d31;overflow:hidden;}
 #uploadBar{height:100%;width:0%;background:#5865F2;transition:width .2s;}
 #messageInput{flex:1;margin-bottom:0;}
-#users{width:220px;background:#232428;padding:10px;overflow-y:auto;}
+#users{width:240px;background:#232428;padding:10px;overflow-y:auto;}
+#memberHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;}
 #memberList{margin-top:10px;display:flex;flex-direction:column;gap:6px;}
 .userItem{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#2b2d31;border-radius:6px;cursor:pointer;}
 .userItem:hover{background:#404249;}
 .userItem.active{background:#5865F2;}
 .userName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .userControls{display:flex;align-items:center;gap:6px;}
-.dmBadge{background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
+#contextMenu{position:fixed;display:none;background:#1e1f22;border:1px solid #5865F2;border-radius:8px;padding:6px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.35);}
+.contextItem{padding:8px 12px;border-radius:6px;cursor:pointer;white-space:nowrap;}
+.contextItem:hover{background:#404249;}
 #debugMenu{position:fixed;top:60px;right:20px;background:#1e1f22;padding:15px;border:2px solid #5865F2;border-radius:10px;display:none;z-index:9999;}
 #debugMenu button{width:100%;margin-top:5px;}
 .fileBox{margin-top:8px;padding:8px 10px;background:#1e1f22;border-radius:6px;}
 .fileBox img{max-width:220px;max-height:220px;border-radius:6px;display:block;margin-top:6px;object-fit:contain;}
 .fileLink{color:#7aa2ff;text-decoration:none;display:inline-block;margin-top:6px;}
 .errorLine{color:#ffb4b4;font-size:13px;padding:0 10px 8px 10px;}
-@media (max-width:800px){#servers{display:none;}#channels{width:150px;}#users{display:none;}#loginScreen{width:330px;}}
+@media (max-width:850px){#servers{display:none;}#channels{width:160px;}#users{display:none;}#loginScreen{width:330px;}}
 </style>
 </head>
 
@@ -80,50 +82,38 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 </div>
 
 <div id="app">
-  <div id="servers">
-    <div class="server"></div>
-    <div class="server"></div>
-    <div class="server"></div>
-  </div>
+  <div id="servers"><div class="server"></div><div class="server"></div><div class="server"></div></div>
 
   <div id="channels">
-    <h3>Channels</h3>
-    <div class="channel active" data-room="general" onclick="joinRoom('general')"># general <span class="badge" id="badge-general"></span></div>
-    <div class="channel" data-room="gaming" onclick="joinRoom('gaming')"># gaming <span class="badge" id="badge-gaming"></span></div>
-    <div class="channel" data-room="coding" onclick="joinRoom('coding')"># coding <span class="badge" id="badge-coding"></span></div>
+    <div class="sectionTitle"><span>Channels</span></div>
+    <div class="channel active" data-room="general" onclick="joinRoom('general')"><span class="channelName"># general</span><span class="badge" id="badge-general"></span></div>
+    <div class="channel" data-room="gaming" onclick="joinRoom('gaming')"><span class="channelName"># gaming</span><span class="badge" id="badge-gaming"></span></div>
+    <div class="channel" data-room="coding" onclick="joinRoom('coding')"><span class="channelName"># coding</span><span class="badge" id="badge-coding"></span></div>
+
+    <div class="sectionTitle"><span>Group Chats</span></div>
+    <div id="groupList"></div>
   </div>
 
   <div id="chat">
-    <div id="chatHeader">
-      <div id="roomTitle"># general</div>
-      <button class="miniBtn" onclick="logout()">Logout</button>
-    </div>
-
+    <div id="chatHeader"><div id="roomTitle"># general</div><button class="miniBtn" onclick="logout()">Logout</button></div>
     <div id="messages"></div>
     <div id="typingIndicator"></div>
-
-    <div id="replyPreview">
-      <div id="replyPreviewRow">
-        <div id="replyPreviewText"></div>
-        <button class="miniBtn" onclick="clearReply()">Cancel</button>
-      </div>
-    </div>
-
     <div id="inputArea">
       <input type="file" id="fileInput">
       <button onclick="document.getElementById('fileInput').click()">📎</button>
       <input id="messageInput" placeholder="Message" maxlength="4000">
       <button onclick="sendMessage()">Send</button>
     </div>
-
     <div id="uploadBarContainer"><div id="uploadBar"></div></div>
   </div>
 
   <div id="users">
-    <h3>Members</h3>
+    <div id="memberHeader"><h3>Members</h3><button class="primaryMiniBtn" onclick="createGroupChat()">+ Group</button></div>
     <div id="memberList"></div>
   </div>
 </div>
+
+<div id="contextMenu"><div class="contextItem" id="contextDmItem">Message</div></div>
 
 <div id="debugMenu">
   <h3>Debug Menu</h3>
@@ -141,102 +131,97 @@ let token = '';
 let isFocused = true;
 let unreadChannels = { general:0, gaming:0, coding:0 };
 let unreadDMs = {};
+let unreadGroups = {};
+let groups = [];
+let groupByRoom = {};
+let onlineUserList = [];
 let typingTimer = null;
 let isTyping = false;
-let replyTo = null;
 let activeDMUser = '';
+let currentGroupRoom = '';
+let selectedContextUser = '';
+let tabAlertTimer = null;
+let tabAlertState = false;
+const defaultTitle = document.title;
+const faviconLink = document.querySelector("link[rel='icon']");
+const defaultFavicon = faviconLink ? faviconLink.getAttribute('href') : '';
+const alertFavicon = 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="#f23f43"/><text x="50" y="63" font-size="58" text-anchor="middle" fill="white" font-family="Arial">!</text></svg>`);
 
-window.addEventListener('focus', () => { isFocused = true; updateFavicon(false); });
+window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); });
 window.addEventListener('blur', () => { isFocused = false; });
+document.addEventListener('click', hideContextMenu);
+window.addEventListener('resize', hideContextMenu);
 
 function setStatus(text){ document.getElementById('status').innerText = text || ''; }
 function authHeaders(){ return { 'Content-Type':'application/json', 'Authorization':'Bearer ' + token }; }
 function roomNameForDM(a,b){ return 'dm:' + [a,b].sort().join(':'); }
+function notifyTab(label){ if(!isFocused) startTabAlert(label || 'NEW MESSAGE'); }
 
 async function registerUser(){
   username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value;
   setStatus('Creating account...');
-
   try{
-    const response = await fetch('/register', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json' },
-      body:JSON.stringify({ username, password })
-    });
+    const response = await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || 'register failed');
-    completeLogin(data.username, data.token);
-  }catch(err){
-    setStatus(err.message);
-  }
+    completeLogin(data.username,data.token);
+  }catch(err){ setStatus(err.message); }
 }
 
 async function login(){
   username = document.getElementById('username').value.trim();
   const password = document.getElementById('password').value;
   setStatus('Logging in...');
-
   try{
-    const response = await fetch('/login', {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json' },
-      body:JSON.stringify({ username, password })
-    });
+    const response = await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || 'login failed');
-    completeLogin(data.username, data.token);
-  }catch(err){
-    setStatus(err.message);
-  }
+    completeLogin(data.username,data.token);
+  }catch(err){ setStatus(err.message); }
 }
 
 function completeLogin(returnedUsername, returnedToken){
   username = returnedUsername;
   token = returnedToken;
-
   document.getElementById('loginScreen').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
-
   connectSocket();
 }
 
 async function logout(){
-  try{
-    if(token){
-      await fetch('/logout', { method:'POST', headers:authHeaders(), body:'{}' });
-    }
-  }catch(e){}
-
+  try{ if(token) await fetch('/logout',{method:'POST',headers:authHeaders(),body:'{}'}); }catch(e){}
   if(socket) socket.disconnect();
-  token = '';
-  username = '';
-  activeDMUser = '';
-  currentRoom = 'general';
-  document.getElementById('messages').innerHTML = '';
-  document.getElementById('app').style.display = 'none';
-  document.getElementById('loginScreen').style.display = 'block';
+  token=''; username=''; activeDMUser=''; currentGroupRoom=''; currentRoom='general'; groups=[]; groupByRoom={};
+  stopTabAlert();
+  document.getElementById('messages').innerHTML='';
+  document.getElementById('app').style.display='none';
+  document.getElementById('loginScreen').style.display='block';
   setStatus('Logged out');
 }
 
 function connectSocket(){
   socket = io({ auth:{ token } });
 
-  socket.on('connect', () => {
+  socket.on('connect', async () => {
+    await loadGroups();
     joinRoom('general');
   });
-
-  socket.on('connect_error', (err) => {
-    setStatus(err.message || 'socket connection failed');
-  });
+  socket.on('connect_error', err => setStatus(err.message || 'socket connection failed'));
+  socket.on('users', users => renderUsers(users));
+  socket.on('groupsChanged', async () => { await loadGroups(); });
 
   socket.on('message', msg => {
     if(msg.room === currentRoom && !activeDMUser){
       addMessage(msg);
-    }else if(msg.room && unreadChannels[msg.room] !== undefined){
+    }else if(isGroupRoom(msg.room)){
+      unreadGroups[msg.room] = (unreadGroups[msg.room] || 0) + 1;
+      updateGroupBadges();
+      notifyTab('@ ' + (groupByRoom[msg.room]?.name || 'group'));
+    }else if(unreadChannels[msg.room] !== undefined){
       unreadChannels[msg.room] += 1;
       updateChannelBadges();
-      if(!isFocused) updateFavicon(true);
+      notifyTab('# ' + msg.room);
     }
   });
 
@@ -247,17 +232,21 @@ function connectSocket(){
     }else{
       unreadDMs[otherUser] = (unreadDMs[otherUser] || 0) + 1;
       updateDMBadges();
-      if(!isFocused) updateFavicon(true);
+      notifyTab('@ ' + otherUser);
     }
   });
 
   socket.on('file', msg => {
     if(msg.room === currentRoom && !activeDMUser){
       addFileMessage(msg);
-    }else if(msg.room && unreadChannels[msg.room] !== undefined){
+    }else if(isGroupRoom(msg.room)){
+      unreadGroups[msg.room] = (unreadGroups[msg.room] || 0) + 1;
+      updateGroupBadges();
+      notifyTab('@ ' + (groupByRoom[msg.room]?.name || 'group'));
+    }else if(unreadChannels[msg.room] !== undefined){
       unreadChannels[msg.room] += 1;
       updateChannelBadges();
-      if(!isFocused) updateFavicon(true);
+      notifyTab('# ' + msg.room);
     }
   });
 
@@ -268,47 +257,102 @@ function connectSocket(){
     }else{
       unreadDMs[otherUser] = (unreadDMs[otherUser] || 0) + 1;
       updateDMBadges();
-      if(!isFocused) updateFavicon(true);
+      notifyTab('@ ' + otherUser);
     }
   });
-
-  socket.on('users', users => renderUsers(users));
 
   socket.on('typing', data => {
     if(data.user === username) return;
     const sameRoom = data.room && data.room === currentRoom && !activeDMUser;
     const sameDM = activeDMUser && data.user === activeDMUser;
-    if(sameRoom || sameDM){
-      document.getElementById('typingIndicator').innerText = data.user + ' is typing...';
-    }
+    if(sameRoom || sameDM) document.getElementById('typingIndicator').innerText = data.user + ' is typing...';
   });
 
   socket.on('stopTyping', data => {
     if(data.user === username) return;
     const sameRoom = data.room && data.room === currentRoom && !activeDMUser;
     const sameDM = activeDMUser && data.user === activeDMUser;
-    if(sameRoom || sameDM){
-      document.getElementById('typingIndicator').innerText = '';
-    }
+    if(sameRoom || sameDM) document.getElementById('typingIndicator').innerText = '';
   });
+}
+
+function isGroupRoom(room){ return /^group:\d+$/.test(String(room || '')); }
+function groupLabel(room){ return groupByRoom[room] ? groupByRoom[room].name : room; }
+
+async function loadGroups(){
+  if(!token) return;
+  try{
+    const response = await fetch('/groups',{headers:{'Authorization':'Bearer ' + token}});
+    if(!response.ok) return;
+    groups = await response.json();
+    groupByRoom = {};
+    groups.forEach(g => groupByRoom[g.room] = g);
+    renderGroups();
+  }catch(e){}
+}
+
+function renderGroups(){
+  const list = document.getElementById('groupList');
+  list.innerHTML = '';
+  if(!groups.length){
+    const empty = document.createElement('div');
+    empty.style.color = '#949ba4';
+    empty.style.fontSize = '13px';
+    empty.style.padding = '8px 10px';
+    empty.textContent = 'No groups yet';
+    list.appendChild(empty);
+    return;
+  }
+
+  groups.forEach(group => {
+    const item = document.createElement('div');
+    item.className = 'channel';
+    item.dataset.room = group.room;
+    item.onclick = () => openGroup(group.room);
+
+    const name = document.createElement('span');
+    name.className = 'channelName';
+    name.textContent = '@ ' + group.name;
+
+    const badge = document.createElement('span');
+    badge.className = 'groupBadge';
+    badge.id = 'group-badge-' + group.room.replace(':','-');
+
+    item.appendChild(name);
+    item.appendChild(badge);
+    list.appendChild(item);
+  });
+  updateGroupBadges();
+  highlightActiveRoom();
+}
+
+async function createGroupChat(){
+  if(!token) return;
+  const name = prompt('Group chat name:');
+  if(!name) return;
+
+  const examples = onlineUserList.filter(u => u !== username).join(', ');
+  const memberText = prompt('Add usernames separated by commas. Example: ' + (examples || 'William, Sam'));
+  if(!memberText) return;
+
+  const members = memberText.split(',').map(x => x.trim()).filter(Boolean);
+  try{
+    const response = await fetch('/groups',{
+      method:'POST',
+      headers:authHeaders(),
+      body:JSON.stringify({ name, members })
+    });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not create group');
+    await loadGroups();
+    openGroup(data.room);
+  }catch(err){ showError(err.message); }
 }
 
 function joinRoom(room){
   if(!socket || !socket.connected) return;
-
-  currentRoom = room;
-  activeDMUser = '';
-  replyTo = null;
-  updateReplyPreview();
-  document.getElementById('messages').innerHTML = '';
-  document.getElementById('typingIndicator').innerText = '';
-  document.getElementById('roomTitle').innerText = '# ' + room;
-
-  document.querySelectorAll('.channel').forEach(el => {
-    el.classList.toggle('active', el.dataset.room === room);
-  });
-  highlightActiveUser('');
-
+  currentRoom = room; activeDMUser = ''; currentGroupRoom = '';
+  clearChat('# ' + room);
   socket.emit('joinRoom', room, result => {
     if(result && result.error){ showError(result.error); return; }
     unreadChannels[room] = 0;
@@ -317,55 +361,60 @@ function joinRoom(room){
   });
 }
 
+function openGroup(room){
+  if(!socket || !socket.connected || !room) return;
+  currentRoom = room; activeDMUser = ''; currentGroupRoom = room;
+  clearChat('@ ' + groupLabel(room));
+  socket.emit('joinRoom', room, result => {
+    if(result && result.error){ showError(result.error); return; }
+    unreadGroups[room] = 0;
+    updateGroupBadges();
+    loadHistory(room);
+  });
+}
+
 function openDM(user){
   if(!socket || !socket.connected || !user) return;
-
-  activeDMUser = user;
-  currentRoom = roomNameForDM(username, user);
-  replyTo = null;
-  updateReplyPreview();
-  document.getElementById('messages').innerHTML = '';
-  document.getElementById('typingIndicator').innerText = '';
-  document.getElementById('roomTitle').innerText = '@ ' + user;
-
-  document.querySelectorAll('.channel').forEach(el => el.classList.remove('active'));
+  activeDMUser = user; currentGroupRoom = ''; currentRoom = roomNameForDM(username,user);
+  clearChat('@ ' + user);
   highlightActiveUser(user);
   unreadDMs[user] = 0;
   updateDMBadges();
-
   socket.emit('joinRoom', currentRoom, result => {
     if(result && result.error){ showError(result.error); return; }
     loadHistory(currentRoom);
   });
 }
 
+function clearChat(title){
+  stopTyping();
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('typingIndicator').innerText = '';
+  document.getElementById('roomTitle').innerText = title;
+  highlightActiveRoom();
+  if(!activeDMUser) highlightActiveUser('');
+}
+
+function highlightActiveRoom(){
+  document.querySelectorAll('.channel').forEach(el => el.classList.toggle('active', el.dataset.room === currentRoom));
+}
+
 async function loadHistory(room){
   try{
-    const [msgRes, fileRes] = await Promise.all([
+    const [messagesRes, filesRes] = await Promise.all([
       fetch('/messages?room=' + encodeURIComponent(room), { headers:{ 'Authorization':'Bearer ' + token } }),
       fetch('/files?room=' + encodeURIComponent(room), { headers:{ 'Authorization':'Bearer ' + token } })
     ]);
-
-    if(!msgRes.ok) throw new Error('cannot load messages');
-    if(!fileRes.ok) throw new Error('cannot load files');
-
-    const messages = await msgRes.json();
-    const files = await fileRes.json();
-    const combined = [];
-
-    if(Array.isArray(messages)) messages.forEach(m => combined.push({ type:'message', createdAt:m.createdAt, id:m.id, data:m }));
-    if(Array.isArray(files)) files.forEach(f => combined.push({ type:'file', createdAt:f.createdAt, id:f.id, data:f }));
-
-    combined.sort((a,b) => {
-      const time = String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
-      return time || ((a.id || 0) - (b.id || 0));
-    });
-
-    document.getElementById('messages').innerHTML = '';
+    if(!messagesRes.ok) throw new Error('Could not load messages');
+    const messages = await messagesRes.json();
+    const files = filesRes.ok ? await filesRes.json() : [];
+    const combined = [
+      ...messages.map(item => ({ type:'message', data:item, time:item.createdAt, id:item.id })),
+      ...files.map(item => ({ type:'file', data:item, time:item.createdAt, id:item.id }))
+    ];
+    combined.sort((a,b) => new Date(String(a.time).replace(' ','T') + 'Z') - new Date(String(b.time).replace(' ','T') + 'Z') || a.id - b.id);
     combined.forEach(item => item.type === 'message' ? addMessage(item.data) : addFileMessage(item.data));
-  }catch(err){
-    showError(err.message);
-  }
+  }catch(err){ showError(err.message); }
 }
 
 function showError(text){
@@ -373,22 +422,12 @@ function showError(text){
   div.className = 'errorLine';
   div.textContent = text;
   document.getElementById('messages').appendChild(div);
+  scrollMessages();
 }
 
 function addMessage(msg){
   const div = document.createElement('div');
   div.className = 'message';
-
-  if(msg.replyTo){
-    const quote = document.createElement('div');
-    quote.className = 'replyQuote';
-    const quoteUser = document.createElement('b');
-    quoteUser.textContent = (msg.replyTo.user || 'unknown') + ': ';
-    quote.appendChild(quoteUser);
-    quote.appendChild(document.createTextNode(msg.replyTo.text || ''));
-    div.appendChild(quote);
-  }
-
   const header = document.createElement('div');
   header.className = 'messageHeader';
 
@@ -396,12 +435,8 @@ function addMessage(msg){
   name.textContent = msg.user || 'unknown';
   header.appendChild(name);
 
-  if(msg.dmTo){
-    const tag = document.createElement('span');
-    tag.className = 'dmTag';
-    tag.textContent = 'DM';
-    header.appendChild(tag);
-  }
+  if(msg.dmTo){ const tag = document.createElement('span'); tag.className = 'dmTag'; tag.textContent = 'DM'; header.appendChild(tag); }
+  if(msg.isGroup){ const tag = document.createElement('span'); tag.className = 'groupTag'; tag.textContent = 'GROUP'; header.appendChild(tag); }
 
   const time = document.createElement('span');
   time.className = 'timeText';
@@ -413,25 +448,6 @@ function addMessage(msg){
   body.className = 'messageText';
   body.textContent = msg.text || '';
   div.appendChild(body);
-
-  const actions = document.createElement('div');
-  actions.className = 'messageActions';
-
-  const replyBtn = document.createElement('button');
-  replyBtn.className = 'miniBtn';
-  replyBtn.textContent = 'Reply';
-  replyBtn.onclick = () => setReplyTo(msg);
-  actions.appendChild(replyBtn);
-
-  if(msg.dmTo){
-    const dmBtn = document.createElement('button');
-    dmBtn.className = 'miniBtn';
-    dmBtn.textContent = 'Open DM';
-    dmBtn.onclick = () => openDM(msg.user === username ? msg.to : msg.user);
-    actions.appendChild(dmBtn);
-  }
-
-  div.appendChild(actions);
   document.getElementById('messages').appendChild(div);
   scrollMessages();
 }
@@ -439,47 +455,36 @@ function addMessage(msg){
 function addFileMessage(msg){
   const div = document.createElement('div');
   div.className = 'message';
-
   const header = document.createElement('div');
   header.className = 'messageHeader';
 
   const name = document.createElement('b');
   name.textContent = msg.user || 'unknown';
   header.appendChild(name);
-
-  if(msg.dmTo){
-    const tag = document.createElement('span');
-    tag.className = 'dmTag';
-    tag.textContent = 'DM';
-    header.appendChild(tag);
-  }
-
+  if(msg.dmTo){ const tag = document.createElement('span'); tag.className = 'dmTag'; tag.textContent = 'DM'; header.appendChild(tag); }
+  if(msg.isGroup){ const tag = document.createElement('span'); tag.className = 'groupTag'; tag.textContent = 'GROUP'; header.appendChild(tag); }
   header.appendChild(document.createTextNode('📎 file'));
 
   const time = document.createElement('span');
   time.className = 'timeText';
   time.textContent = formatTime(msg.createdAt);
   header.appendChild(time);
-
   div.appendChild(header);
 
   const box = document.createElement('div');
   box.className = 'fileBox';
-
   if(msg.fileType && msg.fileType.startsWith('image/')){
     const img = document.createElement('img');
     img.src = msg.fileUrl;
     img.alt = msg.fileName || 'image';
     box.appendChild(img);
   }
-
   const link = document.createElement('a');
   link.href = msg.fileUrl;
   link.download = msg.fileName || 'file';
   link.textContent = 'Download ' + (msg.fileName || 'file');
   link.className = 'fileLink';
   box.appendChild(link);
-
   div.appendChild(box);
   document.getElementById('messages').appendChild(div);
   scrollMessages();
@@ -494,36 +499,7 @@ function formatTime(value){
   if(!value) return '';
   const d = new Date(String(value).replace(' ', 'T') + 'Z');
   if(isNaN(d)) return value;
-  return d.toLocaleString([], { hour:'2-digit', minute:'2-digit', day:'2-digit', month:'short' });
-}
-
-function setReplyTo(msg){
-  replyTo = {
-    user: msg.user,
-    text: msg.text || '[file]',
-    room: msg.room || currentRoom,
-    to: msg.to || '',
-    id: msg.id || ''
-  };
-  updateReplyPreview();
-  document.getElementById('messageInput').focus();
-}
-
-function clearReply(){
-  replyTo = null;
-  updateReplyPreview();
-}
-
-function updateReplyPreview(){
-  const box = document.getElementById('replyPreview');
-  const text = document.getElementById('replyPreviewText');
-  if(!replyTo){
-    box.style.display = 'none';
-    text.innerText = '';
-    return;
-  }
-  box.style.display = 'block';
-  text.innerText = 'Replying to ' + replyTo.user + ': ' + replyTo.text;
+  return d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' }).replace(' ', '').toLowerCase();
 }
 
 function sendMessage(){
@@ -532,26 +508,18 @@ function sendMessage(){
   const text = input.value.trim();
   if(!text) return;
 
-  const payload = { text, replyTo };
-
   if(activeDMUser){
-    payload.to = activeDMUser;
-    socket.emit('dmMessage', payload, handleAck);
+    socket.emit('dmMessage', { text, to:activeDMUser }, handleAck);
   }else{
-    payload.room = currentRoom;
-    socket.emit('message', payload, handleAck);
+    socket.emit('message', { text, room:currentRoom }, handleAck);
   }
-
   input.value = '';
   input.focus();
-  clearReply();
   stopTyping();
   document.getElementById('typingIndicator').innerText = '';
 }
 
-function handleAck(result){
-  if(result && result.error) showError(result.error);
-}
+function handleAck(result){ if(result && result.error) showError(result.error); }
 
 const fileInput = document.getElementById('fileInput');
 fileInput.addEventListener('change', async e => {
@@ -563,45 +531,56 @@ fileInput.addEventListener('change', async e => {
 
 function uploadFile(file){
   return new Promise(resolve => {
-    if(file.size > 5 * 1024 * 1024){
-      showError('File is too large. Maximum is 5MB.');
+    const maxFileBytes = 10 * 1024 * 1024 * 1024; // 10GB
+    if(file.size > maxFileBytes){
+      showError('File is too large. Maximum is 10GB.');
       resolve();
       return;
     }
 
-    const reader = new FileReader();
-    reader.onprogress = e => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.setRequestHeader('X-Room', currentRoom);
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
+    if(activeDMUser) xhr.setRequestHeader('X-To-User', activeDMUser);
+
+    xhr.upload.onprogress = e => {
       if(e.lengthComputable){
         document.getElementById('uploadBar').style.width = ((e.loaded / e.total) * 100) + '%';
       }
     };
-    reader.onload = () => {
+
+    xhr.onload = () => {
       document.getElementById('uploadBar').style.width = '100%';
-      const payload = {
-        fileName:file.name,
-        fileType:file.type,
-        fileData:reader.result,
-        room:currentRoom,
-        to:activeDMUser || ''
-      };
-      socket.emit(activeDMUser ? 'dmFile' : 'file', payload, handleAck);
+      if(xhr.status < 200 || xhr.status >= 300){
+        try{
+          const data = JSON.parse(xhr.responseText || '{}');
+          showError(data.error || 'Upload failed.');
+        }catch(e){
+          showError('Upload failed.');
+        }
+      }
       setTimeout(() => document.getElementById('uploadBar').style.width = '0%', 400);
       resolve();
     };
-    reader.onerror = () => {
-      showError('Could not read file.');
+
+    xhr.onerror = () => {
+      showError('Upload failed. Check the file size, connection, and Render limits.');
+      document.getElementById('uploadBar').style.width = '0%';
       resolve();
     };
-    reader.readAsDataURL(file);
+
+    xhr.send(file);
   });
 }
 
 function renderUsers(users){
+  onlineUserList = Array.isArray(users) ? users : [];
   const list = document.getElementById('memberList');
   list.innerHTML = '';
-  if(!Array.isArray(users)) return;
-
-  users.filter(user => user && user !== username).forEach(user => {
+  onlineUserList.filter(user => user && user !== username).forEach(user => {
     const item = document.createElement('div');
     item.className = 'userItem';
     item.dataset.user = user;
@@ -612,28 +591,36 @@ function renderUsers(users){
 
     const controls = document.createElement('div');
     controls.className = 'userControls';
-
     const badge = document.createElement('span');
     badge.className = 'dmBadge';
     badge.id = 'dm-badge-' + user;
-    badge.textContent = unreadDMs[user] || '';
-    badge.style.display = unreadDMs[user] > 0 ? 'inline-block' : 'none';
-
     controls.appendChild(badge);
+
     item.appendChild(name);
     item.appendChild(controls);
     item.onclick = () => openDM(user);
+    item.oncontextmenu = e => showContextMenu(e, user);
+    name.oncontextmenu = e => showContextMenu(e, user);
     list.appendChild(item);
   });
-
   highlightActiveUser(activeDMUser);
   updateDMBadges();
 }
 
+function showContextMenu(e, user){
+  e.preventDefault();
+  e.stopPropagation();
+  selectedContextUser = user;
+  const menu = document.getElementById('contextMenu');
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 140) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 60) + 'px';
+  menu.style.display = 'block';
+}
+function hideContextMenu(){ document.getElementById('contextMenu').style.display = 'none'; }
+document.getElementById('contextDmItem').addEventListener('click', e => { e.stopPropagation(); if(selectedContextUser) openDM(selectedContextUser); hideContextMenu(); });
+
 function highlightActiveUser(user){
-  document.querySelectorAll('.userItem').forEach(el => {
-    el.classList.toggle('active', el.dataset.user === user);
-  });
+  document.querySelectorAll('.userItem').forEach(el => el.classList.toggle('active', el.dataset.user === user));
 }
 
 function updateChannelBadges(){
@@ -645,7 +632,6 @@ function updateChannelBadges(){
     badge.innerText = count > 0 ? count : '';
   }
 }
-
 function updateDMBadges(){
   Object.keys(unreadDMs).forEach(user => {
     const badge = document.getElementById('dm-badge-' + user);
@@ -655,45 +641,52 @@ function updateDMBadges(){
     badge.innerText = count > 0 ? count : '';
   });
 }
+function updateGroupBadges(){
+  Object.keys(unreadGroups).forEach(room => {
+    const badge = document.getElementById('group-badge-' + room.replace(':','-'));
+    if(!badge) return;
+    const count = unreadGroups[room];
+    badge.style.display = count > 0 ? 'inline-block' : 'none';
+    badge.innerText = count > 0 ? count : '';
+  });
+}
 
+function startTabAlert(label){
+  if(tabAlertTimer) return;
+  const text = label || 'NEW MESSAGE';
+  tabAlertTimer = setInterval(() => {
+    tabAlertState = !tabAlertState;
+    document.title = tabAlertState ? '🔴 NEW MESSAGE' : text;
+    updateFavicon(tabAlertState);
+  }, 700);
+}
+function stopTabAlert(){
+  if(tabAlertTimer) clearInterval(tabAlertTimer);
+  tabAlertTimer = null;
+  tabAlertState = false;
+  document.title = defaultTitle;
+  updateFavicon(false);
+}
 function updateFavicon(hasUnread){
-  const link = document.querySelector("link[rel='icon']");
-  if(!link) return;
-
-  if(!hasUnread){
-    link.href = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='45' fill='%235865F2'/%3E%3Ctext x='50' y='62' font-size='48' text-anchor='middle' fill='white' font-family='Arial'%3EC%3C/text%3E%3C/svg%3E";
-    return;
-  }
-
-  link.href = 'data:image/svg+xml,' + encodeURIComponent(`
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-      <circle cx="50" cy="50" r="45" fill="#5865F2"/>
-      <circle cx="75" cy="25" r="12" fill="red"/>
-      <text x="50" y="62" font-size="48" text-anchor="middle" fill="white" font-family="Arial">C</text>
-    </svg>
-  `);
+  if(!faviconLink) return;
+  faviconLink.href = hasUnread ? alertFavicon : defaultFavicon;
 }
 
 function sendTyping(){
   if(!socket || !socket.connected) return;
   const input = document.getElementById('messageInput');
-  if(!input.value.trim()){
-    stopTyping();
-    return;
-  }
-
+  if(!input.value.trim()){ stopTyping(); return; }
   if(!isTyping){
     isTyping = true;
     socket.emit('typing', { room:currentRoom, to:activeDMUser || '' });
   }
-
   clearTimeout(typingTimer);
   typingTimer = setTimeout(stopTyping, 1000);
 }
-
 function stopTyping(){
   if(!isTyping || !socket) return;
   isTyping = false;
+  clearTimeout(typingTimer);
   socket.emit('stopTyping', { room:currentRoom, to:activeDMUser || '' });
 }
 
@@ -703,20 +696,9 @@ document.addEventListener('keydown', e => {
     menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
   }
 });
-
 document.getElementById('messageInput').addEventListener('input', sendTyping);
-document.getElementById('messageInput').addEventListener('keydown', e => {
-  if(e.key === 'Enter'){
-    e.preventDefault();
-    sendMessage();
-  }
-});
-document.getElementById('password').addEventListener('keydown', e => {
-  if(e.key === 'Enter'){
-    e.preventDefault();
-    login();
-  }
-});
+document.getElementById('messageInput').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); sendMessage(); } });
+document.getElementById('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); login(); } });
 window.addEventListener('beforeunload', stopTyping);
 </script>
 </body>

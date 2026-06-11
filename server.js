@@ -10,14 +10,13 @@ const { Server } = require('socket.io');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  maxHttpBufferSize: 6 * 1024 * 1024
+  maxHttpBufferSize: 6 * 1024 * 1024 // Socket.IO payload limit, slightly above 5MB file limit
 });
 
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'chat.db');
+const DB_PATH = path.join(__dirname, 'chat.db');
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'uploads');
+const UPLOAD_DIR = path.join(__dirname, 'uploads');
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 const PUBLIC_ROOMS = new Set(['general', 'gaming', 'coding']);
 
@@ -32,14 +31,14 @@ app.use(express.static(PUBLIC_DIR));
 app.use('/uploads', express.static(UPLOAD_DIR, {
   index: false,
   fallthrough: false,
-  maxAge: '1h'
+  maxAge: '6h'
 }));
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
 });
 
-// ---------------- DATABASE ----------------
+// ---------------- DB ----------------
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +53,8 @@ CREATE TABLE IF NOT EXISTS messages (
   user TEXT NOT NULL,
   text TEXT NOT NULL,
   to_user TEXT,
+  reply_user TEXT,
+  reply_text TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -70,11 +71,13 @@ CREATE TABLE IF NOT EXISTS files (
 );
 `);
 
+// Safe upgrades for older databases.
 function safeAlter(sql) {
   try { db.exec(sql); } catch (_) {}
 }
-
 safeAlter(`ALTER TABLE messages ADD COLUMN to_user TEXT;`);
+safeAlter(`ALTER TABLE messages ADD COLUMN reply_user TEXT;`);
+safeAlter(`ALTER TABLE messages ADD COLUMN reply_text TEXT;`);
 safeAlter(`ALTER TABLE files ADD COLUMN to_user TEXT;`);
 safeAlter(`ALTER TABLE files ADD COLUMN file_url TEXT;`);
 safeAlter(`ALTER TABLE files ADD COLUMN file_size INTEGER;`);
@@ -82,16 +85,12 @@ safeAlter(`ALTER TABLE files ADD COLUMN file_size INTEGER;`);
 const createUser = db.prepare(`INSERT INTO users (username, password_hash) VALUES (?, ?)`);
 const getUser = db.prepare(`SELECT * FROM users WHERE username = ?`);
 const insertMessage = db.prepare(`
-  INSERT INTO messages (room, user, text, to_user)
-  VALUES (?, ?, ?, ?)
+  INSERT INTO messages (room, user, text, to_user, reply_user, reply_text)
+  VALUES (?, ?, ?, ?, ?, ?)
 `);
-const getMessageById = db.prepare(`
-  SELECT id, room, user, text, to_user, created_at
-  FROM messages
-  WHERE id = ?
-`);
+const getMessageById = db.prepare(`SELECT * FROM messages WHERE id = ?`);
 const getMessages = db.prepare(`
-  SELECT id, room, user, text, to_user, created_at
+  SELECT id, room, user, text, to_user, reply_user, reply_text, created_at
   FROM messages
   WHERE room = ?
   ORDER BY id ASC
@@ -101,11 +100,7 @@ const insertFile = db.prepare(`
   INSERT INTO files (room, user, to_user, file_name, file_type, file_url, file_size)
   VALUES (?, ?, ?, ?, ?, ?, ?)
 `);
-const getFileById = db.prepare(`
-  SELECT id, room, user, to_user, file_name, file_type, file_url, file_size, created_at
-  FROM files
-  WHERE id = ?
-`);
+const getFileById = db.prepare(`SELECT * FROM files WHERE id = ?`);
 const getFiles = db.prepare(`
   SELECT id, room, user, to_user, file_name, file_type, file_url, file_size, created_at
   FROM files
@@ -114,8 +109,8 @@ const getFiles = db.prepare(`
   LIMIT 50
 `);
 
-// ---------------- AUTH / USERS ----------------
-// Simple in-memory login tokens. Users need to log in again after a server restart.
+// ---------------- AUTH ----------------
+// Simple in-memory tokens. Users need to log in again after server restart.
 const tokens = new Map(); // token -> username
 const onlineUsers = new Map(); // username -> Set(socketId)
 const socketToUser = new Map(); // socketId -> username
@@ -134,13 +129,10 @@ function createToken(username) {
   return token;
 }
 
-function getBearerToken(req) {
-  const header = req.headers.authorization || '';
-  return header.startsWith('Bearer ') ? header.slice(7) : '';
-}
-
 function authFromRequest(req) {
-  return tokens.get(getBearerToken(req)) || null;
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  return tokens.get(token) || null;
 }
 
 function requireAuth(req, res, next) {
@@ -150,22 +142,27 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function makeDMRoom(a, b) {
-  return 'dm:' + [a, b].sort().join(':');
-}
-
-function parseDMRoom(room) {
-  if (!room || !room.startsWith('dm:')) return null;
-  const users = room.split(':').slice(1);
-  if (users.length !== 2 || !users[0] || !users[1]) return null;
-  return users;
-}
-
 function isAllowedRoom(username, room) {
   if (!username || !room) return false;
   if (PUBLIC_ROOMS.has(room)) return true;
-  const users = parseDMRoom(room);
-  return Array.isArray(users) && users.includes(username);
+
+  if (room.startsWith('dm:')) {
+    const users = room.split(':').slice(1);
+    return users.length === 2 && users.includes(username);
+  }
+
+  return false;
+}
+
+function getDMOtherUser(username, room) {
+  if (!room || !room.startsWith('dm:')) return null;
+  const users = room.split(':').slice(1);
+  if (users.length !== 2 || !users.includes(username)) return null;
+  return users.find(u => u !== username) || null;
+}
+
+function makeDMRoom(a, b) {
+  return 'dm:' + [a, b].sort().join(':');
 }
 
 function addOnlineUser(username, socketId) {
@@ -205,6 +202,10 @@ function normaliseMessage(row) {
     text: row.text,
     to: row.to_user || '',
     dmTo: row.to_user || '',
+    replyTo: row.reply_user || row.reply_text ? {
+      user: row.reply_user || '',
+      text: row.reply_text || ''
+    } : null,
     createdAt: row.created_at
   };
 }
@@ -228,34 +229,34 @@ function removeOldFiles() {
   const oldFiles = db.prepare(`
     SELECT id, file_url
     FROM files
-    WHERE created_at <= datetime('now', '-1 hour')
+    WHERE created_at <= datetime('now', '-6 hours')
   `).all();
 
   for (const file of oldFiles) {
     if (!file.file_url) continue;
-    const filePath = path.resolve(__dirname, file.file_url.replace(/^\//, ''));
-    if (filePath.startsWith(path.resolve(UPLOAD_DIR))) {
+    const filePath = path.join(__dirname, file.file_url.replace(/^\//, ''));
+    if (filePath.startsWith(UPLOAD_DIR)) {
       try { fs.unlinkSync(filePath); } catch (_) {}
     }
   }
 
-  db.prepare(`DELETE FROM files WHERE created_at <= datetime('now', '-1 hour')`).run();
+  db.prepare(`DELETE FROM files WHERE created_at <= datetime('now', '-6 hours')`).run();
 }
 setInterval(removeOldFiles, 60 * 1000);
+removeOldFiles();
 
 function saveDataUrlFile(dataUrl, originalName, fileType) {
   const match = /^data:([^;]*);base64,(.+)$/i.exec(String(dataUrl || ''));
   if (!match) throw new Error('invalid file data');
 
   const mime = match[1] || fileType || 'application/octet-stream';
-  const buffer = Buffer.from(match[2], 'base64');
+  const base64 = match[2];
+  const buffer = Buffer.from(base64, 'base64');
 
   if (!buffer.length) throw new Error('empty file');
-  if (buffer.length > MAX_FILE_BYTES) throw new Error('file too large. Maximum is 5MB.');
+  if (buffer.length > MAX_FILE_BYTES) throw new Error('file too large');
 
-  const safeName = path.basename(String(originalName || 'file'))
-    .replace(/[^a-zA-Z0-9._-]/g, '_')
-    .slice(0, 120) || 'file';
+  const safeName = path.basename(String(originalName || 'file')).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'file';
   const ext = path.extname(safeName);
   const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
   const fullPath = path.join(UPLOAD_DIR, storedName);
@@ -286,7 +287,7 @@ app.post('/register', (req, res) => {
     createUser.run(username, hash);
     const token = createToken(username);
     res.status(201).json({ message: 'ok', username, token });
-  } catch (_) {
+  } catch (err) {
     res.status(409).json({ error: 'user exists' });
   }
 });
@@ -308,7 +309,8 @@ app.post('/login', (req, res) => {
 });
 
 app.post('/logout', requireAuth, (req, res) => {
-  const token = getBearerToken(req);
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (token) tokens.delete(token);
   res.json({ message: 'ok' });
 });
@@ -365,7 +367,16 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const result = insertMessage.run(room, socket.username, text, null);
+    const replyTo = data.replyTo || null;
+    const result = insertMessage.run(
+      room,
+      socket.username,
+      text,
+      null,
+      replyTo && replyTo.user ? String(replyTo.user).slice(0, 30) : null,
+      replyTo && replyTo.text ? String(replyTo.text).slice(0, 500) : null
+    );
+
     const msg = normaliseMessage(getMessageById.get(result.lastInsertRowid));
     io.to(room).emit('message', msg);
     if (typeof ack === 'function') ack({ message: 'ok' });
@@ -390,12 +401,19 @@ io.on('connection', (socket) => {
     }
 
     const room = makeDMRoom(socket.username, to);
-    const result = insertMessage.run(room, socket.username, text, to);
-    const msg = normaliseMessage(getMessageById.get(result.lastInsertRowid));
+    const replyTo = data.replyTo || null;
+    const result = insertMessage.run(
+      room,
+      socket.username,
+      text,
+      to,
+      replyTo && replyTo.user ? String(replyTo.user).slice(0, 30) : null,
+      replyTo && replyTo.text ? String(replyTo.text).slice(0, 500) : null
+    );
 
-    socket.join(room);
-    sendToUser(to, 'dmMessage', msg);
+    const msg = normaliseMessage(getMessageById.get(result.lastInsertRowid));
     socket.emit('dmMessage', msg);
+    sendToUser(to, 'dmMessage', msg);
     if (typeof ack === 'function') ack({ message: 'ok' });
   });
 
@@ -431,10 +449,8 @@ io.on('connection', (socket) => {
       const saved = saveDataUrlFile(data.fileData, data.fileName, data.fileType);
       const result = insertFile.run(room, socket.username, to, saved.fileName, saved.fileType, saved.fileUrl, saved.fileSize);
       const fileMsg = normaliseFile(getFileById.get(result.lastInsertRowid));
-
-      socket.join(room);
-      sendToUser(to, 'dmFile', fileMsg);
       socket.emit('dmFile', fileMsg);
+      sendToUser(to, 'dmFile', fileMsg);
       if (typeof ack === 'function') ack({ message: 'ok' });
     } catch (err) {
       if (typeof ack === 'function') ack({ error: err.message });
@@ -471,6 +487,6 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Server running on ${HOST}:${PORT}`);
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });

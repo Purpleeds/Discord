@@ -4,92 +4,76 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Google</title>
-
 <link rel="icon" type="image/png" href="/google.png">
-  
 <style>
-
 *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
 body{height:100vh;background:#313338;color:white;overflow:hidden;}
-#loginScreen{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:350px;max-width:calc(100vw - 30px);background:#232428;padding:25px;border-radius:12px;}
+#loginScreen{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:350px;max-width:calc(100vw - 30px);background:#232428;padding:25px;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.35);}
 #loginScreen h2{margin-bottom:15px;}
-input{width:100%;padding:12px;margin-bottom:10px;background:#1e1f22;border:none;color:white;border-radius:6px;outline:none;}
-button{padding:10px;border:none;cursor:pointer;border-radius:6px;}
+input,textarea,select{width:100%;padding:12px;margin-bottom:10px;background:#1e1f22;border:1px solid transparent;color:white;border-radius:8px;outline:none;}
+textarea{resize:vertical;min-height:72px;}
+input:focus,textarea:focus{border-color:#5865F2;}
+button{padding:10px;border:none;cursor:pointer;border-radius:8px;}
 button:disabled{opacity:.55;cursor:not-allowed;}
 .loginBtn{width:100%;background:#5865F2;color:white;margin-bottom:8px;}
 .registerBtn{width:100%;background:#3BA55C;color:white;}
 #status{margin-top:10px;color:#ccc;min-height:20px;}
 #app{display:none;height:100vh;}
-#servers{width:72px;background:#1e1f22;padding:10px;}
-.server{width:48px;height:48px;background:#5865F2;border-radius:50%;margin-bottom:10px;}
-#channels{width:250px;background:#2b2d31;padding:10px;overflow-y:auto;}
-.sectionTitle{font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:#949ba4;margin:16px 0 6px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:bold;}
-.channel{position:relative;padding:8px 10px 8px 14px;cursor:pointer;border-radius:6px;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center;gap:8px;color:#b5bac1;background:transparent;}
-.channel:hover{color:#fff;background:rgba(255,255,255,.04);}
-.channel.active{color:#fff;background:transparent;font-weight:bold;}
-.channel.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:10px;background:#fff;}
+#servers{width:72px;background:#1e1f22;padding:10px;display:flex;flex-direction:column;align-items:center;gap:10px;}
+.server{width:48px;height:48px;background:#5865F2;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;}
+#channels{width:260px;background:#2b2d31;padding:10px;overflow-y:auto;}
+.sectionTitle{font-size:12px;font-weight:bold;text-transform:uppercase;color:#949ba4;margin:16px 8px 6px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.channel{padding:8px 10px;cursor:pointer;border-radius:6px;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center;gap:8px;color:#c7cbd1;background:transparent;}
+.channel:hover{background:rgba(255,255,255,.06);color:#fff;}
+.channel.active{background:rgba(88,101,242,.18);color:white;border-left:3px solid #5865F2;padding-left:7px;}
 .channelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.badge,.dmBadge,.groupBadge{background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
-#chat{flex:1;display:flex;flex-direction:column;min-width:0;background:#313338;}
-#chatHeader{height:44px;background:#383a40;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid #24262b;}
+.badge,.dmBadge,.groupBadge{background:#f23f43;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
+#chat{flex:1;display:flex;flex-direction:column;min-width:0;}
+#chatHeader{height:48px;background:#383a40;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid #24262b;gap:12px;}
 #roomTitle{font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-#messages{flex:1;overflow-y:auto;padding:14px 10px 20px 10px;scrollbar-width:thin;scrollbar-color:#2b2d31 transparent;}
-#messages::-webkit-scrollbar{width:8px;}
-#messages::-webkit-scrollbar-track{background:transparent;}
-#messages::-webkit-scrollbar-thumb{background:#2b2d31;border-radius:6px;}
-.message{margin-bottom:2px;padding:6px 12px;background:transparent;border-radius:8px;max-width:100%;word-wrap:break-word;display:flex;align-items:flex-start;gap:12px;}
-.message:hover{background:rgba(255,255,255,.025);}
-.messageContent{min-width:0;flex:1;}
-.messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;}
-.messageText{white-space:pre-wrap;color:#dbdee1;line-height:1.36;}
+#headerActions{display:flex;align-items:center;gap:8px;}
+#messages{flex:1;overflow-y:auto;padding:16px 20px;scrollbar-width:thin;scrollbar-color:#2b2d31 transparent;}
+#messages::-webkit-scrollbar{width:8px;}#messages::-webkit-scrollbar-track{background:transparent;}#messages::-webkit-scrollbar-thumb{background:#2b2d31;border-radius:6px;}
+.message{display:flex;gap:12px;margin:2px -8px 4px;padding:8px;border-radius:8px;max-width:100%;word-wrap:break-word;background:transparent;}
+.message:hover{background:rgba(255,255,255,.035);}
+.msgAvatar,.avatar{width:36px;height:36px;border-radius:50%;background:#5865F2;display:inline-flex;align-items:center;justify-content:center;font-weight:bold;color:white;flex:0 0 auto;overflow:hidden;}
+.avatar.small{width:28px;height:28px;font-size:12px;}
+.avatar.tiny{width:18px;height:18px;font-size:9px;border:2px solid #313338;}
+.msgAvatar img,.avatar img{width:100%;height:100%;object-fit:cover;display:block;}
+.msgMain{min-width:0;flex:1;}
+.messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:2px;}
+.messageHeader b{cursor:pointer;}
+.messageText{white-space:pre-wrap;line-height:1.35;}
 .timeText{font-size:11px;color:#949ba4;}
-.dmTag,.groupTag{color:white;font-size:11px;padding:2px 6px;border-radius:999px;}
-.dmTag{background:#f23f43;}.groupTag{background:#3BA55C;}
-.avatar{width:34px;height:34px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:white;font-weight:bold;flex:0 0 auto;background:#5865F2;overflow:hidden;user-select:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);}
-.avatar img{width:100%;height:100%;object-fit:cover;display:block;}
-.avatar.memberAvatar{width:28px;height:28px;font-size:13px;}
-.avatar.settingsAvatar{width:72px;height:72px;font-size:28px;}
-.miniBtn{padding:6px 8px;background:#404249;color:white;font-size:12px;border-radius:6px;}
+.editedText{font-size:11px;color:#949ba4;}
+.dmTag,.groupTag{color:white;font-size:11px;padding:2px 6px;border-radius:999px;}.dmTag{background:#f23f43;}.groupTag{background:#3BA55C;}
+.messageTools{display:none;margin-top:6px;gap:6px;flex-wrap:wrap;}
+.message:hover .messageTools{display:flex;}
+.reactions{display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;}
+.reactBtn,.reactionPill{background:#404249;color:white;border-radius:999px;padding:4px 7px;font-size:12px;}
+.reactionPill.active{background:#5865F2;}
+.miniBtn{padding:6px 8px;background:#404249;color:white;font-size:12px;border-radius:7px;}
 .miniBtn:hover{background:#4f535c;}
-.primaryMiniBtn{padding:6px 8px;background:#5865F2;color:white;font-size:12px;border-radius:6px;}
+.primaryMiniBtn{padding:6px 8px;background:#5865F2;color:white;font-size:12px;border-radius:7px;}
+.dangerMiniBtn{padding:6px 8px;background:#da373c;color:white;font-size:12px;border-radius:7px;}
 #typingIndicator{min-height:22px;padding:0 20px 8px 20px;color:#b5bac1;font-size:13px;}
 #inputArea{display:flex;padding:10px;background:#383a40;gap:8px;}
-#fileInput{display:none;}
-#uploadBarContainer{width:100%;height:6px;background:#2b2d31;overflow:hidden;}
-#uploadBar{height:100%;width:0%;background:#5865F2;transition:width .2s;}
-#messageInput{flex:1;margin-bottom:0;}
-#users{width:240px;background:#232428;padding:10px;overflow-y:auto;}
+#fileInput{display:none;}#messageInput{flex:1;margin-bottom:0;}
+#uploadBarContainer{width:100%;height:6px;background:#2b2d31;overflow:hidden;}#uploadBar{height:100%;width:0%;background:#5865F2;transition:width .2s;}
+#uploadStatus{display:none;background:#232428;border-top:1px solid #1e1f22;padding:8px 12px;color:#b5bac1;font-size:13px;align-items:center;gap:10px;}
+#users{width:260px;background:#232428;padding:10px;overflow-y:auto;}
 #memberHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-#memberList{margin-top:10px;display:flex;flex-direction:column;gap:4px;}
-.userItem{display:flex;justify-content:space-between;align-items:center;padding:7px 8px;background:transparent;border-radius:6px;cursor:pointer;color:#b5bac1;gap:8px;}
-.userItem:hover{background:#404249;color:#fff;}
-.userItem.active{background:#5865F2;color:#fff;}
-.userInfo{display:flex;align-items:center;gap:8px;min-width:0;}
-.userName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.userControls{display:flex;align-items:center;gap:6px;}
-#contextMenu{position:fixed;display:none;background:#1e1f22;border:1px solid #5865F2;border-radius:8px;padding:6px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.35);}
-.contextItem{padding:8px 12px;border-radius:6px;cursor:pointer;white-space:nowrap;}
-.contextItem:hover{background:#404249;}
-#debugMenu{position:fixed;top:60px;right:20px;background:#1e1f22;padding:15px;border:2px solid #5865F2;border-radius:10px;display:none;z-index:9999;}
-#debugMenu button{width:100%;margin-top:5px;}
-.fileBox{margin-top:8px;padding:8px 10px;background:#1e1f22;border-radius:6px;}
-.fileBox img{max-width:220px;max-height:220px;border-radius:6px;display:block;margin-top:6px;object-fit:contain;}
-.fileLink{color:#7aa2ff;text-decoration:none;display:inline-block;margin-top:6px;}
-.errorLine{color:#ffb4b4;font-size:13px;padding:0 10px 8px 10px;}
-.settingsPanel{max-width:620px;margin:10px auto;padding:20px;background:#2b2d31;border-radius:12px;border:1px solid rgba(255,255,255,.08);}
-.settingsPanel h2{margin-bottom:8px;}
-.settingsPanel p{color:#b5bac1;margin-bottom:16px;line-height:1.4;}
-.settingsProfile{display:flex;gap:14px;align-items:center;margin-bottom:16px;}
-.settingsRow{margin:14px 0;}
-.settingsRow label{display:block;color:#b5bac1;font-size:13px;margin-bottom:6px;}
-.settingsRow input{margin-bottom:0;}
-.settingsActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}
-#settingsMessage{color:#b5bac1;font-size:13px;margin-top:10px;min-height:18px;}
-@media (max-width:850px){#servers{display:none;}#channels{width:170px;}#users{display:none;}#loginScreen{width:330px;}.message{padding:6px 8px;}.avatar{width:30px;height:30px;}}
-
+#memberList,.friendList{margin-top:10px;display:flex;flex-direction:column;gap:6px;}
+.userItem{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:transparent;border-radius:8px;cursor:pointer;gap:8px;}
+.userItem:hover{background:#404249;}.userItem.active{background:#5865F2;}
+.userLeft{display:flex;align-items:center;gap:8px;min-width:0;}.userName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}.userControls{display:flex;align-items:center;gap:6px;}
+#contextMenu{position:fixed;display:none;background:#1e1f22;border:1px solid #5865F2;border-radius:8px;padding:6px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.35);}.contextItem{padding:8px 12px;border-radius:6px;cursor:pointer;white-space:nowrap;}.contextItem:hover{background:#404249;}
+.fileBox{margin-top:8px;padding:8px 10px;background:#1e1f22;border-radius:6px;}.fileBox img{max-width:240px;max-height:240px;border-radius:6px;display:block;margin-top:6px;object-fit:contain;}.fileLink{color:#7aa2ff;text-decoration:none;display:inline-block;margin-top:6px;}
+.errorLine{color:#ffb4b4;font-size:13px;padding:0 10px 8px 10px;}.noticeLine{color:#b5bac1;font-size:13px;padding:8px 10px;}
+.settingsPanel{max-width:760px;margin:0 auto;padding:12px;}.settingsCard{background:#2b2d31;border:1px solid #1e1f22;border-radius:12px;padding:16px;margin-bottom:14px;}.settingsCard h3{margin-bottom:10px;}.settingsRow{display:flex;gap:8px;align-items:center;margin-bottom:8px;}.settingsRow input{margin-bottom:0;}.muted{color:#949ba4;font-size:13px;}.adminCard{border-color:#f23f43;}.seenBy{display:flex;align-items:center;gap:4px;margin-top:4px;color:#949ba4;font-size:11px;}.seenBy span{margin-right:4px;}
+@media (max-width:900px){#servers{display:none;}#channels{width:170px;}#users{display:none;}#loginScreen{width:330px;}.settingsRow{flex-direction:column;align-items:stretch;}}
 </style>
 </head>
-
 <body>
 <div id="loginScreen">
   <h2>Chat Platform</h2>
@@ -101,787 +85,111 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 </div>
 
 <div id="app">
-  <div id="servers"><div class="server"></div><div class="server"></div><div class="server"></div></div>
-
+  <div id="servers"><div class="server">G</div></div>
   <div id="channels">
     <div class="sectionTitle"><span>Channels</span></div>
-    <div class="channel active" data-room="general" onclick="joinRoom('general')"><span class="channelName"># general</span><span class="badge" id="badge-general"></span></div>
-    <div class="channel" data-room="gaming" onclick="joinRoom('gaming')"><span class="channelName"># gaming</span><span class="badge" id="badge-gaming"></span></div>
-    <div class="channel" data-room="coding" onclick="joinRoom('coding')"><span class="channelName"># coding</span><span class="badge" id="badge-coding"></span></div>
-
+    <div id="channelList"></div>
     <div class="sectionTitle"><span>Group Chats</span></div>
     <div id="groupList"></div>
-
-    <div class="sectionTitle"><span>Settings</span></div>
-    <div class="channel" data-room="__settings" onclick="openSettings()"><span class="channelName">⚙ Settings</span></div>
+    <div class="sectionTitle"><span>Account</span></div>
+    <div class="channel" data-room="settings" onclick="openSettings()"><span class="channelName">⚙ Settings</span></div>
   </div>
-
   <div id="chat">
-    <div id="chatHeader"><div id="roomTitle"># general</div><button class="miniBtn" onclick="logout()">Logout</button></div>
+    <div id="chatHeader"><div id="roomTitle"># general</div><div id="headerActions"><button class="miniBtn" onclick="logout()">Logout</button></div></div>
     <div id="messages"></div>
     <div id="typingIndicator"></div>
-    <div id="inputArea">
-      <input type="file" id="fileInput">
-      <button onclick="document.getElementById('fileInput').click()"> + </button>
-      <input id="messageInput" placeholder="Message" maxlength="4000">
-      <button onclick="sendMessage()">Send</button>
-    </div>
+    <div id="inputArea"><input type="file" id="fileInput"><button onclick="document.getElementById('fileInput').click()"> + </button><input id="messageInput" placeholder="Message" maxlength="4000"><button onclick="sendMessage()">Send</button></div>
+    <div id="uploadStatus"><span id="uploadInfo"></span><button class="dangerMiniBtn" onclick="cancelUpload()">Cancel</button></div>
     <div id="uploadBarContainer"><div id="uploadBar"></div></div>
   </div>
-
-  <div id="users">
-    <div id="memberHeader"><h3>Members</h3><button class="primaryMiniBtn" onclick="createGroupChat()">+ Group</button></div>
-    <div id="memberList"></div>
-  </div>
+  <div id="users"><div id="memberHeader"><h3>Members</h3><button class="primaryMiniBtn" onclick="createGroupChat()">+ Group</button></div><div id="memberList"></div></div>
 </div>
 
-<div id="contextMenu"><div class="contextItem" id="contextDmItem">Message</div></div>
-
-<div id="debugMenu">
-  <h3>Debug Menu</h3>
-  <button onclick="location.reload()">Reload</button>
-  <button onclick="console.clear()">Clear Console</button>
-  <button onclick="alert(socket && socket.id ? socket.id : 'Not connected')">Socket ID</button>
-</div>
-
+<div id="contextMenu"><div class="contextItem" id="contextDmItem">Message</div><div class="contextItem" id="contextFriendItem">Add Friend</div><div class="contextItem" id="contextBlockItem">Block</div></div>
 <script src="/socket.io/socket.io.js"></script>
 <script>
-let socket = null;
-let currentRoom = 'general';
-let username = '';
-let token = '';
-let isFocused = true;
-let unreadChannels = { general:0, gaming:0, coding:0 };
-let unreadDMs = {};
-let unreadGroups = {};
-let groups = [];
-let groupByRoom = {};
-let onlineUserList = [];
-let typingTimer = null;
-let isTyping = false;
-let activeDMUser = '';
-let currentGroupRoom = '';
-let selectedContextUser = '';
-let tabAlertTimer = null;
-let tabAlertState = false;
-let customAvatarUrl = localStorage.getItem('chatAvatarUrl') || '';
-const avatarPalette = ['#5865F2','#3BA55C','#F23F43','#FAA61A','#EB459E','#57F287','#FEE75C','#ED4245','#7289DA','#2D7D9A'];
-const defaultTitle = document.title;
-const faviconLink = document.querySelector("link[rel='icon']");
-const defaultFavicon = faviconLink ? faviconLink.getAttribute('href') : '';
-const alertFavicon = 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="#f23f43"/><text x="50" y="63" font-size="58" text-anchor="middle" fill="white" font-family="Arial">!</text></svg>`);
-
-window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); });
-window.addEventListener('blur', () => { isFocused = false; });
-document.addEventListener('click', hideContextMenu);
-window.addEventListener('resize', hideContextMenu);
-
-function setStatus(text){ document.getElementById('status').innerText = text || ''; }
-function authHeaders(){ return { 'Content-Type':'application/json', 'Authorization':'Bearer ' + token }; }
-function roomNameForDM(a,b){ return 'dm:' + [a,b].sort().join(':'); }
-function notifyTab(label){ if(!isFocused) startTabAlert(label || 'NEW MESSAGE'); }
-
-async function registerUser(){
-  username = document.getElementById('username').value.trim();
-  const password = document.getElementById('password').value;
-  setStatus('Creating account...');
-  try{
-    const response = await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'register failed');
-    completeLogin(data.username,data.token);
-  }catch(err){ setStatus(err.message); }
-}
-
-async function login(){
-  username = document.getElementById('username').value.trim();
-  const password = document.getElementById('password').value;
-  setStatus('Logging in...');
-  try{
-    const response = await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'login failed');
-    completeLogin(data.username,data.token);
-  }catch(err){ setStatus(err.message); }
-}
-
-function completeLogin(returnedUsername, returnedToken){
-  username = returnedUsername;
-  token = returnedToken;
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('app').style.display = 'flex';
-  connectSocket();
-}
-
-async function logout(){
-  try{ if(token) await fetch('/logout',{method:'POST',headers:authHeaders(),body:'{}'}); }catch(e){}
-  if(socket) socket.disconnect();
-  token=''; username=''; activeDMUser=''; currentGroupRoom=''; currentRoom='general'; groups=[]; groupByRoom={};
-  stopTabAlert();
-  document.getElementById('messages').innerHTML='';
-  document.getElementById('app').style.display='none';
-  document.getElementById('loginScreen').style.display='block';
-  setStatus('Logged out');
-}
-
-function connectSocket(){
-  socket = io({ auth:{ token } });
-
-  socket.on('connect', async () => {
-    await loadGroups();
-    joinRoom('general');
-  });
-  socket.on('connect_error', err => setStatus(err.message || 'socket connection failed'));
-  socket.on('users', users => renderUsers(users));
-  socket.on('groupsChanged', async () => { await loadGroups(); });
-
-  socket.on('message', msg => {
-    if(msg.room === currentRoom && !activeDMUser){
-      addMessage(msg);
-    }else if(isGroupRoom(msg.room)){
-      unreadGroups[msg.room] = (unreadGroups[msg.room] || 0) + 1;
-      updateGroupBadges();
-      notifyTab('@ ' + (groupByRoom[msg.room]?.name || 'group'));
-    }else if(unreadChannels[msg.room] !== undefined){
-      unreadChannels[msg.room] += 1;
-      updateChannelBadges();
-      notifyTab('# ' + msg.room);
-    }
-  });
-
-  socket.on('dmMessage', msg => {
-    const otherUser = msg.user === username ? msg.to : msg.user;
-    if(activeDMUser && otherUser === activeDMUser){
-      addMessage(msg);
-    }else{
-      unreadDMs[otherUser] = (unreadDMs[otherUser] || 0) + 1;
-      updateDMBadges();
-      notifyTab('@ ' + otherUser);
-    }
-  });
-
-  socket.on('file', msg => {
-    if(msg.room === currentRoom && !activeDMUser){
-      addFileMessage(msg);
-    }else if(isGroupRoom(msg.room)){
-      unreadGroups[msg.room] = (unreadGroups[msg.room] || 0) + 1;
-      updateGroupBadges();
-      notifyTab('@ ' + (groupByRoom[msg.room]?.name || 'group'));
-    }else if(unreadChannels[msg.room] !== undefined){
-      unreadChannels[msg.room] += 1;
-      updateChannelBadges();
-      notifyTab('# ' + msg.room);
-    }
-  });
-
-  socket.on('dmFile', msg => {
-    const otherUser = msg.user === username ? msg.to : msg.user;
-    if(activeDMUser && otherUser === activeDMUser){
-      addFileMessage(msg);
-    }else{
-      unreadDMs[otherUser] = (unreadDMs[otherUser] || 0) + 1;
-      updateDMBadges();
-      notifyTab('@ ' + otherUser);
-    }
-  });
-
-  socket.on('typing', data => {
-    if(data.user === username) return;
-    const sameRoom = data.room && data.room === currentRoom && !activeDMUser;
-    const sameDM = activeDMUser && data.user === activeDMUser;
-    if(sameRoom || sameDM) document.getElementById('typingIndicator').innerText = data.user + ' is typing...';
-  });
-
-  socket.on('stopTyping', data => {
-    if(data.user === username) return;
-    const sameRoom = data.room && data.room === currentRoom && !activeDMUser;
-    const sameDM = activeDMUser && data.user === activeDMUser;
-    if(sameRoom || sameDM) document.getElementById('typingIndicator').innerText = '';
-  });
-}
-
-function isGroupRoom(room){ return /^group:\d+$/.test(String(room || '')); }
-function groupLabel(room){ return groupByRoom[room] ? groupByRoom[room].name : room; }
-
-async function loadGroups(){
-  if(!token) return;
-  try{
-    const response = await fetch('/groups',{headers:{'Authorization':'Bearer ' + token}});
-    if(!response.ok) return;
-    groups = await response.json();
-    groupByRoom = {};
-    groups.forEach(g => groupByRoom[g.room] = g);
-    renderGroups();
-  }catch(e){}
-}
-
-function renderGroups(){
-  const list = document.getElementById('groupList');
-  list.innerHTML = '';
-  if(!groups.length){
-    const empty = document.createElement('div');
-    empty.style.color = '#949ba4';
-    empty.style.fontSize = '13px';
-    empty.style.padding = '8px 10px';
-    empty.textContent = 'No groups yet';
-    list.appendChild(empty);
-    return;
-  }
-
-  groups.forEach(group => {
-    const item = document.createElement('div');
-    item.className = 'channel';
-    item.dataset.room = group.room;
-    item.onclick = () => openGroup(group.room);
-
-    const name = document.createElement('span');
-    name.className = 'channelName';
-    name.textContent = '@ ' + group.name;
-
-    const badge = document.createElement('span');
-    badge.className = 'groupBadge';
-    badge.id = 'group-badge-' + group.room.replace(':','-');
-
-    item.appendChild(name);
-    item.appendChild(badge);
-    list.appendChild(item);
-  });
-  updateGroupBadges();
-  highlightActiveRoom();
-}
-
-async function createGroupChat(){
-  if(!token) return;
-  const name = prompt('Group chat name:');
-  if(!name) return;
-
-  const examples = onlineUserList.filter(u => u !== username).join(', ');
-  const memberText = prompt('Add usernames separated by commas. Example: ' + (examples || 'Alex, Taylor'));
-  if(!memberText) return;
-
-  const members = memberText.split(',').map(x => x.trim()).filter(Boolean);
-  try{
-    const response = await fetch('/groups',{
-      method:'POST',
-      headers:authHeaders(),
-      body:JSON.stringify({ name, members })
-    });
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'could not create group');
-    await loadGroups();
-    openGroup(data.room);
-  }catch(err){ showError(err.message); }
-}
-
-function joinRoom(room){
-  if(!socket || !socket.connected) return;
-  currentRoom = room; activeDMUser = ''; currentGroupRoom = '';
-  clearChat('# ' + room);
-  socket.emit('joinRoom', room, result => {
-    if(result && result.error){ showError(result.error); return; }
-    unreadChannels[room] = 0;
-    updateChannelBadges();
-    loadHistory(room);
-  });
-}
-
-function openGroup(room){
-  if(!socket || !socket.connected || !room) return;
-  currentRoom = room; activeDMUser = ''; currentGroupRoom = room;
-  clearChat('@ ' + groupLabel(room));
-  socket.emit('joinRoom', room, result => {
-    if(result && result.error){ showError(result.error); return; }
-    unreadGroups[room] = 0;
-    updateGroupBadges();
-    loadHistory(room);
-  });
-}
-
-function openDM(user){
-  if(!socket || !socket.connected || !user) return;
-  activeDMUser = user; currentGroupRoom = ''; currentRoom = roomNameForDM(username,user);
-  clearChat('@ ' + user);
-  highlightActiveUser(user);
-  unreadDMs[user] = 0;
-  updateDMBadges();
-  socket.emit('joinRoom', currentRoom, result => {
-    if(result && result.error){ showError(result.error); return; }
-    loadHistory(currentRoom);
-  });
-}
-
-function clearChat(title){
-  stopTyping();
-  document.getElementById('messages').innerHTML = '';
-  document.getElementById('typingIndicator').innerText = '';
-  document.getElementById('roomTitle').innerText = title;
-  setInputVisible(true);
-  highlightActiveRoom();
-  if(!activeDMUser) highlightActiveUser('');
-}
-
-function highlightActiveRoom(){
-  document.querySelectorAll('.channel').forEach(el => el.classList.toggle('active', el.dataset.room === currentRoom));
-}
-
-
-function setInputVisible(show){
-  document.getElementById('inputArea').style.display = show ? 'flex' : 'none';
-  document.getElementById('uploadBarContainer').style.display = show ? 'block' : 'none';
-}
-
-function hashString(text){
-  let hash = 0;
-  for(let i = 0; i < String(text || '').length; i++){
-    hash = ((hash << 5) - hash) + String(text).charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
-
-function avatarColour(user){
-  return avatarPalette[hashString(user) % avatarPalette.length];
-}
-
-function userInitial(user){
-  const clean = String(user || '?').trim();
-  return clean ? clean.charAt(0).toUpperCase() : '?';
-}
-
-function getAvatarUrl(user){
-  if(user === username && customAvatarUrl) return customAvatarUrl;
-  return '';
-}
-
-function createAvatar(user, extraClass){
-  const avatar = document.createElement('div');
-  avatar.className = 'avatar' + (extraClass ? ' ' + extraClass : '');
-  avatar.style.background = avatarColour(user);
-  const avatarUrl = getAvatarUrl(user);
-  if(avatarUrl){
-    const img = document.createElement('img');
-    img.src = avatarUrl;
-    img.alt = (user || 'user') + ' avatar';
-    img.onerror = () => {
-      avatar.innerHTML = '';
-      avatar.textContent = userInitial(user);
-    };
-    avatar.appendChild(img);
-  }else{
-    avatar.textContent = userInitial(user);
-  }
-  return avatar;
-}
-
-function openSettings(){
-  currentRoom = '__settings';
-  activeDMUser = '';
-  currentGroupRoom = '';
-  stopTyping();
-  setInputVisible(false);
-  document.getElementById('typingIndicator').innerText = '';
-  document.getElementById('roomTitle').innerText = '⚙ Settings';
-  highlightActiveRoom();
-  highlightActiveUser('');
-
-  const messages = document.getElementById('messages');
-  messages.innerHTML = '';
-
-  const panel = document.createElement('div');
-  panel.className = 'settingsPanel';
-
-  const profile = document.createElement('div');
-  profile.className = 'settingsProfile';
-  profile.appendChild(createAvatar(username || 'You', 'settingsAvatar'));
-
-  const profileText = document.createElement('div');
-  const title = document.createElement('h2');
-  title.textContent = 'Settings';
-  const desc = document.createElement('p');
-  desc.textContent = 'Your messages now use Discord-style circular avatars. You can set a custom avatar image URL for your own browser, or leave it blank to use the default coloured avatar.';
-  const userLine = document.createElement('div');
-  userLine.innerHTML = '<b>Logged in as:</b> ' + escapeHtml(username || 'unknown');
-  profileText.appendChild(title);
-  profileText.appendChild(desc);
-  profileText.appendChild(userLine);
-  profile.appendChild(profileText);
-  panel.appendChild(profile);
-
-  const row = document.createElement('div');
-  row.className = 'settingsRow';
-  const label = document.createElement('label');
-  label.setAttribute('for','avatarUrlInput');
-  label.textContent = 'Custom avatar image URL';
-  const input = document.createElement('input');
-  input.id = 'avatarUrlInput';
-  input.placeholder = 'https://example.com/avatar.png';
-  input.value = customAvatarUrl;
-  row.appendChild(label);
-  row.appendChild(input);
-  panel.appendChild(row);
-
-  const actions = document.createElement('div');
-  actions.className = 'settingsActions';
-  const save = document.createElement('button');
-  save.className = 'primaryMiniBtn';
-  save.textContent = 'Save Avatar';
-  save.onclick = saveAvatarSetting;
-  const clear = document.createElement('button');
-  clear.className = 'miniBtn';
-  clear.textContent = 'Use Default Avatar';
-  clear.onclick = clearAvatarSetting;
-  actions.appendChild(save);
-  actions.appendChild(clear);
-  panel.appendChild(actions);
-
-  const msg = document.createElement('div');
-  msg.id = 'settingsMessage';
-  panel.appendChild(msg);
-
-  messages.appendChild(panel);
-}
-
-function escapeHtml(text){
-  return String(text || '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[ch]));
-}
-
-function saveAvatarSetting(){
-  const input = document.getElementById('avatarUrlInput');
-  customAvatarUrl = input ? input.value.trim() : '';
-  if(customAvatarUrl){ localStorage.setItem('chatAvatarUrl', customAvatarUrl); }
-  else{ localStorage.removeItem('chatAvatarUrl'); }
-  const msg = document.getElementById('settingsMessage');
-  if(msg) msg.textContent = 'Saved. Your own messages will now use this avatar on this browser.';
-  openSettings();
-}
-
-function clearAvatarSetting(){
-  customAvatarUrl = '';
-  localStorage.removeItem('chatAvatarUrl');
-  openSettings();
-  const msg = document.getElementById('settingsMessage');
-  if(msg) msg.textContent = 'Default avatar restored.';
-}
-
-async function loadHistory(room){
-  try{
-    const [messagesRes, filesRes] = await Promise.all([
-      fetch('/messages?room=' + encodeURIComponent(room), { headers:{ 'Authorization':'Bearer ' + token } }),
-      fetch('/files?room=' + encodeURIComponent(room), { headers:{ 'Authorization':'Bearer ' + token } })
-    ]);
-    if(!messagesRes.ok) throw new Error('Could not load messages');
-    const messages = await messagesRes.json();
-    const files = filesRes.ok ? await filesRes.json() : [];
-    const combined = [
-      ...messages.map(item => ({ type:'message', data:item, time:item.createdAt, id:item.id })),
-      ...files.map(item => ({ type:'file', data:item, time:item.createdAt, id:item.id }))
-    ];
-    combined.sort((a,b) => new Date(String(a.time).replace(' ','T') + 'Z') - new Date(String(b.time).replace(' ','T') + 'Z') || a.id - b.id);
-    combined.forEach(item => item.type === 'message' ? addMessage(item.data) : addFileMessage(item.data));
-  }catch(err){ showError(err.message); }
-}
-
-function showError(text){
-  const div = document.createElement('div');
-  div.className = 'errorLine';
-  div.textContent = text;
-  document.getElementById('messages').appendChild(div);
-  scrollMessages();
-}
-
-function addMessage(msg){
-  const div = document.createElement('div');
-  div.className = 'message';
-  div.appendChild(createAvatar(msg.user || 'unknown'));
-
-  const content = document.createElement('div');
-  content.className = 'messageContent';
-
-  const header = document.createElement('div');
-  header.className = 'messageHeader';
-
-  const name = document.createElement('b');
-  name.textContent = msg.user || 'unknown';
-  header.appendChild(name);
-
-  if(msg.dmTo){ const tag = document.createElement('span'); tag.className = 'dmTag'; tag.textContent = 'DM'; header.appendChild(tag); }
-  if(msg.isGroup){ const tag = document.createElement('span'); tag.className = 'groupTag'; tag.textContent = 'GROUP'; header.appendChild(tag); }
-
-  const time = document.createElement('span');
-  time.className = 'timeText';
-  time.textContent = formatTime(msg.createdAt);
-  header.appendChild(time);
-  content.appendChild(header);
-
-  const body = document.createElement('div');
-  body.className = 'messageText';
-  body.textContent = msg.text || '';
-  content.appendChild(body);
-  div.appendChild(content);
-  document.getElementById('messages').appendChild(div);
-  scrollMessages();
-}
-
-function addFileMessage(msg){
-  const div = document.createElement('div');
-  div.className = 'message';
-  div.appendChild(createAvatar(msg.user || 'unknown'));
-
-  const content = document.createElement('div');
-  content.className = 'messageContent';
-
-  const header = document.createElement('div');
-  header.className = 'messageHeader';
-
-  const name = document.createElement('b');
-  name.textContent = msg.user || 'unknown';
-  header.appendChild(name);
-  if(msg.dmTo){ const tag = document.createElement('span'); tag.className = 'dmTag'; tag.textContent = 'DM'; header.appendChild(tag); }
-  if(msg.isGroup){ const tag = document.createElement('span'); tag.className = 'groupTag'; tag.textContent = 'GROUP'; header.appendChild(tag); }
-  header.appendChild(document.createTextNode('📎 file'));
-
-  const time = document.createElement('span');
-  time.className = 'timeText';
-  time.textContent = formatTime(msg.createdAt);
-  header.appendChild(time);
-  content.appendChild(header);
-
-  const box = document.createElement('div');
-  box.className = 'fileBox';
-  if(msg.fileType && msg.fileType.startsWith('image/')){
-    const img = document.createElement('img');
-    img.src = msg.fileUrl;
-    img.alt = msg.fileName || 'image';
-    box.appendChild(img);
-  }
-  const link = document.createElement('a');
-  link.href = msg.fileUrl;
-  link.download = msg.fileName || 'file';
-  link.textContent = 'Download ' + (msg.fileName || 'file');
-  link.className = 'fileLink';
-  box.appendChild(link);
-  content.appendChild(box);
-  div.appendChild(content);
-  document.getElementById('messages').appendChild(div);
-  scrollMessages();
-}
-
-function scrollMessages(){
-  const messages = document.getElementById('messages');
-  messages.scrollTop = messages.scrollHeight;
-}
-
-function formatTime(value){
-  if(!value) return '';
-  const d = new Date(String(value).replace(' ', 'T') + 'Z');
-  if(isNaN(d)) return value;
-  return d.toLocaleTimeString([], { hour:'numeric', minute:'2-digit' }).replace(' ', '').toLowerCase();
-}
-
-function sendMessage(){
-  if(!socket || !socket.connected) return;
-  const input = document.getElementById('messageInput');
-  const text = input.value.trim();
-  if(!text) return;
-
-  if(activeDMUser){
-    socket.emit('dmMessage', { text, to:activeDMUser }, handleAck);
-  }else{
-    socket.emit('message', { text, room:currentRoom }, handleAck);
-  }
-  input.value = '';
-  input.focus();
-  stopTyping();
-  document.getElementById('typingIndicator').innerText = '';
-}
-
-function handleAck(result){ if(result && result.error) showError(result.error); }
-
-const fileInput = document.getElementById('fileInput');
-fileInput.addEventListener('change', async e => {
-  const file = e.target.files[0];
-  if(!file) return;
-  await uploadFile(file);
-  e.target.value = '';
-});
-
-function uploadFile(file){
-  return new Promise(resolve => {
-    const maxFileBytes = 10 * 1024 * 1024 * 1024; // 10GB
-    if(file.size > maxFileBytes){
-      showError('File is too large. Maximum is 10GB.');
-      resolve();
-      return;
-    }
-
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/upload');
-    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
-    xhr.setRequestHeader('X-Room', currentRoom);
-    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-    xhr.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
-    if(activeDMUser) xhr.setRequestHeader('X-To-User', activeDMUser);
-
-    xhr.upload.onprogress = e => {
-      if(e.lengthComputable){
-        document.getElementById('uploadBar').style.width = ((e.loaded / e.total) * 100) + '%';
-      }
-    };
-
-    xhr.onload = () => {
-      document.getElementById('uploadBar').style.width = '100%';
-      if(xhr.status < 200 || xhr.status >= 300){
-        try{
-          const data = JSON.parse(xhr.responseText || '{}');
-          showError(data.error || 'Upload failed.');
-        }catch(e){
-          showError('Upload failed.');
-        }
-      }
-      setTimeout(() => document.getElementById('uploadBar').style.width = '0%', 400);
-      resolve();
-    };
-
-    xhr.onerror = () => {
-      showError('Upload failed. Check the file size, connection, and Render limits.');
-      document.getElementById('uploadBar').style.width = '0%';
-      resolve();
-    };
-
-    xhr.send(file);
-  });
-}
-
-function renderUsers(users){
-  onlineUserList = Array.isArray(users) ? users : [];
-  const list = document.getElementById('memberList');
-  list.innerHTML = '';
-  onlineUserList.filter(user => user && user !== username).forEach(user => {
-    const item = document.createElement('div');
-    item.className = 'userItem';
-    item.dataset.user = user;
-
-    const info = document.createElement('div');
-    info.className = 'userInfo';
-    info.appendChild(createAvatar(user, 'memberAvatar'));
-
-    const name = document.createElement('div');
-    name.className = 'userName';
-    name.textContent = user;
-    info.appendChild(name);
-
-    const controls = document.createElement('div');
-    controls.className = 'userControls';
-    const badge = document.createElement('span');
-    badge.className = 'dmBadge';
-    badge.id = 'dm-badge-' + user;
-    controls.appendChild(badge);
-
-    item.appendChild(info);
-    item.appendChild(controls);
-    item.onclick = () => openDM(user);
-    item.oncontextmenu = e => showContextMenu(e, user);
-    name.oncontextmenu = e => showContextMenu(e, user);
-    info.oncontextmenu = e => showContextMenu(e, user);
-    list.appendChild(item);
-  });
-  highlightActiveUser(activeDMUser);
-  updateDMBadges();
-}
-
-function showContextMenu(e, user){
-  e.preventDefault();
-  e.stopPropagation();
-  selectedContextUser = user;
-  const menu = document.getElementById('contextMenu');
-  menu.style.left = Math.min(e.clientX, window.innerWidth - 140) + 'px';
-  menu.style.top = Math.min(e.clientY, window.innerHeight - 60) + 'px';
-  menu.style.display = 'block';
-}
-function hideContextMenu(){ document.getElementById('contextMenu').style.display = 'none'; }
-document.getElementById('contextDmItem').addEventListener('click', e => { e.stopPropagation(); if(selectedContextUser) openDM(selectedContextUser); hideContextMenu(); });
-
-function highlightActiveUser(user){
-  document.querySelectorAll('.userItem').forEach(el => el.classList.toggle('active', el.dataset.user === user));
-}
-
-function updateChannelBadges(){
-  for(const room in unreadChannels){
-    const badge = document.getElementById('badge-' + room);
-    if(!badge) continue;
-    const count = unreadChannels[room];
-    badge.style.display = count > 0 ? 'inline-block' : 'none';
-    badge.innerText = count > 0 ? count : '';
-  }
-}
-function updateDMBadges(){
-  Object.keys(unreadDMs).forEach(user => {
-    const badge = document.getElementById('dm-badge-' + user);
-    if(!badge) return;
-    const count = unreadDMs[user];
-    badge.style.display = count > 0 ? 'inline-block' : 'none';
-    badge.innerText = count > 0 ? count : '';
-  });
-}
-function updateGroupBadges(){
-  Object.keys(unreadGroups).forEach(room => {
-    const badge = document.getElementById('group-badge-' + room.replace(':','-'));
-    if(!badge) return;
-    const count = unreadGroups[room];
-    badge.style.display = count > 0 ? 'inline-block' : 'none';
-    badge.innerText = count > 0 ? count : '';
-  });
-}
-
-function startTabAlert(label){
-  if(tabAlertTimer) return;
-  const text = label || 'NEW MESSAGE';
-  tabAlertTimer = setInterval(() => {
-    tabAlertState = !tabAlertState;
-    document.title = tabAlertState ? '🔴 NEW MESSAGE' : text;
-    updateFavicon(tabAlertState);
-  }, 700);
-}
-function stopTabAlert(){
-  if(tabAlertTimer) clearInterval(tabAlertTimer);
-  tabAlertTimer = null;
-  tabAlertState = false;
-  document.title = defaultTitle;
-  updateFavicon(false);
-}
-function updateFavicon(hasUnread){
-  if(!faviconLink) return;
-  faviconLink.href = hasUnread ? alertFavicon : defaultFavicon;
-}
-
-function sendTyping(){
-  if(!socket || !socket.connected) return;
-  const input = document.getElementById('messageInput');
-  if(!input.value.trim()){ stopTyping(); return; }
-  if(!isTyping){
-    isTyping = true;
-    socket.emit('typing', { room:currentRoom, to:activeDMUser || '' });
-  }
-  clearTimeout(typingTimer);
-  typingTimer = setTimeout(stopTyping, 1000);
-}
-function stopTyping(){
-  if(!isTyping || !socket) return;
-  isTyping = false;
-  clearTimeout(typingTimer);
-  socket.emit('stopTyping', { room:currentRoom, to:activeDMUser || '' });
-}
-
-document.addEventListener('keydown', e => {
-  if(e.key === '`'){
-    const menu = document.getElementById('debugMenu');
-    menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
-  }
-});
-document.getElementById('messageInput').addEventListener('input', sendTyping);
-document.getElementById('messageInput').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); sendMessage(); } });
-document.getElementById('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); login(); } });
-window.addEventListener('beforeunload', stopTyping);
+let socket=null,currentRoom='general',username='',token='',activeDMUser='',currentGroupRoom='',settingsOpen=false;
+let channels=[],groups=[],groupByRoom={},onlineUserList=[],profiles={},friends=[],readReceipts={},messagesById={};
+let unreadChannels={},unreadDMs={},unreadGroups={},typingTimer=null,isTyping=false,isFocused=true,selectedContextUser='',tabAlertTimer=null,tabAlertState=false;
+let currentUploadXhr=null,currentUploadStart=0,currentUploadFile=null;
+const defaultTitle=document.title;const faviconLink=document.querySelector("link[rel='icon']");const defaultFavicon=faviconLink?faviconLink.getAttribute('href'):'';
+const alertFavicon='data:image/svg+xml,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="45" fill="#f23f43"/><text x="50" y="63" font-size="58" text-anchor="middle" fill="white" font-family="Arial">!</text></svg>`);
+const reactionChoices=['👍','😂','❤️','🔥','👀'];
+window.addEventListener('focus',()=>{isFocused=true;stopTabAlert();});window.addEventListener('blur',()=>{isFocused=false;});document.addEventListener('click',hideContextMenu);window.addEventListener('resize',hideContextMenu);
+function setStatus(t){document.getElementById('status').innerText=t||'';}function authHeaders(){return {'Content-Type':'application/json','Authorization':'Bearer '+token};}function bearer(){return {'Authorization':'Bearer '+token};}function roomNameForDM(a,b){return 'dm:'+[a,b].sort().join(':');}function isGroupRoom(r){return /^group:\d+$/.test(String(r||''));}function groupId(room){return String(room).split(':')[1];}function notifyTab(label){if(!isFocused)startTabAlert(label||'NEW MESSAGE');}
+function esc(s){return String(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function sizeText(bytes){if(!bytes)return'0 B';const u=['B','KB','MB','GB'];let i=0,n=bytes;while(n>=1024&&i<u.length-1){n/=1024;i++;}return n.toFixed(i?1:0)+' '+u[i];}
+function timeLeft(sec){if(!isFinite(sec)||sec<0)return'--';if(sec<60)return Math.ceil(sec)+'s';return Math.ceil(sec/60)+'m';}
+function formatTime(v){if(!v)return'';const d=new Date(String(v).replace(' ','T')+'Z');if(isNaN(d))return v;return d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}).replace(' ','').toLowerCase();}
+function avatarColour(name){let h=0;for(const ch of String(name))h=(h*31+ch.charCodeAt(0))%360;return `hsl(${h} 65% 45%)`;}
+function getProfile(user){return profiles[user]||{username:user,displayName:user,avatarUrl:''};}
+function avatarHTML(user,cls='avatar'){const p=getProfile(user);const label=(p.displayName||user||'?').slice(0,1).toUpperCase();return `<span class="${cls}" style="background:${avatarColour(user)}">${p.avatarUrl?`<img src="${esc(p.avatarUrl)}" onerror="this.remove()">`:esc(label)}</span>`;}
+async function loadProfiles(users){const names=[...new Set((users||[]).filter(Boolean))].filter(u=>!profiles[u]);if(!names.length||!token)return;try{const r=await fetch('/profiles?users='+encodeURIComponent(names.join(',')),{headers:bearer()});if(r.ok){Object.assign(profiles,await r.json());}}catch(e){}}
+async function registerUser(){username=document.getElementById('username').value.trim();const password=document.getElementById('password').value;setStatus('Creating account...');try{const r=await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const d=await r.json();if(!r.ok)throw new Error(d.error||'register failed');profiles[d.username]=d.profile;completeLogin(d.username,d.token);}catch(err){setStatus(err.message);}}
+async function login(){username=document.getElementById('username').value.trim();const password=document.getElementById('password').value;setStatus('Logging in...');try{const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const d=await r.json();if(!r.ok)throw new Error(d.error||'login failed');profiles[d.username]=d.profile;completeLogin(d.username,d.token);}catch(err){setStatus(err.message);}}
+function completeLogin(u,t){username=u;token=t;document.getElementById('loginScreen').style.display='none';document.getElementById('app').style.display='flex';connectSocket();}
+async function logout(){try{if(token)await fetch('/logout',{method:'POST',headers:authHeaders(),body:'{}'});}catch(e){}if(socket)socket.disconnect();token='';username='';activeDMUser='';currentGroupRoom='';currentRoom='general';stopTabAlert();document.getElementById('messages').innerHTML='';document.getElementById('app').style.display='none';document.getElementById('loginScreen').style.display='block';setStatus('Logged out');}
+function connectSocket(){socket=io({auth:{token}});socket.on('connect',async()=>{await Promise.all([loadChannels(),loadGroups(),loadFriends()]);joinRoom(channels[0]?.name||'general');});socket.on('connect_error',err=>setStatus(err.message||'socket connection failed'));socket.on('users',async users=>{onlineUserList=Array.isArray(users)?users:[];await loadProfiles(onlineUserList);renderUsers(onlineUserList);});socket.on('channelsChanged',async()=>{await loadChannels();});socket.on('groupsChanged',async()=>{await loadGroups();});socket.on('friendsChanged',loadFriends);socket.on('profilesChanged',d=>{if(d&&d.username)profiles[d.username]=d.profile;rerenderVisible();});socket.on('adminNotice',d=>alert(d.message||'Admin notice'));
+  socket.on('message',async msg=>{await loadProfiles([msg.user]);if(msg.room===currentRoom&&!activeDMUser&&!settingsOpen){addMessage(msg);markRoomReadSoon();}else if(isGroupRoom(msg.room)){unreadGroups[msg.room]=(unreadGroups[msg.room]||0)+1;updateGroupBadges();notifyTab('@ '+(groupByRoom[msg.room]?.name||'group'));}else{unreadChannels[msg.room]=(unreadChannels[msg.room]||0)+1;updateChannelBadges();notifyTab('# '+msg.room);}});
+  socket.on('dmMessage',async msg=>{const other=msg.user===username?msg.to:msg.user;await loadProfiles([msg.user,other]);if(activeDMUser&&other===activeDMUser&&!settingsOpen){addMessage(msg);markRoomReadSoon();}else{unreadDMs[other]=(unreadDMs[other]||0)+1;updateDMBadges();notifyTab('@ '+other);}});
+  socket.on('file',async msg=>{await loadProfiles([msg.user]);if(msg.room===currentRoom&&!activeDMUser&&!settingsOpen){addFileMessage(msg);}else if(isGroupRoom(msg.room)){unreadGroups[msg.room]=(unreadGroups[msg.room]||0)+1;updateGroupBadges();notifyTab('@ '+(groupByRoom[msg.room]?.name||'group'));}else{unreadChannels[msg.room]=(unreadChannels[msg.room]||0)+1;updateChannelBadges();notifyTab('# '+msg.room);}});
+  socket.on('dmFile',async msg=>{const other=msg.user===username?msg.to:msg.user;await loadProfiles([msg.user,other]);if(activeDMUser&&other===activeDMUser&&!settingsOpen){addFileMessage(msg);}else{unreadDMs[other]=(unreadDMs[other]||0)+1;updateDMBadges();notifyTab('@ '+other);}});
+  socket.on('messageUpdated',msg=>updateMessageElement(msg));socket.on('messageDeleted',msg=>updateMessageElement(msg));socket.on('reactionUpdated',d=>updateReactions(d.id,d.reactions));socket.on('readReceipt',d=>{if(!readReceipts[d.room])readReceipts[d.room]={};readReceipts[d.room][d.user]=d.lastMessageId;updateSeenBy();});
+  socket.on('typing',data=>{if(data.user===username)return;const sameRoom=data.room&&data.room===currentRoom&&!activeDMUser&&!settingsOpen;const sameDM=activeDMUser&&data.user===activeDMUser&&!settingsOpen;if(sameRoom||sameDM)document.getElementById('typingIndicator').innerText=data.user+' is typing...';});
+  socket.on('stopTyping',data=>{if(data.user===username)return;const sameRoom=data.room&&data.room===currentRoom&&!activeDMUser;const sameDM=activeDMUser&&data.user===activeDMUser;if(sameRoom||sameDM)document.getElementById('typingIndicator').innerText='';});}
+async function loadChannels(){try{const r=await fetch('/channels',{headers:bearer()});if(!r.ok)return;channels=await r.json();channels.forEach(c=>{if(unreadChannels[c.name]===undefined)unreadChannels[c.name]=0;});renderChannels();}catch(e){}}
+function renderChannels(){const list=document.getElementById('channelList');list.innerHTML='';channels.forEach(c=>{const item=document.createElement('div');item.className='channel';item.dataset.room=c.name;item.onclick=()=>joinRoom(c.name);item.innerHTML=`<span class="channelName"># ${esc(c.name)}</span><span class="badge" id="badge-${esc(c.name)}"></span>`;list.appendChild(item);});updateChannelBadges();highlightActiveRoom();}
+async function loadGroups(){if(!token)return;try{const r=await fetch('/groups',{headers:bearer()});if(!r.ok)return;groups=await r.json();groupByRoom={};groups.forEach(g=>groupByRoom[g.room]=g);renderGroups();}catch(e){}}
+function renderGroups(){const list=document.getElementById('groupList');list.innerHTML='';if(!groups.length){list.innerHTML='<div class="muted" style="padding:8px 10px">No groups yet</div>';return;}groups.forEach(g=>{const item=document.createElement('div');item.className='channel';item.dataset.room=g.room;item.onclick=()=>openGroup(g.room);item.innerHTML=`<span class="channelName">@ ${esc(g.name)}</span><span class="groupBadge" id="group-badge-${g.room.replace(':','-')}"></span>`;list.appendChild(item);});updateGroupBadges();highlightActiveRoom();}
+async function createGroupChat(){const name=prompt('Group chat name:');if(!name)return;const examples=onlineUserList.filter(u=>u!==username).join(', ');const memberText=prompt('Add usernames separated by commas. Example: '+(examples||'Alex, Taylor'));if(!memberText)return;const members=memberText.split(',').map(x=>x.trim()).filter(Boolean);try{const r=await fetch('/groups',{method:'POST',headers:authHeaders(),body:JSON.stringify({name,members})});const d=await r.json();if(!r.ok)throw new Error(d.error||'could not create group');await loadGroups();openGroup(d.room);}catch(err){showError(err.message);}}
+async function renameGroup(){const gid=groupId(currentRoom);const name=prompt('New group name:',groupByRoom[currentRoom]?.name||'');if(!gid||!name)return;await apiPost('/groups/'+gid+'/rename',{name});await loadGroups();openGroup(currentRoom);}async function addGroupMember(){const gid=groupId(currentRoom);const user=prompt('Username to add:');if(!gid||!user)return;await apiPost('/groups/'+gid+'/members',{username:user});}async function removeGroupMember(){const gid=groupId(currentRoom);const user=prompt('Username to remove:');if(!gid||!user)return;await apiPost('/groups/'+gid+'/remove-member',{username:user});}async function leaveGroup(){const gid=groupId(currentRoom);if(!gid||!confirm('Leave this group?'))return;await apiPost('/groups/'+gid+'/leave',{});await loadGroups();joinRoom(channels[0]?.name||'general');}
+async function apiPost(url,body){try{const r=await fetch(url,{method:'POST',headers:authHeaders(),body:JSON.stringify(body)});const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'request failed');return d;}catch(err){showError(err.message);}}
+function joinRoom(room){if(!socket||!socket.connected)return;settingsOpen=false;currentRoom=room;activeDMUser='';currentGroupRoom='';clearChat('# '+room);showInput(true);socket.emit('joinRoom',room,result=>{if(result&&result.error){showError(result.error);return;}unreadChannels[room]=0;updateChannelBadges();loadHistory(room);});}
+function openGroup(room){if(!socket||!socket.connected||!room)return;settingsOpen=false;currentRoom=room;activeDMUser='';currentGroupRoom=room;clearChat('@ '+(groupByRoom[room]?.name||room));renderGroupActions();showInput(true);socket.emit('joinRoom',room,result=>{if(result&&result.error){showError(result.error);return;}unreadGroups[room]=0;updateGroupBadges();loadHistory(room);});}
+function openDM(user){if(!socket||!socket.connected||!user)return;settingsOpen=false;activeDMUser=user;currentGroupRoom='';currentRoom=roomNameForDM(username,user);clearChat('@ '+user);highlightActiveUser(user);showInput(true);unreadDMs[user]=0;updateDMBadges();socket.emit('joinRoom',currentRoom,result=>{if(result&&result.error){showError(result.error);return;}loadHistory(currentRoom);});}
+function clearChat(title){stopTyping();messagesById={};document.getElementById('messages').innerHTML='';document.getElementById('typingIndicator').innerText='';document.getElementById('roomTitle').innerText=title;document.getElementById('headerActions').innerHTML='<button class="miniBtn" onclick="logout()">Logout</button>';highlightActiveRoom();if(!activeDMUser)highlightActiveUser('');}
+function renderGroupActions(){document.getElementById('headerActions').innerHTML='<button class="miniBtn" onclick="renameGroup()">Rename</button><button class="miniBtn" onclick="addGroupMember()">Add</button><button class="miniBtn" onclick="removeGroupMember()">Remove</button><button class="dangerMiniBtn" onclick="leaveGroup()">Leave</button><button class="miniBtn" onclick="logout()">Logout</button>';}
+function showInput(show){document.getElementById('inputArea').style.display=show?'flex':'none';document.getElementById('uploadBarContainer').style.display=show?'block':'none';}
+function highlightActiveRoom(){document.querySelectorAll('.channel').forEach(el=>el.classList.toggle('active',el.dataset.room===currentRoom || (settingsOpen&&el.dataset.room==='settings')));}function highlightActiveUser(user){document.querySelectorAll('.userItem').forEach(el=>el.classList.toggle('active',el.dataset.user===user));}
+async function loadHistory(room){try{const [mr,fr,rr]=await Promise.all([fetch('/messages?room='+encodeURIComponent(room),{headers:bearer()}),fetch('/files?room='+encodeURIComponent(room),{headers:bearer()}),fetch('/read-receipts?room='+encodeURIComponent(room),{headers:bearer()})]);if(!mr.ok)throw new Error('Could not load messages');const messages=await mr.json();const files=fr.ok?await fr.json():[];const receipts=rr.ok?await rr.json():[];readReceipts[room]={};receipts.forEach(r=>readReceipts[room][r.user]=r.lastMessageId);await loadProfiles([...messages.map(m=>m.user),...files.map(f=>f.user)]);const combined=[...messages.map(x=>({type:'m',data:x,time:x.createdAt,id:x.id})),...files.map(x=>({type:'f',data:x,time:x.createdAt,id:x.id}))];combined.sort((a,b)=>new Date(String(a.time).replace(' ','T')+'Z')-new Date(String(b.time).replace(' ','T')+'Z')||a.id-b.id);combined.forEach(x=>x.type==='m'?addMessage(x.data):addFileMessage(x.data));markRoomReadSoon();}catch(err){showError(err.message);}}
+function showError(text){const div=document.createElement('div');div.className='errorLine';div.textContent=text;document.getElementById('messages').appendChild(div);scrollMessages();}
+function addMessage(msg){messagesById[msg.id]=msg;const div=renderMessage(msg);document.getElementById('messages').appendChild(div);scrollMessages();}
+function renderMessage(msg){const div=document.createElement('div');div.className='message';div.id='msg-'+msg.id;div.dataset.id=msg.id;div.innerHTML=`${avatarHTML(msg.user,'msgAvatar')}<div class="msgMain"><div class="messageHeader"><b onclick="openDM('${esc(msg.user)}')">${esc(getProfile(msg.user).displayName||msg.user)}</b>${msg.dmTo?'<span class="dmTag">DM</span>':''}${msg.isGroup?'<span class="groupTag">GROUP</span>':''}<span class="timeText">${formatTime(msg.createdAt)}</span>${msg.editedAt?'<span class="editedText">edited</span>':''}</div><div class="messageText">${esc(msg.text||'')}</div><div class="reactions" id="reactions-${msg.id}"></div><div class="seenBy" id="seen-${msg.id}"></div><div class="messageTools">${!msg.deleted?reactionChoices.map(e=>`<button class="reactBtn" onclick="reactMessage(${msg.id},'${e}')">${e}</button>`).join(''):''}${!msg.deleted&&msg.user===username?`<button class="miniBtn" onclick="editMessage(${msg.id})">Edit</button>`:''}${!msg.deleted&&(msg.user===username||username==='Purple')?`<button class="dangerMiniBtn" onclick="deleteMessage(${msg.id})">Delete</button>`:''}</div></div>`;setTimeout(()=>{updateReactions(msg.id,msg.reactions||[]);updateSeenBy();},0);return div;}
+function updateMessageElement(msg){messagesById[msg.id]=msg;const old=document.getElementById('msg-'+msg.id);if(old)old.replaceWith(renderMessage(msg));}
+function addFileMessage(msg){const div=document.createElement('div');div.className='message';div.innerHTML=`${avatarHTML(msg.user,'msgAvatar')}<div class="msgMain"><div class="messageHeader"><b onclick="openDM('${esc(msg.user)}')">${esc(getProfile(msg.user).displayName||msg.user)}</b>${msg.dmTo?'<span class="dmTag">DM</span>':''}${msg.isGroup?'<span class="groupTag">GROUP</span>':''}<span>📎 file</span><span class="timeText">${formatTime(msg.createdAt)}</span></div><div class="fileBox">${msg.fileType&&msg.fileType.startsWith('image/')?`<img src="${esc(msg.fileUrl)}" alt="${esc(msg.fileName||'image')}">`:''}<a href="${esc(msg.fileUrl)}" download="${esc(msg.fileName||'file')}" class="fileLink">Download ${esc(msg.fileName||'file')} (${sizeText(msg.fileSize||0)})</a><div class="muted">Files expire after 6 hours.</div></div></div>`;document.getElementById('messages').appendChild(div);scrollMessages();}
+function scrollMessages(){const m=document.getElementById('messages');m.scrollTop=m.scrollHeight;}
+function editMessage(id){const msg=messagesById[id];if(!msg)return;const text=prompt('Edit message:',msg.text);if(text===null)return;socket.emit('editMessage',{id,text},handleAck);}function deleteMessage(id){if(!confirm('Delete this message?'))return;socket.emit('deleteMessage',{id},handleAck);}function reactMessage(id,emoji){socket.emit('reactMessage',{id,emoji},handleAck);}
+function updateReactions(id,reactions){const box=document.getElementById('reactions-'+id);if(!box)return;box.innerHTML='';(reactions||[]).forEach(r=>{const b=document.createElement('button');b.className='reactionPill '+(r.users&&r.users.includes(username)?'active':'');b.textContent=`${r.emoji} ${r.count}`;b.onclick=()=>reactMessage(id,r.emoji);box.appendChild(b);});}
+function updateSeenBy(){if(!currentRoom||(!activeDMUser&&!isGroupRoom(currentRoom)))return;Object.keys(messagesById).forEach(id=>{const box=document.getElementById('seen-'+id);if(!box)return;const seen=Object.entries(readReceipts[currentRoom]||{}).filter(([u,last])=>u!==username&&u!==messagesById[id].user&&Number(last)>=Number(id)).map(([u])=>u);box.innerHTML=seen.length?'<span>Seen by</span>'+seen.slice(0,6).map(u=>avatarHTML(u,'avatar tiny')).join(''):'';});}
+function markRoomReadSoon(){setTimeout(()=>{const ids=Object.keys(messagesById).map(Number);if(!ids.length||settingsOpen)return;const last=Math.max(...ids);socket&&socket.emit('markRead',{room:currentRoom,lastMessageId:last});},250);}
+function sendMessage(){if(!socket||!socket.connected||settingsOpen)return;const input=document.getElementById('messageInput');const text=input.value.trim();if(!text)return;if(activeDMUser)socket.emit('dmMessage',{text,to:activeDMUser},handleAck);else socket.emit('message',{text,room:currentRoom},handleAck);input.value='';input.focus();stopTyping();document.getElementById('typingIndicator').innerText='';}
+function handleAck(result){if(result&&result.error)showError(result.error);}
+const fileInput=document.getElementById('fileInput');fileInput.addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;await uploadFile(file);e.target.value='';});
+function uploadFile(file){return new Promise(resolve=>{const max=10*1024*1024*1024;if(file.size>max){showError('File is too large. Maximum is 10GB.');resolve();return;}const xhr=new XMLHttpRequest();currentUploadXhr=xhr;currentUploadFile=file;currentUploadStart=Date.now();document.getElementById('uploadStatus').style.display='flex';document.getElementById('uploadInfo').textContent=`Uploading ${file.name} (${sizeText(file.size)}). Files expire after 6 hours.`;xhr.open('POST','/upload');xhr.setRequestHeader('Authorization','Bearer '+token);xhr.setRequestHeader('X-Room',currentRoom);xhr.setRequestHeader('X-File-Name',encodeURIComponent(file.name));xhr.setRequestHeader('X-File-Type',file.type||'application/octet-stream');if(activeDMUser)xhr.setRequestHeader('X-To-User',activeDMUser);xhr.upload.onprogress=e=>{if(e.lengthComputable){const pct=(e.loaded/e.total)*100;const elapsed=(Date.now()-currentUploadStart)/1000;const speed=e.loaded/Math.max(elapsed,0.1);const eta=(e.total-e.loaded)/Math.max(speed,1);document.getElementById('uploadBar').style.width=pct+'%';document.getElementById('uploadInfo').textContent=`Uploading ${file.name}: ${pct.toFixed(1)}% • ${sizeText(e.loaded)} / ${sizeText(e.total)} • ${sizeText(speed)}/s • ${timeLeft(eta)} left • expires after 6 hours`;}};xhr.onload=()=>{document.getElementById('uploadBar').style.width='100%';if(xhr.status<200||xhr.status>=300){try{showError(JSON.parse(xhr.responseText||'{}').error||'Upload failed.');}catch(e){showError('Upload failed.');}}setTimeout(resetUpload,500);resolve();};xhr.onerror=()=>{showError('Upload failed. Check file size, connection, and Render limits.');resetUpload();resolve();};xhr.onabort=()=>{showError('Upload cancelled.');resetUpload();resolve();};xhr.send(file);});}
+function cancelUpload(){if(currentUploadXhr)currentUploadXhr.abort();}function resetUpload(){currentUploadXhr=null;currentUploadFile=null;document.getElementById('uploadStatus').style.display='none';document.getElementById('uploadBar').style.width='0%';}
+function renderUsers(users){const list=document.getElementById('memberList');list.innerHTML='';(users||[]).filter(u=>u&&u!==username).forEach(user=>{const item=document.createElement('div');item.className='userItem';item.dataset.user=user;item.onclick=()=>openDM(user);item.oncontextmenu=e=>showContextMenu(e,user);item.innerHTML=`<div class="userLeft">${avatarHTML(user,'avatar small')}<div class="userName">${esc(getProfile(user).displayName||user)}</div></div><div class="userControls"><span class="dmBadge" id="dm-badge-${esc(user)}"></span></div>`;list.appendChild(item);});highlightActiveUser(activeDMUser);updateDMBadges();}
+function showContextMenu(e,user){e.preventDefault();e.stopPropagation();selectedContextUser=user;const menu=document.getElementById('contextMenu');menu.style.left=Math.min(e.clientX,window.innerWidth-160)+'px';menu.style.top=Math.min(e.clientY,window.innerHeight-120)+'px';menu.style.display='block';}function hideContextMenu(){document.getElementById('contextMenu').style.display='none';}
+document.getElementById('contextDmItem').addEventListener('click',e=>{e.stopPropagation();if(selectedContextUser)openDM(selectedContextUser);hideContextMenu();});document.getElementById('contextFriendItem').addEventListener('click',async e=>{e.stopPropagation();if(selectedContextUser)await addFriend(selectedContextUser);hideContextMenu();});document.getElementById('contextBlockItem').addEventListener('click',async e=>{e.stopPropagation();if(selectedContextUser&&confirm('Block '+selectedContextUser+'?'))await apiPost('/friends/block',{username:selectedContextUser});hideContextMenu();});
+function updateChannelBadges(){for(const room in unreadChannels){const b=document.getElementById('badge-'+room);if(!b)continue;const c=unreadChannels[room];b.style.display=c>0?'inline-block':'none';b.innerText=c>0?c:'';}}function updateDMBadges(){Object.keys(unreadDMs).forEach(user=>{const b=document.getElementById('dm-badge-'+user);if(!b)return;const c=unreadDMs[user];b.style.display=c>0?'inline-block':'none';b.innerText=c>0?c:'';});}function updateGroupBadges(){Object.keys(unreadGroups).forEach(room=>{const b=document.getElementById('group-badge-'+room.replace(':','-'));if(!b)return;const c=unreadGroups[room];b.style.display=c>0?'inline-block':'none';b.innerText=c>0?c:'';});}
+function startTabAlert(label){if(tabAlertTimer)return;const text=label||'NEW MESSAGE';tabAlertTimer=setInterval(()=>{tabAlertState=!tabAlertState;document.title=tabAlertState?'🔴 NEW MESSAGE':text;updateFavicon(tabAlertState);},700);}function stopTabAlert(){if(tabAlertTimer)clearInterval(tabAlertTimer);tabAlertTimer=null;tabAlertState=false;document.title=defaultTitle;updateFavicon(false);}function updateFavicon(hasUnread){if(!faviconLink)return;faviconLink.href=hasUnread?alertFavicon:defaultFavicon;}
+function sendTyping(){if(!socket||!socket.connected||settingsOpen)return;const input=document.getElementById('messageInput');if(!input.value.trim()){stopTyping();return;}if(!isTyping){isTyping=true;socket.emit('typing',{room:currentRoom,to:activeDMUser||''});}clearTimeout(typingTimer);typingTimer=setTimeout(stopTyping,1000);}function stopTyping(){if(!isTyping||!socket)return;isTyping=false;clearTimeout(typingTimer);socket.emit('stopTyping',{room:currentRoom,to:activeDMUser||''});}
+async function loadFriends(){if(!token)return;try{const r=await fetch('/friends',{headers:bearer()});if(r.ok){friends=await r.json();await loadProfiles(friends.map(f=>f.otherUser));if(settingsOpen)renderSettings();}}catch(e){}}
+async function addFriend(user){await apiPost('/friends/request',{username:user});await loadFriends();}
+async function friendRespond(user,action){await apiPost('/friends/respond',{username:user,action});await loadFriends();}
+async function removeFriend(user){await apiPost('/friends/remove',{username:user});await loadFriends();}
+async function blockFriend(user){await apiPost('/friends/block',{username:user});await loadFriends();}
+async function saveProfile(){const displayName=document.getElementById('setDisplayName').value.trim();const avatarUrl=document.getElementById('setAvatarUrl').value.trim();try{const r=await fetch('/profile',{method:'POST',headers:authHeaders(),body:JSON.stringify({displayName,avatarUrl})});const d=await r.json();if(!r.ok)throw new Error(d.error||'could not save profile');profiles[username]=d;renderSettings();renderUsers(onlineUserList);}catch(err){showError(err.message);}}
+function openSettings(){settingsOpen=true;activeDMUser='';currentGroupRoom='';currentRoom='settings';clearChat('⚙ Settings');showInput(false);highlightActiveRoom();renderSettings();}
+function renderSettings(){const me=getProfile(username);let html=`<div class="settingsPanel"><div class="settingsCard"><h3>Profile</h3><div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">${avatarHTML(username,'avatar')}<div class="muted">Use an image URL for your Discord-style profile picture.</div></div><input id="setDisplayName" placeholder="Display name" value="${esc(me.displayName||username)}"><input id="setAvatarUrl" placeholder="Avatar image URL" value="${esc(me.avatarUrl||'')}"><button class="primaryMiniBtn" onclick="saveProfile()">Save Profile</button></div>`;
+html+=`<div class="settingsCard"><h3>Friends</h3><div class="settingsRow"><input id="friendUsername" placeholder="Username"><button class="primaryMiniBtn" onclick="addFriend(document.getElementById('friendUsername').value)">Add Friend</button></div><div class="friendList">`;
+if(!friends.length)html+='<div class="muted">No friend requests or friends yet.</div>';friends.forEach(f=>{const p=getProfile(f.otherUser);html+=`<div class="userItem"><div class="userLeft">${avatarHTML(f.otherUser,'avatar small')}<div><div>${esc(p.displayName||f.otherUser)}</div><div class="muted">${esc(f.status)} ${f.direction==='incoming'&&f.status==='pending'?'from them':f.direction==='outgoing'&&f.status==='pending'?'sent by you':''}</div></div></div><div class="userControls">${f.status==='pending'&&f.direction==='incoming'?`<button class="primaryMiniBtn" onclick="friendRespond('${esc(f.otherUser)}','accept')">Accept</button><button class="miniBtn" onclick="friendRespond('${esc(f.otherUser)}','decline')">Decline</button>`:''}${f.status==='accepted'?`<button class="miniBtn" onclick="openDM('${esc(f.otherUser)}')">DM</button><button class="miniBtn" onclick="removeFriend('${esc(f.otherUser)}')">Remove</button>`:''}<button class="dangerMiniBtn" onclick="blockFriend('${esc(f.otherUser)}')">Block</button></div></div>`;});
+html+='</div></div>';
+html+=`<div class="settingsCard"><h3>Upload settings</h3><div class="muted">Max file size is 10GB. Uploads show speed, ETA, cancel button, and expire after 6 hours.</div></div>`;
+if(username==='Purple'){html+=`<div class="settingsCard adminCard"><h3>Admin tools — Purple only</h3><div class="settingsRow"><input id="adminChannel" placeholder="new-channel"><button class="primaryMiniBtn" onclick="adminAction('createChannel',{name:document.getElementById('adminChannel').value})">Create Channel</button><button class="dangerMiniBtn" onclick="adminAction('deleteChannel',{name:document.getElementById('adminChannel').value})">Delete Channel</button></div><div class="settingsRow"><input id="adminUser" placeholder="username"><input id="adminMinutes" placeholder="mute minutes" value="60"><button class="miniBtn" onclick="adminAction('kick',{username:document.getElementById('adminUser').value})">Kick</button><button class="miniBtn" onclick="adminAction('mute',{username:document.getElementById('adminUser').value,minutes:document.getElementById('adminMinutes').value})">Mute</button><button class="miniBtn" onclick="adminAction('unmute',{username:document.getElementById('adminUser').value})">Unmute</button><button class="dangerMiniBtn" onclick="adminAction('ban',{username:document.getElementById('adminUser').value})">Ban</button><button class="miniBtn" onclick="adminAction('unban',{username:document.getElementById('adminUser').value})">Unban</button></div><div class="muted">Purple can also delete anyone's messages using the Delete button beside messages.</div></div>`;}
+html+='</div>';document.getElementById('messages').innerHTML=html;}
+function adminAction(action,data){socket.emit('adminAction',{action,...data},r=>{if(r&&r.error)alert(r.error);else alert(r.message||'done');});}
+function rerenderVisible(){if(settingsOpen)renderSettings();else{Object.values(messagesById).forEach(updateMessageElement);renderUsers(onlineUserList);}}
+document.getElementById('messageInput').addEventListener('input',sendTyping);document.getElementById('messageInput').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();sendMessage();}});document.getElementById('password').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();login();}});window.addEventListener('beforeunload',stopTyping);
 </script>
 </body>
 </html>

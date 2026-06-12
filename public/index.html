@@ -8,6 +8,7 @@
 <link rel="icon" type="image/png" href="/google.png">
   
 <style>
+
 *{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif;}
 body{height:100vh;background:#313338;color:white;overflow:hidden;}
 #loginScreen{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:350px;max-width:calc(100vw - 30px);background:#232428;padding:25px;border-radius:12px;}
@@ -22,25 +23,32 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 #servers{width:72px;background:#1e1f22;padding:10px;}
 .server{width:48px;height:48px;background:#5865F2;border-radius:50%;margin-bottom:10px;}
 #channels{width:250px;background:#2b2d31;padding:10px;overflow-y:auto;}
-.sectionTitle{font-size:14px;color:#b5bac1;margin:12px 0 6px;display:flex;align-items:center;justify-content:space-between;gap:8px;}
-.channel{padding:10px;cursor:pointer;border-radius:6px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:8px;}
-.channel:hover{background:#404249;}
-.channel.active{background:#5865F2;}
+.sectionTitle{font-size:12px;letter-spacing:.02em;text-transform:uppercase;color:#949ba4;margin:16px 0 6px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-weight:bold;}
+.channel{position:relative;padding:8px 10px 8px 14px;cursor:pointer;border-radius:6px;margin-bottom:2px;display:flex;justify-content:space-between;align-items:center;gap:8px;color:#b5bac1;background:transparent;}
+.channel:hover{color:#fff;background:rgba(255,255,255,.04);}
+.channel.active{color:#fff;background:transparent;font-weight:bold;}
+.channel.active::before{content:"";position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:10px;background:#fff;}
 .channelName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .badge,.dmBadge,.groupBadge{background:red;color:white;font-size:12px;padding:2px 6px;border-radius:10px;display:none;min-width:20px;text-align:center;}
-#chat{flex:1;display:flex;flex-direction:column;min-width:0;}
+#chat{flex:1;display:flex;flex-direction:column;min-width:0;background:#313338;}
 #chatHeader{height:44px;background:#383a40;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-bottom:1px solid #24262b;}
 #roomTitle{font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-#messages{flex:1;overflow-y:auto;padding:20px;scrollbar-width:thin;scrollbar-color:#2b2d31 transparent;}
+#messages{flex:1;overflow-y:auto;padding:14px 10px 20px 10px;scrollbar-width:thin;scrollbar-color:#2b2d31 transparent;}
 #messages::-webkit-scrollbar{width:8px;}
 #messages::-webkit-scrollbar-track{background:transparent;}
 #messages::-webkit-scrollbar-thumb{background:#2b2d31;border-radius:6px;}
-.message{margin-bottom:12px;padding:10px;background:#2b2d31;border-radius:8px;max-width:100%;word-wrap:break-word;}
-.messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;}
-.messageText{white-space:pre-wrap;}
+.message{margin-bottom:2px;padding:6px 12px;background:transparent;border-radius:8px;max-width:100%;word-wrap:break-word;display:flex;align-items:flex-start;gap:12px;}
+.message:hover{background:rgba(255,255,255,.025);}
+.messageContent{min-width:0;flex:1;}
+.messageHeader{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;}
+.messageText{white-space:pre-wrap;color:#dbdee1;line-height:1.36;}
 .timeText{font-size:11px;color:#949ba4;}
 .dmTag,.groupTag{color:white;font-size:11px;padding:2px 6px;border-radius:999px;}
 .dmTag{background:#f23f43;}.groupTag{background:#3BA55C;}
+.avatar{width:34px;height:34px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:white;font-weight:bold;flex:0 0 auto;background:#5865F2;overflow:hidden;user-select:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);}
+.avatar img{width:100%;height:100%;object-fit:cover;display:block;}
+.avatar.memberAvatar{width:28px;height:28px;font-size:13px;}
+.avatar.settingsAvatar{width:72px;height:72px;font-size:28px;}
 .miniBtn{padding:6px 8px;background:#404249;color:white;font-size:12px;border-radius:6px;}
 .miniBtn:hover{background:#4f535c;}
 .primaryMiniBtn{padding:6px 8px;background:#5865F2;color:white;font-size:12px;border-radius:6px;}
@@ -52,10 +60,11 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 #messageInput{flex:1;margin-bottom:0;}
 #users{width:240px;background:#232428;padding:10px;overflow-y:auto;}
 #memberHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;}
-#memberList{margin-top:10px;display:flex;flex-direction:column;gap:6px;}
-.userItem{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;background:#2b2d31;border-radius:6px;cursor:pointer;}
-.userItem:hover{background:#404249;}
-.userItem.active{background:#5865F2;}
+#memberList{margin-top:10px;display:flex;flex-direction:column;gap:4px;}
+.userItem{display:flex;justify-content:space-between;align-items:center;padding:7px 8px;background:transparent;border-radius:6px;cursor:pointer;color:#b5bac1;gap:8px;}
+.userItem:hover{background:#404249;color:#fff;}
+.userItem.active{background:#5865F2;color:#fff;}
+.userInfo{display:flex;align-items:center;gap:8px;min-width:0;}
 .userName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .userControls{display:flex;align-items:center;gap:6px;}
 #contextMenu{position:fixed;display:none;background:#1e1f22;border:1px solid #5865F2;border-radius:8px;padding:6px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.35);}
@@ -67,7 +76,17 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 .fileBox img{max-width:220px;max-height:220px;border-radius:6px;display:block;margin-top:6px;object-fit:contain;}
 .fileLink{color:#7aa2ff;text-decoration:none;display:inline-block;margin-top:6px;}
 .errorLine{color:#ffb4b4;font-size:13px;padding:0 10px 8px 10px;}
-@media (max-width:850px){#servers{display:none;}#channels{width:160px;}#users{display:none;}#loginScreen{width:330px;}}
+.settingsPanel{max-width:620px;margin:10px auto;padding:20px;background:#2b2d31;border-radius:12px;border:1px solid rgba(255,255,255,.08);}
+.settingsPanel h2{margin-bottom:8px;}
+.settingsPanel p{color:#b5bac1;margin-bottom:16px;line-height:1.4;}
+.settingsProfile{display:flex;gap:14px;align-items:center;margin-bottom:16px;}
+.settingsRow{margin:14px 0;}
+.settingsRow label{display:block;color:#b5bac1;font-size:13px;margin-bottom:6px;}
+.settingsRow input{margin-bottom:0;}
+.settingsActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;}
+#settingsMessage{color:#b5bac1;font-size:13px;margin-top:10px;min-height:18px;}
+@media (max-width:850px){#servers{display:none;}#channels{width:170px;}#users{display:none;}#loginScreen{width:330px;}.message{padding:6px 8px;}.avatar{width:30px;height:30px;}}
+
 </style>
 </head>
 
@@ -92,6 +111,9 @@ button:disabled{opacity:.55;cursor:not-allowed;}
 
     <div class="sectionTitle"><span>Group Chats</span></div>
     <div id="groupList"></div>
+
+    <div class="sectionTitle"><span>Settings</span></div>
+    <div class="channel" data-room="__settings" onclick="openSettings()"><span class="channelName">⚙ Settings</span></div>
   </div>
 
   <div id="chat">
@@ -142,6 +164,8 @@ let currentGroupRoom = '';
 let selectedContextUser = '';
 let tabAlertTimer = null;
 let tabAlertState = false;
+let customAvatarUrl = localStorage.getItem('chatAvatarUrl') || '';
+const avatarPalette = ['#5865F2','#3BA55C','#F23F43','#FAA61A','#EB459E','#57F287','#FEE75C','#ED4245','#7289DA','#2D7D9A'];
 const defaultTitle = document.title;
 const faviconLink = document.querySelector("link[rel='icon']");
 const defaultFavicon = faviconLink ? faviconLink.getAttribute('href') : '';
@@ -391,12 +415,152 @@ function clearChat(title){
   document.getElementById('messages').innerHTML = '';
   document.getElementById('typingIndicator').innerText = '';
   document.getElementById('roomTitle').innerText = title;
+  setInputVisible(true);
   highlightActiveRoom();
   if(!activeDMUser) highlightActiveUser('');
 }
 
 function highlightActiveRoom(){
   document.querySelectorAll('.channel').forEach(el => el.classList.toggle('active', el.dataset.room === currentRoom));
+}
+
+
+function setInputVisible(show){
+  document.getElementById('inputArea').style.display = show ? 'flex' : 'none';
+  document.getElementById('uploadBarContainer').style.display = show ? 'block' : 'none';
+}
+
+function hashString(text){
+  let hash = 0;
+  for(let i = 0; i < String(text || '').length; i++){
+    hash = ((hash << 5) - hash) + String(text).charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function avatarColour(user){
+  return avatarPalette[hashString(user) % avatarPalette.length];
+}
+
+function userInitial(user){
+  const clean = String(user || '?').trim();
+  return clean ? clean.charAt(0).toUpperCase() : '?';
+}
+
+function getAvatarUrl(user){
+  if(user === username && customAvatarUrl) return customAvatarUrl;
+  return '';
+}
+
+function createAvatar(user, extraClass){
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar' + (extraClass ? ' ' + extraClass : '');
+  avatar.style.background = avatarColour(user);
+  const avatarUrl = getAvatarUrl(user);
+  if(avatarUrl){
+    const img = document.createElement('img');
+    img.src = avatarUrl;
+    img.alt = (user || 'user') + ' avatar';
+    img.onerror = () => {
+      avatar.innerHTML = '';
+      avatar.textContent = userInitial(user);
+    };
+    avatar.appendChild(img);
+  }else{
+    avatar.textContent = userInitial(user);
+  }
+  return avatar;
+}
+
+function openSettings(){
+  currentRoom = '__settings';
+  activeDMUser = '';
+  currentGroupRoom = '';
+  stopTyping();
+  setInputVisible(false);
+  document.getElementById('typingIndicator').innerText = '';
+  document.getElementById('roomTitle').innerText = '⚙ Settings';
+  highlightActiveRoom();
+  highlightActiveUser('');
+
+  const messages = document.getElementById('messages');
+  messages.innerHTML = '';
+
+  const panel = document.createElement('div');
+  panel.className = 'settingsPanel';
+
+  const profile = document.createElement('div');
+  profile.className = 'settingsProfile';
+  profile.appendChild(createAvatar(username || 'You', 'settingsAvatar'));
+
+  const profileText = document.createElement('div');
+  const title = document.createElement('h2');
+  title.textContent = 'Settings';
+  const desc = document.createElement('p');
+  desc.textContent = 'Your messages now use Discord-style circular avatars. You can set a custom avatar image URL for your own browser, or leave it blank to use the default coloured avatar.';
+  const userLine = document.createElement('div');
+  userLine.innerHTML = '<b>Logged in as:</b> ' + escapeHtml(username || 'unknown');
+  profileText.appendChild(title);
+  profileText.appendChild(desc);
+  profileText.appendChild(userLine);
+  profile.appendChild(profileText);
+  panel.appendChild(profile);
+
+  const row = document.createElement('div');
+  row.className = 'settingsRow';
+  const label = document.createElement('label');
+  label.setAttribute('for','avatarUrlInput');
+  label.textContent = 'Custom avatar image URL';
+  const input = document.createElement('input');
+  input.id = 'avatarUrlInput';
+  input.placeholder = 'https://example.com/avatar.png';
+  input.value = customAvatarUrl;
+  row.appendChild(label);
+  row.appendChild(input);
+  panel.appendChild(row);
+
+  const actions = document.createElement('div');
+  actions.className = 'settingsActions';
+  const save = document.createElement('button');
+  save.className = 'primaryMiniBtn';
+  save.textContent = 'Save Avatar';
+  save.onclick = saveAvatarSetting;
+  const clear = document.createElement('button');
+  clear.className = 'miniBtn';
+  clear.textContent = 'Use Default Avatar';
+  clear.onclick = clearAvatarSetting;
+  actions.appendChild(save);
+  actions.appendChild(clear);
+  panel.appendChild(actions);
+
+  const msg = document.createElement('div');
+  msg.id = 'settingsMessage';
+  panel.appendChild(msg);
+
+  messages.appendChild(panel);
+}
+
+function escapeHtml(text){
+  return String(text || '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[ch]));
+}
+
+function saveAvatarSetting(){
+  const input = document.getElementById('avatarUrlInput');
+  customAvatarUrl = input ? input.value.trim() : '';
+  if(customAvatarUrl){ localStorage.setItem('chatAvatarUrl', customAvatarUrl); }
+  else{ localStorage.removeItem('chatAvatarUrl'); }
+  const msg = document.getElementById('settingsMessage');
+  if(msg) msg.textContent = 'Saved. Your own messages will now use this avatar on this browser.';
+  openSettings();
+}
+
+function clearAvatarSetting(){
+  customAvatarUrl = '';
+  localStorage.removeItem('chatAvatarUrl');
+  openSettings();
+  const msg = document.getElementById('settingsMessage');
+  if(msg) msg.textContent = 'Default avatar restored.';
 }
 
 async function loadHistory(room){
@@ -428,6 +592,11 @@ function showError(text){
 function addMessage(msg){
   const div = document.createElement('div');
   div.className = 'message';
+  div.appendChild(createAvatar(msg.user || 'unknown'));
+
+  const content = document.createElement('div');
+  content.className = 'messageContent';
+
   const header = document.createElement('div');
   header.className = 'messageHeader';
 
@@ -442,12 +611,13 @@ function addMessage(msg){
   time.className = 'timeText';
   time.textContent = formatTime(msg.createdAt);
   header.appendChild(time);
-  div.appendChild(header);
+  content.appendChild(header);
 
   const body = document.createElement('div');
   body.className = 'messageText';
   body.textContent = msg.text || '';
-  div.appendChild(body);
+  content.appendChild(body);
+  div.appendChild(content);
   document.getElementById('messages').appendChild(div);
   scrollMessages();
 }
@@ -455,6 +625,11 @@ function addMessage(msg){
 function addFileMessage(msg){
   const div = document.createElement('div');
   div.className = 'message';
+  div.appendChild(createAvatar(msg.user || 'unknown'));
+
+  const content = document.createElement('div');
+  content.className = 'messageContent';
+
   const header = document.createElement('div');
   header.className = 'messageHeader';
 
@@ -469,7 +644,7 @@ function addFileMessage(msg){
   time.className = 'timeText';
   time.textContent = formatTime(msg.createdAt);
   header.appendChild(time);
-  div.appendChild(header);
+  content.appendChild(header);
 
   const box = document.createElement('div');
   box.className = 'fileBox';
@@ -485,7 +660,8 @@ function addFileMessage(msg){
   link.textContent = 'Download ' + (msg.fileName || 'file');
   link.className = 'fileLink';
   box.appendChild(link);
-  div.appendChild(box);
+  content.appendChild(box);
+  div.appendChild(content);
   document.getElementById('messages').appendChild(div);
   scrollMessages();
 }
@@ -585,9 +761,14 @@ function renderUsers(users){
     item.className = 'userItem';
     item.dataset.user = user;
 
+    const info = document.createElement('div');
+    info.className = 'userInfo';
+    info.appendChild(createAvatar(user, 'memberAvatar'));
+
     const name = document.createElement('div');
     name.className = 'userName';
     name.textContent = user;
+    info.appendChild(name);
 
     const controls = document.createElement('div');
     controls.className = 'userControls';
@@ -596,11 +777,12 @@ function renderUsers(users){
     badge.id = 'dm-badge-' + user;
     controls.appendChild(badge);
 
-    item.appendChild(name);
+    item.appendChild(info);
     item.appendChild(controls);
     item.onclick = () => openDM(user);
     item.oncontextmenu = e => showContextMenu(e, user);
     name.oncontextmenu = e => showContextMenu(e, user);
+    info.oncontextmenu = e => showContextMenu(e, user);
     list.appendChild(item);
   });
   highlightActiveUser(activeDMUser);

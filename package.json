@@ -1,6 +1,6 @@
 {
   "name": "socket-chat-render",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Express and Socket.IO chat app for Render deployment",
   "main": "server.js",
   "scripts": {

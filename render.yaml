@@ -1,15 +1,16 @@
+# The database now lives on Neon (free, never expires) instead of a Render
+# free Postgres, which Render deletes 30 days + a 14-day grace after creation.
+# Paste your Neon connection string as DATABASE_URL when Render asks for it.
 services:
   - type: web
     name: socket-chat-render
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
+    healthCheckPath: /healthz
     envVars:
       - key: NODE_VERSION
         value: 20.18.0
-      - key: DATA_DIR
-        value: /var/data
-    disk:
-      name: chat-data
-      mountPath: /var/data
-      sizeGB: 100
+      - key: DATABASE_URL
+        sync: false

@@ -217,6 +217,18 @@ async function setupSchema() {
       UNIQUE(requester, addressee)
     );
 
+    -- Blocks live in their own table rather than as a friendships status:
+    -- a friendships row is shared by both people, so either of them could
+    -- delete it (the blocked person "unfriending" would have silently
+    -- lifted the block), and two people blocking each other would fight
+    -- over the one row. Here each block belongs only to the blocker.
+    CREATE TABLE IF NOT EXISTS blocks (
+      blocker TEXT NOT NULL,
+      blocked TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (blocker, blocked)
+    );
+
     CREATE TABLE IF NOT EXISTS message_reactions (
       message_id INTEGER NOT NULL,
       username TEXT NOT NULL,
@@ -306,6 +318,20 @@ async function setupSchema() {
   // index it - without this each one is a full scan of every message ever sent.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages (room, id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_files_room_id ON files (room, id)`);
+
+  // Older deployments stored blocks as friendships rows with status
+  // 'blocked' - move any of those into the blocks table (safe to re-run:
+  // after the first boot there are none left to move).
+  await pool.query(
+    `INSERT INTO blocks (blocker, blocked, created_at)
+     SELECT requester, addressee, created_at FROM friendships WHERE status = 'blocked'
+     ON CONFLICT DO NOTHING`
+  );
+  await pool.query(`DELETE FROM friendships WHERE status = 'blocked'`);
+  // The friends list looks rows up by either side of the pair; the UNIQUE
+  // constraint already covers requester, this covers addressee.
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_friendships_addressee ON friendships (addressee)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks (blocked)`);
 }
 
 // ---------------- SERVERS (guilds) ----------------
@@ -1619,6 +1645,7 @@ async function pushMentions(room, text, fromUser) {
     const user = await getUser(name);
     if (!user) continue;
     if (!(await isAllowedRoom(name, room))) continue;
+    if (await blockBetween(name, fromUser)) continue;
     await sendPushToUser(name, {
       title: `${fromUser} mentioned you in #${roomLabel}`,
       body: text.slice(0, 140),
@@ -1910,43 +1937,92 @@ app.post('/servers/:id/invite/regenerate', requireAuth, route(async (req, res) =
   res.json({ message: 'ok', inviteCode: code });
 }));
 
-// ---------------- FRIENDS ----------------
-app.get('/friends', requireAuth, route(async (req, res) => {
+// ---------------- FRIENDS + BLOCKING ----------------
+// 'you' if `username` has blocked `other`, 'them' if `other` has blocked
+// `username`, otherwise null. Someone who has been blocked is never told so
+// directly - callers turn 'them' into a vague "couldn't deliver" message.
+async function blockBetween(username, other) {
   const rows = await q(
-    `SELECT * FROM friendships WHERE requester = $1 OR addressee = $1 ORDER BY updated_at DESC`,
-    [req.username]
+    `SELECT blocker FROM blocks WHERE (blocker = $1 AND blocked = $2) OR (blocker = $2 AND blocked = $1)`,
+    [username, other]
   );
+  if (rows.some(r => r.blocker === username)) return 'you';
+  return rows.length ? 'them' : null;
+}
 
-  res.json(rows.map(r => ({
-    requester: r.requester,
-    addressee: r.addressee,
-    otherUser: r.requester === req.username ? r.addressee : r.requester,
-    direction: r.requester === req.username ? 'outgoing' : 'incoming',
-    status: r.status,
-    updatedAt: r.updated_at
-  })));
+function dmBlockedError(block) {
+  return block === 'you'
+    ? 'You have blocked this user. Unblock them to send a message.'
+    : 'Your message could not be delivered. This user may not be accepting messages from you.';
+}
+
+async function friendshipBetween(a, b) {
+  return one(
+    `SELECT * FROM friendships WHERE (requester = $1 AND addressee = $2) OR (requester = $2 AND addressee = $1)`,
+    [a, b]
+  );
+}
+
+// Both people's friend lists change, and the acting user may have other
+// tabs/devices open that need to catch up too.
+function friendsChanged(...users) {
+  for (const user of users) sendToUser(user, 'friendsChanged', {});
+}
+
+app.get('/friends', requireAuth, route(async (req, res) => {
+  const [rows, blocked] = await Promise.all([
+    q(`SELECT * FROM friendships WHERE requester = $1 OR addressee = $1 ORDER BY updated_at DESC`, [req.username]),
+    // Only the people *you* blocked - who has blocked you stays private.
+    q(`SELECT blocked, created_at FROM blocks WHERE blocker = $1 ORDER BY created_at DESC`, [req.username])
+  ]);
+
+  res.json([
+    ...rows.map(r => ({
+      requester: r.requester,
+      addressee: r.addressee,
+      otherUser: r.requester === req.username ? r.addressee : r.requester,
+      direction: r.requester === req.username ? 'outgoing' : 'incoming',
+      status: r.status,
+      updatedAt: r.updated_at
+    })),
+    ...blocked.map(b => ({
+      requester: req.username,
+      addressee: b.blocked,
+      otherUser: b.blocked,
+      direction: 'outgoing',
+      status: 'blocked',
+      updatedAt: b.created_at
+    }))
+  ]);
 }));
 
 app.post('/friends/request', requireAuth, route(async (req, res) => {
+  if (rateLimited('friendreq:' + req.username, 20, 60 * 1000)) return res.status(429).json({ error: 'Too many friend requests - try again in a minute.' });
   const to = cleanUsername(req.body.username);
-  if (!validUsername(to) || to === req.username) return res.status(400).json({ error: 'invalid username' });
-  if (!(await getUser(to))) return res.status(404).json({ error: 'user not found' });
+  if (to === req.username) return res.status(400).json({ error: "You can't add yourself as a friend." });
+  if (!validUsername(to) || !(await getUser(to))) return res.status(404).json({ error: "Hm, that didn't work. Double-check the username is correct." });
 
-  const pair = [req.username, to].sort();
-  const existing = await one(
-    `SELECT * FROM friendships WHERE requester IN ($1, $2) AND addressee IN ($1, $2)`,
-    [pair[0], pair[1]]
-  );
-  if (existing && existing.status === 'blocked') return res.status(403).json({ error: 'friend request blocked' });
+  const block = await blockBetween(req.username, to);
+  if (block === 'you') return res.status(403).json({ error: 'You have blocked this user. Unblock them first to send a friend request.' });
+  if (block) return res.status(403).json({ error: "Hm, that didn't work. This user may not be accepting friend requests." });
+
+  const existing = await friendshipBetween(req.username, to);
+  if (existing && existing.status === 'accepted') return res.status(400).json({ error: "You're already friends with that user!" });
+  if (existing && existing.requester === req.username) return res.json({ message: 'request sent', status: 'pending' });
+  if (existing) {
+    // They'd already asked you - sending one back just accepts theirs.
+    await pool.query(`UPDATE friendships SET status = 'accepted', updated_at = NOW() WHERE requester = $1 AND addressee = $2`, [to, req.username]);
+    friendsChanged(req.username, to);
+    return res.json({ message: 'friend added', status: 'accepted' });
+  }
 
   await pool.query(
-    `INSERT INTO friendships (requester, addressee, status, updated_at)
-     VALUES ($1, $2, 'pending', NOW())
-     ON CONFLICT (requester, addressee) DO UPDATE SET status = 'pending', updated_at = NOW()`,
+    `INSERT INTO friendships (requester, addressee, status, updated_at) VALUES ($1, $2, 'pending', NOW())
+     ON CONFLICT (requester, addressee) DO NOTHING`,
     [req.username, to]
   );
-  sendToUser(to, 'friendsChanged', {});
-  res.json({ message: 'request sent' });
+  friendsChanged(req.username, to);
+  res.json({ message: 'request sent', status: 'pending' });
 }));
 
 app.post('/friends/respond', requireAuth, route(async (req, res) => {
@@ -1963,17 +2039,19 @@ app.post('/friends/respond', requireAuth, route(async (req, res) => {
   } else {
     await pool.query(`DELETE FROM friendships WHERE requester = $1 AND addressee = $2`, [requester, req.username]);
   }
-  sendToUser(requester, 'friendsChanged', {});
+  friendsChanged(requester, req.username);
   res.json({ message: 'ok' });
 }));
 
+// Unfriend, or cancel/ignore a pending request in either direction.
 app.post('/friends/remove', requireAuth, route(async (req, res) => {
   const other = cleanUsername(req.body.username);
+  if (!validUsername(other)) return res.status(400).json({ error: 'invalid username' });
   await pool.query(
     `DELETE FROM friendships WHERE (requester = $1 AND addressee = $2) OR (requester = $2 AND addressee = $1)`,
     [req.username, other]
   );
-  sendToUser(other, 'friendsChanged', {});
+  friendsChanged(req.username, other);
   res.json({ message: 'ok' });
 }));
 
@@ -1985,9 +2063,18 @@ app.post('/friends/block', requireAuth, route(async (req, res) => {
     `DELETE FROM friendships WHERE (requester = $1 AND addressee = $2) OR (requester = $2 AND addressee = $1)`,
     [req.username, other]
   );
-  await pool.query(`INSERT INTO friendships (requester, addressee, status) VALUES ($1, $2, 'blocked')`, [req.username, other]);
-  sendToUser(other, 'friendsChanged', {});
+  await pool.query(`INSERT INTO blocks (blocker, blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.username, other]);
+  // The other person only sees the friendship (if any) disappear.
+  friendsChanged(req.username, other);
   res.json({ message: 'blocked' });
+}));
+
+app.post('/friends/unblock', requireAuth, route(async (req, res) => {
+  const other = cleanUsername(req.body.username);
+  if (!validUsername(other)) return res.status(400).json({ error: 'invalid username' });
+  await pool.query(`DELETE FROM blocks WHERE blocker = $1 AND blocked = $2`, [req.username, other]);
+  friendsChanged(req.username);
+  res.json({ message: 'unblocked' });
 }));
 
 // ---------------- GROUPS ----------------
@@ -2132,6 +2219,8 @@ app.post('/upload', requireAuth, route(async (req, res) => {
 
   if (to) {
     if (!validUsername(to) || to === req.username || !(await getUser(to))) return res.status(400).json({ error: 'invalid recipient' });
+    const block = await blockBetween(req.username, to);
+    if (block) return res.status(403).json({ error: dmBlockedError(block) });
     finalRoom = makeDMRoom(req.username, to);
     toUser = to;
     isGroup = 0;
@@ -2288,6 +2377,11 @@ io.on('connection', (socket) => {
       return;
     }
     if (!text) return;
+    const block = await blockBetween(socket.username, to);
+    if (block) {
+      if (typeof ack === 'function') ack({ error: dmBlockedError(block) });
+      return;
+    }
 
     const room = makeDMRoom(socket.username, to);
     const created = await insertMessage(room, socket.username, text, to, 0, replyTo);
@@ -2384,7 +2478,7 @@ io.on('connection', (socket) => {
     const room = String(data.room || '');
     const to = cleanUsername(data.to);
     if (to) {
-      if (!validUsername(to) || to === socket.username) return;
+      if (!validUsername(to) || to === socket.username || (await blockBetween(socket.username, to))) return;
       sendToUser(to, 'typing', { room: makeDMRoom(socket.username, to), to, user: socket.username });
     } else if (await isAllowedRoom(socket.username, room)) {
       socket.to(room).emit('typing', { room, user: socket.username });

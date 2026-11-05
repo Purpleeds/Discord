@@ -148,3 +148,192 @@ test('uploaded web pages are downloaded, never run on the app origin', async () 
   assert.equal(text.headers.get('content-disposition'), null);
   assert.equal(text.headers.get('x-content-type-options'), 'nosniff');
 });
+
+test('server customisation: roles, channel rules and welcome messages', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Smoke ' + tag })).data.id;
+  const server = async () => (await api(tokens.a, '/servers')).data.find(s => s.id === sid);
+  let s = await server();
+  const [general, random] = s.channels;
+  assert.equal((await api(tokens.a, `/servers/${sid}/update`, { description: 'hi', bannerColor: '#e91e63', systemChannelId: general.id })).status, 200);
+
+  // joining posts one welcome message in the chosen channel, and it shows
+  // up in history with its kind (a reload must not turn it into plain text)
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  const history = (await api(tokens.a, '/messages?room=' + encodeURIComponent(general.room))).data;
+  assert.deepEqual(history.map(m => [m.kind, m.user]), [['join', names.b]]);
+
+  // roles: only managers create/assign; members see them on the list
+  assert.equal((await api(tokens.b, `/servers/${sid}/roles`, { name: 'x' })).status, 403);
+  const role = (await api(tokens.a, `/servers/${sid}/roles`, { name: 'Mods', color: '#3ba55c', hoist: true })).data;
+  assert.equal((await api(tokens.a, `/servers/${sid}/members/${names.b}/roles`, { roleIds: [role.id] })).status, 200);
+  const members = (await api(tokens.b, `/servers/${sid}/members`)).data;
+  assert.deepEqual(members.find(m => m.username === names.b).roleIds, [role.id]);
+
+  // announcement channel + slowmode apply to members, not the owner
+  await api(tokens.a, `/servers/${sid}/channels/${random.id}/update`, { adminsOnly: true });
+  await api(tokens.a, `/servers/${sid}/channels/${general.id}/update`, { slowmode: 30 });
+  for (const room of [general.room, random.room]) {
+    await emit(sockets.a, 'joinRoom', room);
+    await emit(sockets.b, 'joinRoom', room);
+  }
+  assert.match((await emit(sockets.b, 'message', { room: random.room, text: 'hi' })).error, /Only admins/);
+  assert.ok((await emit(sockets.a, 'message', { room: random.room, text: 'news' })).id);
+  assert.ok((await emit(sockets.b, 'message', { room: general.room, text: 'one' })).id);
+  assert.match((await emit(sockets.b, 'message', { room: general.room, text: 'two' })).error, /Slowmode/);
+  assert.ok((await emit(sockets.a, 'message', { room: general.room, text: 'owner 1' })).id);
+  assert.ok((await emit(sockets.a, 'message', { room: general.room, text: 'owner 2' })).id);
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});
+
+test('batch 1: polls, message links, search everywhere, mentions, mutuals', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Batch1 ' + tag })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  const room = s.channels[0].room;
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  await emit(sockets.a, 'joinRoom', room);
+  await emit(sockets.b, 'joinRoom', room);
+
+  // polls: single choice, live results, ending
+  const poll = (await api(tokens.a, '/polls', { room, question: 'Best?', options: ['x', 'y'], durationHours: 24 })).data;
+  const [x, y] = poll.poll.options.map(o => o.id);
+  assert.equal((await api(tokens.b, `/polls/${poll.poll.id}/vote`, { optionIds: [x, y] })).status, 400);
+  assert.equal((await api(tokens.b, `/polls/${poll.poll.id}/vote`, { optionIds: [x] })).data.poll.totalVoters, 1);
+  assert.equal((await api(tokens.c, `/polls/${poll.poll.id}/vote`, { optionIds: [y] })).status, 404, 'outsiders cannot vote');
+  assert.equal((await api(tokens.b, `/polls/${poll.poll.id}/end`, {})).status, 403);
+  assert.equal((await api(tokens.a, `/polls/${poll.poll.id}/end`, {})).data.poll.ended, true);
+
+  // message links resolve only for people who can see the message
+  const word = 'quokka' + tag;
+  const sent = await emit(sockets.a, 'message', { room, text: word + ' @everyone' });
+  assert.equal((await api(tokens.b, `/messages/${sent.id}/locate`)).data.room, room);
+  assert.equal((await api(tokens.c, `/messages/${sent.id}/locate`)).status, 404);
+
+  // search everywhere never leaks other people's servers
+  assert.equal((await api(tokens.b, '/search?scope=all&q=' + word)).data.total, 1);
+  assert.equal((await api(tokens.c, '/search?scope=all&q=' + word)).data.total, 0);
+
+  // @everyone pings only from owner/admins; it reaches the inbox
+  const history = (await api(tokens.b, '/messages?room=' + encodeURIComponent(room))).data;
+  assert.equal(history.find(m => m.id === sent.id).mentionsEveryone, true);
+  const fromMember = await emit(sockets.b, 'message', { room, text: 'hi @everyone' });
+  const again = (await api(tokens.a, '/messages?room=' + encodeURIComponent(room))).data;
+  assert.equal(again.find(m => m.id === fromMember.id).mentionsEveryone, false);
+  assert.ok((await api(tokens.b, '/mentions')).data.some(m => m.id === sent.id));
+
+  // mutual servers (the original server is left out)
+  const mutual = (await api(tokens.a, `/users/${names.b}/mutual`)).data;
+  assert.deepEqual(mutual.servers.map(m => m.id), [sid]);
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});
+
+test('batch 2: private channels, threads, forums, events', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Batch2 ' + tag })).data.id;
+  let s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  await api(tokens.c, '/servers/join', { code: s.inviteCode });
+  const role = (await api(tokens.a, `/servers/${sid}/roles`, { name: 'Inner' })).data;
+  await api(tokens.a, `/servers/${sid}/members/${names.b}/roles`, { roleIds: [role.id] });
+
+  // private channel: visible to the role, invisible (in every way) to others
+  const cat = (await api(tokens.a, `/servers/${sid}/categories`, { name: 'Private stuff' })).data;
+  const priv = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'inner-circle', categoryId: cat.id, isPrivate: true })).data;
+  await api(tokens.a, `/servers/${sid}/channels/${priv.id}/access`, { isPrivate: true, roleIds: [role.id] });
+  const sees = async k => (await api(tokens[k], '/servers')).data.find(x => x.id === sid).channels.some(c => c.id === priv.id);
+  assert.equal(await sees('b'), true);
+  assert.equal(await sees('c'), false);
+  await emit(sockets.a, 'joinRoom', priv.room);
+  const secret = await emit(sockets.a, 'message', { room: priv.room, text: 'inner ' + tag });
+  assert.equal((await api(tokens.c, '/messages?room=' + encodeURIComponent(priv.room))).status, 403);
+  assert.equal((await api(tokens.c, '/search?scope=all&q=inner ' + tag)).data.total, 0);
+  assert.equal((await api(tokens.c, `/messages/${secret.id}/locate`)).status, 404);
+
+  // threads inherit the parent channel's privacy
+  const thread = (await api(tokens.b, '/threads', { messageId: secret.id, name: 'Side chat' })).data;
+  assert.ok(thread.id);
+  assert.equal((await api(tokens.c, '/threads/' + thread.id)).status, 404);
+  assert.ok((await emit(sockets.b, 'message', { room: thread.room, text: 'in the thread' })).id);
+  assert.equal((await api(tokens.a, '/threads/' + thread.id)).data.messageCount, 1);
+
+  // forum channels take posts, not plain messages
+  const forum = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'help', kind: 'forum' })).data;
+  await emit(sockets.c, 'joinRoom', forum.room);
+  assert.match((await emit(sockets.c, 'message', { room: forum.room, text: 'hi' })).error, /forum/);
+  const post = (await api(tokens.c, '/threads', { parentRoom: forum.room, name: 'Help me', text: 'please' })).data;
+  assert.equal((await api(tokens.a, '/threads?parent=' + encodeURIComponent(forum.room))).data[0].id, post.id);
+
+  // events: admins create, members RSVP
+  assert.equal((await api(tokens.c, `/servers/${sid}/events`, { name: 'x', startsAt: new Date(Date.now() + 864e5).toISOString() })).status, 403);
+  const ev = (await api(tokens.a, `/servers/${sid}/events`, { name: 'Party', startsAt: new Date(Date.now() + 864e5).toISOString() })).data;
+  assert.equal((await api(tokens.c, `/events/${ev.id}/rsvp`, { interested: true })).data.interestedCount, 2);
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});
+
+// Waits for the next `event` on a socket that matches `pred` (fails after 5s).
+const nextEvent = (socket, event, pred = () => true) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { socket.off(event, handler); reject(new Error('timed out waiting for ' + event)); }, 5000);
+  function handler(data) { if (pred(data)) { clearTimeout(timer); socket.off(event, handler); resolve(data); } }
+  socket.on(event, handler);
+});
+
+test('batch 3: calls ring, connect, relay only between participants, and end', async () => {
+  const key = 'call:dm:' + [names.a, names.b].sort().join(':');
+  const room = 'dm:' + [names.a, names.b].sort().join(':');
+  assert.ok((await api(tokens.a, '/voice/ice')).data.iceServers.length);
+
+  // outsiders can't join someone else's DM call
+  assert.ok((await emit(sockets.c, 'voice:join', { key })).error);
+
+  const ring = nextEvent(sockets.b, 'voice:ring', r => r.key === key);
+  assert.equal((await emit(sockets.a, 'voice:join', { key })).message, 'ok');
+  assert.equal((await ring).from, names.a);
+  const both = nextEvent(sockets.a, 'voice:state', s => s.key === key && s.participants.length === 2);
+  assert.deepEqual((await emit(sockets.b, 'voice:join', { key })).participants, [names.a]);
+  assert.deepEqual((await both).ringing, []);
+
+  // connection-setup data goes between people in the call, never from outside it
+  let leaked = false;
+  sockets.b.on('voice:signal', s => { if (s.from === names.c) leaked = true; });
+  const relayed = nextEvent(sockets.b, 'voice:signal', s => s.from === names.a);
+  sockets.a.emit('voice:signal', { key, to: names.b, data: { description: { type: 'offer', sdp: 'x' } } });
+  assert.equal((await relayed).data.description.type, 'offer');
+  sockets.c.emit('voice:signal', { key, to: names.b, data: { candidate: 'y' } });
+
+  // the call shows in the DM as a call message, finished when everyone leaves
+  const log = (await api(tokens.a, '/messages?room=' + encodeURIComponent(room))).data.find(m => m.kind === 'call');
+  assert.equal(log.text, 'ongoing');
+  const ended = nextEvent(sockets.a, 'messageUpdated', m => m.id === log.id);
+  sockets.a.emit('voice:leave', { key });
+  sockets.b.emit('voice:leave', { key });
+  assert.match((await ended).text, /^ended:/);
+  assert.equal(leaked, false);
+
+  // blocked people can't call each other
+  await api(tokens.c, '/friends/block', { username: names.a });
+  assert.match((await emit(sockets.a, 'voice:join', { key: 'call:dm:' + [names.a, names.c].sort().join(':') })).error, /can't call/);
+  await api(tokens.c, '/friends/unblock', { username: names.a });
+
+  // voice channels: admins can disconnect people, and losing access ends your call
+  const sid = (await api(tokens.a, '/servers', { name: 'Voice ' + tag })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  const vc = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'Lounge', kind: 'voice' })).data;
+  const vkey = 'voice:' + vc.room;
+  assert.equal((await emit(sockets.a, 'voice:join', { key: vkey })).message, 'ok');
+  assert.equal((await emit(sockets.b, 'voice:join', { key: vkey })).message, 'ok');
+  assert.ok((await emit(sockets.b, 'voice:kick', { key: vkey, username: names.a })).error);
+  const kicked = nextEvent(sockets.b, 'voice:forceLeave', f => f.key === vkey);
+  assert.equal((await emit(sockets.a, 'voice:kick', { key: vkey, username: names.b })).message, 'ok');
+  await kicked;
+  assert.equal((await emit(sockets.b, 'voice:join', { key: vkey })).message, 'ok');
+  const removed = nextEvent(sockets.b, 'voice:forceLeave', f => f.key === vkey);
+  await api(tokens.a, `/servers/${sid}/channels/${vc.id}/access`, { isPrivate: true, roleIds: [] });
+  assert.match((await removed).reason, /no longer have access/);
+  assert.ok((await emit(sockets.b, 'voice:join', { key: vkey })).error);
+  sockets.a.emit('voice:leave', { key: vkey });
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});

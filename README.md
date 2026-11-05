@@ -1,8 +1,9 @@
 # Chat
 
 A self-hosted, Discord-style chat app: servers and channels, DMs, group
-chats, friends and blocking, reactions, replies, file sharing, push
-notifications and a full settings screen.
+chats, voice and video calls, voice channels and screen sharing, friends
+and blocking, reactions, replies, file sharing, push notifications and a
+full settings screen.
 
 - **Backend:** Node.js, Express, Socket.IO and Postgres (`server.js`)
 - **Frontend:** one file of plain HTML/CSS/JS (`public/index.html`), plus
@@ -30,6 +31,21 @@ tables itself on startup, so an empty database is all it needs.
 | `PGSSL` | no | Set to `false` for a local Postgres without SSL. |
 | `DATA_DIR` | no | Where shared files are stored (default: this folder). |
 | `RATE_LIMITS` | no | Set to `off` to disable rate limits (for tests only). |
+| `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
+| `TURN_USERNAME` / `TURN_CREDENTIAL` | no | Login for that TURN relay. |
+
+### Calls and TURN
+
+Calls (DMs, groups, voice channels, screen sharing) connect browser to
+browser with WebRTC; the server only passes the setup messages along.
+Each person sends to everyone else in the call, so calls are capped at 8
+people. By default only free public STUN servers are used, which works on
+most home and phone connections. Some school, office and public wifi
+networks block direct connections; there a call shows "Can't connect" and
+needs a TURN relay (a paid or self-hosted service such as coturn or
+Cloudflare/Twilio TURN) set with the three variables above. Calls live in
+the server's memory, so a restart or redeploy ends them (people's apps
+rejoin automatically when the server comes back).
 
 ## Deploying
 
@@ -50,7 +66,8 @@ server icons, friends) is in Postgres.
 
 The smoke test starts its own copy of the server against a database you
 point it at and checks the main features end to end (accounts, messages,
-DMs, friends, blocking, upload safety). Use a throwaway database: it
+DMs, friends, blocking, upload safety, servers, private channels,
+threads, events and calls). Use a throwaway database: it
 creates test accounts.
 
 ```bash

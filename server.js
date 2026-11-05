@@ -120,7 +120,7 @@ async function one(text, params) {
 
 app.set('trust proxy', 1); // Render sits in front of us - lets req.ip be the real visitor (used for rate limits)
 app.use(compression()); // gzip responses: index.html and JSON shrink ~70-80%
-app.use(express.json({ limit: '3mb' })); // room for a 1.5MB avatar as base64
+app.use(express.json({ limit: '5mb' })); // room for a 1.5MB server icon AND banner (as base64) in one save
 app.use((req, res, next) => {
   // Browsers must trust the Content-Type we send rather than guessing one
   // from the bytes (a "guessed" HTML page is how uploads turn into XSS).
@@ -207,6 +207,103 @@ async function setupSchema() {
       created_by TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE(server_id, name)
+    );
+
+    -- Custom, purely cosmetic server roles (name + colour, optionally shown
+    -- as their own group in the member list). What people are allowed to
+    -- do is still decided by server_members.role (owner/admin/member).
+    CREATE TABLE IF NOT EXISTS server_roles (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT,
+      hoist INTEGER DEFAULT 0,
+      position INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS server_categories (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      position INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    -- Who can see a private channel, besides the owner and admins: each row
+    -- grants one role (role_id) or one member (username).
+    CREATE TABLE IF NOT EXISTS channel_access (
+      channel_id INTEGER NOT NULL,
+      role_id INTEGER,
+      username TEXT
+    );
+
+    -- A thread is its own room ('thread:<id>') hanging off a channel: started
+    -- from a message, or a post in a forum channel. Who can see it is
+    -- always decided by its parent channel.
+    CREATE TABLE IF NOT EXISTS threads (
+      id SERIAL PRIMARY KEY,
+      parent_room TEXT NOT NULL,
+      starter_message_id INTEGER,
+      name TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      message_count INTEGER DEFAULT 0,
+      last_message_at TIMESTAMPTZ DEFAULT NOW(),
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS server_events (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      channel_id INTEGER,
+      name TEXT NOT NULL,
+      description TEXT,
+      location TEXT,
+      starts_at TIMESTAMPTZ NOT NULL,
+      ends_at TIMESTAMPTZ,
+      created_by TEXT NOT NULL,
+      reminder_sent INTEGER DEFAULT 0,
+      cancelled INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS event_rsvps (
+      event_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (event_id, username)
+    );
+
+    CREATE TABLE IF NOT EXISTS server_member_roles (
+      server_id INTEGER NOT NULL,
+      role_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      PRIMARY KEY (role_id, username)
+    );
+
+    -- A poll is a message (kind 'poll', text = the question) plus these.
+    CREATE TABLE IF NOT EXISTS polls (
+      id SERIAL PRIMARY KEY,
+      message_id INTEGER UNIQUE NOT NULL,
+      question TEXT NOT NULL,
+      allow_multiple INTEGER DEFAULT 0,
+      ends_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS poll_options (
+      id SERIAL PRIMARY KEY,
+      poll_id INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      text TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS poll_votes (
+      poll_id INTEGER NOT NULL,
+      option_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (option_id, username)
     );
 
     CREATE TABLE IF NOT EXISTS messages (
@@ -356,6 +453,38 @@ async function setupSchema() {
   // images never have to travel to this process just to be fingerprinted.
   await pool.query(`UPDATE users SET avatar_version = substr(md5(avatar_url), 1, 10) WHERE avatar_version IS NULL AND left(avatar_url, 5) = 'data:'`);
   await pool.query(`UPDATE servers SET icon_version = substr(md5(icon_url), 1, 10) WHERE icon_version IS NULL AND left(icon_url, 5) = 'data:'`);
+  // Server customisation: description, banner (colour and/or image), the
+  // channel join messages go to, and per-channel slowmode / announcement
+  // (admins-only posting). messages.kind marks system messages ('join').
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS description TEXT`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_color TEXT`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_url TEXT`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_version TEXT`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS system_channel_id INTEGER`);
+  await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS slowmode_seconds INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS admins_only INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS kind TEXT`);
+  await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS category_id INTEGER`);
+  await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'text'`); // 'text' | 'forum'
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads (parent_room, last_message_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_server ON server_events (server_id, starts_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_events_due ON server_events (starts_at) WHERE reminder_sent = 0 AND cancelled = 0`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_starter ON threads (starter_message_id) WHERE starter_message_id IS NOT NULL`);
+  await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS is_private INTEGER DEFAULT 0`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_access_role ON channel_access (channel_id, role_id) WHERE role_id IS NOT NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_access_user ON channel_access (channel_id, username) WHERE username IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_channel_access_username ON channel_access (username)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_categories_server ON server_categories (server_id)`);
+  // @everyone / @role mentions that are allowed to ping, decided by the
+  // server when the message is sent (typing "@everyone" as a regular
+  // member is just text). mention_role_ids is a comma-separated id list.
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mentions_everyone INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mention_role_ids TEXT`);
+  await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS mentionable INTEGER DEFAULT 0`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_poll_options_poll ON poll_options (poll_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes (poll_id, username)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_server_roles_server ON server_roles (server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_member_roles_server ON server_member_roles (server_id, username)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_reactions_message ON message_reactions (message_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_server_members_user ON server_members (username)`);
 
@@ -386,7 +515,7 @@ function makeInviteCode() {
 
 // Never pulls the icon image itself - this runs on most permission checks.
 async function getServerById(id) {
-  return one(`SELECT id, name, owner, invite_code, is_default, censor_swears, icon_version, created_at FROM servers WHERE id = $1`, [id]);
+  return one(`SELECT id, name, owner, invite_code, is_default, censor_swears, icon_version, created_at, system_channel_id FROM servers WHERE id = $1`, [id]);
 }
 async function getServerByCode(code) {
   return one(`SELECT * FROM servers WHERE invite_code = $1`, [code]);
@@ -564,7 +693,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT 300
      ) recent ORDER BY id ASC`,
     [room]
@@ -573,17 +702,37 @@ async function getMessagesForRoom(room) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
   );
 }
-async function insertMessage(room, user, text, toUser, isGroup, replyTo) {
+async function insertMessage(room, user, text, toUser, isGroup, replyTo, mentions) {
+  mentions = mentions || { everyone: 0, roles: '' };
   return one(
-    `INSERT INTO messages (room, "user", text, to_user, is_group, reply_to) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [room, user, text, toUser, isGroup, replyTo]
+    `INSERT INTO messages (room, "user", text, to_user, is_group, reply_to, mentions_everyone, mention_role_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [room, user, text, toUser, isGroup, replyTo, mentions.everyone, mentions.roles]
   );
+}
+
+// Which @everyone / <@&roleId> mentions in a server-channel message may
+// actually ping. @everyone: owner/admins only. A role: if it's marked
+// mentionable, or the sender is an owner/admin. Anything else stays text.
+const EVERYONE_RE = /(^|[^a-z0-9_.-])@everyone($|[^a-z0-9_.-])/i;
+async function mentionFlags(username, room, text) {
+  const none = { everyone: 0, roles: '' };
+  const wantsEveryone = EVERYONE_RE.test(text);
+  const roleIds = [...new Set([...String(text).matchAll(/<@&(\d+)>/g)].map(m => Number(m[1])))].slice(0, 20);
+  if (!wantsEveryone && !roleIds.length) return none;
+  const channel = await channelForRoom(room);
+  if (!channel) return none;
+  const admin = await isServerAdmin(username, channel.server_id);
+  const roles = roleIds.length
+    ? (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND id = ANY($2) AND ($3 OR mentionable = 1)`, [channel.server_id, roleIds, admin])).map(r => r.id)
+    : [];
+  return { everyone: wantsEveryone && admin ? 1 : 0, roles: roles.join(',') };
 }
 async function insertFile(room, user, toUser, isGroup, fileName, fileType, fileUrl, fileSize, caption) {
   return one(
@@ -836,12 +985,22 @@ function serverIconUrlOf(s) {
   if (!String(s.icon_url).startsWith('data:')) return s.icon_url;
   return `/server-icons/${s.id}?v=${s.icon_version || '0'}`;
 }
+function serverBannerUrlOf(s) {
+  if (!s.banner_url) return '';
+  return `/server-banners/${s.id}?v=${s.banner_version || '0'}`;
+}
+
+function roleFromRow(r) {
+  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, mentionable: !!r.mentionable, position: r.position };
+}
 
 async function serversForUser(username) {
   const admin = await isAdmin(username);
   const rows = await q(
     `SELECT s.id, s.name, s.owner, s.invite_code, s.is_default, s.censor_swears, s.icon_version,
-            CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url
+            s.description, s.banner_color, s.banner_version, s.system_channel_id,
+            CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
+            CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' ELSE 'data:' END AS banner_url
      FROM servers s
      WHERE s.is_default = 1
         OR s.id IN (SELECT server_id FROM server_members WHERE username = $1)
@@ -850,19 +1009,34 @@ async function serversForUser(username) {
   );
   if (!rows.length) return [];
   const ids = rows.map(s => s.id);
-  const [roleRows, channelRows] = await Promise.all([
+  const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
     q(`SELECT server_id, role FROM server_members WHERE username = $1`, [username]),
-    q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids])
+    q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
+    q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
+    q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids]),
+    q(`SELECT * FROM server_categories WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
+    readableChannelRooms(username)
   ]);
+  const canSee = new Set(readable);
+  const visibleChannels = channelRows.filter(c => canSee.has(c.room));
+  // who has access to each private channel - only sent to people who can manage that server
+  const privateIds = visibleChannels.filter(c => c.is_private).map(c => c.id);
+  const accessRows = privateIds.length ? await q(`SELECT * FROM channel_access WHERE channel_id = ANY($1)`, [privateIds]) : [];
   const roles = new Map(roleRows.map(r => [r.server_id, r.role]));
   const channelsBy = new Map();
-  for (const c of channelRows) {
+  for (const c of visibleChannels) {
     if (!channelsBy.has(c.server_id)) channelsBy.set(c.server_id, []);
     channelsBy.get(c.server_id).push(c);
+  }
+  const customRolesBy = new Map();
+  for (const r of customRoleRows) {
+    if (!customRolesBy.has(r.server_id)) customRolesBy.set(r.server_id, []);
+    customRolesBy.get(r.server_id).push(roleFromRow(r));
   }
   return rows.map(s => {
     const isOwner = s.owner === username;
     const role = isOwner ? 'owner' : roles.get(s.id);
+    const canManage = admin || (!s.is_default && (isOwner || role === 'admin'));
     return {
       id: s.id,
       name: s.name,
@@ -871,16 +1045,32 @@ async function serversForUser(username) {
       isDefault: !!s.is_default,
       isOwner,
       isServerAdmin: admin || role === 'admin' || role === 'owner',
-      canManage: admin || (!s.is_default && (isOwner || role === 'admin')),
+      canManage,
       canManageOwnerLevel: admin || isOwner,
       censorSwears: !!s.censor_swears,
       inviteCode: (isOwner || admin || !s.is_default) ? s.invite_code : '',
+      description: s.description || '',
+      bannerColor: s.banner_color || '',
+      bannerUrl: serverBannerUrlOf(s),
+      systemChannelId: s.system_channel_id || null,
+      roles: customRolesBy.get(s.id) || [],
+      categories: categoryRows.filter(c => c.server_id === s.id).map(c => ({ id: c.id, name: c.name, position: c.position })),
+      myRoleIds: myRoleRows.filter(r => r.server_id === s.id).map(r => r.role_id),
       channels: (channelsBy.get(s.id) || []).map(c => ({
         id: c.id,
         serverId: c.server_id,
         name: c.name,
         room: c.room,
-        topic: c.topic || ''
+        topic: c.topic || '',
+        slowmode: c.slowmode_seconds || 0,
+        adminsOnly: !!c.admins_only,
+        categoryId: c.category_id || null,
+        isPrivate: !!c.is_private,
+        kind: ['forum', 'voice'].includes(c.kind) ? c.kind : 'text',
+        access: canManage && c.is_private ? {
+          roleIds: accessRows.filter(a => a.channel_id === c.id && a.role_id).map(a => a.role_id),
+          usernames: accessRows.filter(a => a.channel_id === c.id && a.username).map(a => a.username)
+        } : null
       }))
     };
   });
@@ -903,7 +1093,7 @@ async function notifyServerMembers(serverId, event, payload) {
 // server admins - only a global admin can act there.
 async function canModerateRoom(username, room) {
   if (await isAdmin(username)) return true;
-  const channel = await getChannelByRoom(room);
+  const channel = await channelForRoom(room);
   if (channel) return isServerAdmin(username, channel.server_id);
   return false;
 }
@@ -911,16 +1101,107 @@ async function canModerateRoom(username, room) {
 // Every room a user is entitled to sit in, so unread badges work for channels
 // they are not currently looking at.
 async function allRoomsFor(username) {
-  const rooms = [];
-  const servers = await q(`SELECT id, is_default FROM servers`);
-  for (const s of servers) {
-    if (s.is_default || (await isServerMember(username, s.id))) {
-      for (const c of await getChannelsForServer(s.id)) rooms.push(c.room);
-    }
+  const [channels, groupRows] = await Promise.all([
+    readableChannelRooms(username),
+    q(`SELECT group_id FROM group_members WHERE username = $1`, [username])
+  ]);
+  const threadRows = channels.length ? await q(`SELECT 'thread:' || id AS room FROM threads WHERE parent_room = ANY($1)`, [channels]) : [];
+  return channels.concat(threadRows.map(t => t.room), groupRows.map(g => 'group:' + g.group_id));
+}
+
+function threadIdFromRoom(room) {
+  const m = /^thread:(\d+)$/.exec(String(room || ''));
+  return m ? Number(m[1]) : null;
+}
+async function getThread(id) {
+  return id ? one(`SELECT * FROM threads WHERE id = $1`, [id]) : null;
+}
+// The channel a room belongs to: the channel itself, or a thread's parent.
+async function channelForRoom(room) {
+  const threadId = threadIdFromRoom(room);
+  if (threadId) {
+    const thread = await getThread(threadId);
+    return thread ? getChannelByRoom(thread.parent_room) : null;
   }
-  const groupRows = await q(`SELECT group_id FROM group_members WHERE username = $1`, [username]);
-  for (const g of groupRows) rooms.push('group:' + g.group_id);
-  return rooms;
+  return getChannelByRoom(room);
+}
+// Keep a thread's counters fresh after something is posted in it.
+async function touchThread(room) {
+  const threadId = threadIdFromRoom(room);
+  if (!threadId) return;
+  const t = await one(
+    `UPDATE threads SET message_count = message_count + 1, last_message_at = NOW() WHERE id = $1 RETURNING parent_room`,
+    [threadId]
+  );
+  if (t) io.to(t.parent_room).emit('threadsChanged', { parentRoom: t.parent_room, threadId });
+}
+
+// Private channels: visible to the owner and admins, plus anyone given
+// access directly or through one of their roles. EVERY way of reading a
+// channel must go through this (or readableChannelRooms(), its bulk twin).
+async function canViewChannel(username, channel) {
+  if (!channel || !(await isServerMember(username, channel.server_id))) return false;
+  if (!channel.is_private) return true;
+  if (await isServerAdmin(username, channel.server_id)) return true;
+  return !!(await one(
+    `SELECT 1 FROM channel_access a
+     WHERE a.channel_id = $1
+       AND (a.username = $2 OR a.role_id IN (SELECT role_id FROM server_member_roles WHERE username = $2))`,
+    [channel.id, username]
+  ));
+}
+
+// Every channel room `username` can read, in one query - same rules as
+// canViewChannel(): server membership, then privacy.
+async function readableChannelRooms(username) {
+  const rows = await q(
+    `SELECT c.room FROM server_channels c JOIN servers s ON s.id = c.server_id
+     WHERE (s.is_default = 1 OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1))
+       AND (COALESCE(c.is_private, 0) = 0
+            OR $2
+            OR s.owner = $1
+            OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1 AND m.role IN ('admin', 'owner'))
+            OR EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c.id
+                       AND (a.username = $1 OR a.role_id IN (SELECT role_id FROM server_member_roles WHERE username = $1))))`,
+    [username, await isAdmin(username)]
+  );
+  return rows.map(r => r.room);
+}
+
+// Of `names`, the people who can see `channel` (for member lists and
+// @everyone/@role notifications in private channels).
+async function filterChannelViewers(channel, names) {
+  if (!channel || !channel.is_private) return names;
+  const rows = await q(
+    `SELECT username FROM server_members WHERE server_id = $1 AND role IN ('admin', 'owner')
+     UNION SELECT owner FROM servers WHERE id = $1
+     UNION SELECT username FROM channel_access WHERE channel_id = $2 AND username IS NOT NULL
+     UNION SELECT r.username FROM server_member_roles r JOIN channel_access a ON a.role_id = r.role_id WHERE a.channel_id = $2
+     UNION SELECT username FROM users WHERE is_admin = 1 OR username = 'Purple'`,
+    [channel.server_id, channel.id]
+  );
+  const allowed = new Set(rows.map(r => r.username));
+  return names.filter(n => allowed.has(n));
+}
+
+// Live delivery goes to Socket.IO rooms, so when someone loses access
+// (kicked, left, role or privacy changed) their open connections must be
+// taken out of those rooms by the SERVER - waiting for their browser to
+// ask would let a modified client keep listening.
+async function resyncRooms(usernames) {
+  const wanted = new Set(usernames);
+  const allowedBy = new Map();
+  for (const socket of io.sockets.sockets.values()) {
+    if (!wanted.has(socket.username)) continue;
+    if (!allowedBy.has(socket.username)) allowedBy.set(socket.username, new Set(await allRoomsFor(socket.username)));
+    const allowed = allowedBy.get(socket.username);
+    for (const room of [...socket.rooms]) {
+      if (room === socket.id || getDMUsers(room)) continue; // DMs are always yours
+      if (!allowed.has(room)) socket.leave(room);
+    }
+    for (const room of allowed) socket.join(room);
+  }
+  await enforceCallAccess(usernames);
 }
 
 async function isAllowedRoom(username, room) {
@@ -929,7 +1210,13 @@ async function isAllowedRoom(username, room) {
   if (!user || user.banned) return false;
 
   const channel = await getChannelByRoom(room);
-  if (channel) return isServerMember(username, channel.server_id);
+  if (channel) return canViewChannel(username, channel);
+
+  const threadId = threadIdFromRoom(room);
+  if (threadId) {
+    const thread = await getThread(threadId);
+    return !!thread && canViewChannel(username, await getChannelByRoom(thread.parent_room));
+  }
 
   const dmUsers = getDMUsers(room);
   if (dmUsers) return dmUsers.includes(username);
@@ -944,6 +1231,31 @@ function getDMOtherUser(username, room) {
   const users = getDMUsers(room);
   if (!users || !users.includes(username)) return null;
   return users.find(u => u !== username) || null;
+}
+
+// Seconds a member must wait between messages in a channel (Discord's list).
+const SLOWMODE_OPTIONS = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600];
+const slowmodeLast = new Map(); // room + '\n' + username -> time of their last post
+setInterval(() => {
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000; // longest slowmode
+  for (const [key, at] of slowmodeLast) if (at < cutoff) slowmodeLast.delete(key);
+}, 30 * 60 * 1000).unref();
+
+// Announcement channels (admins only) and slowmode. Returns an error to
+// show, or null if `username` may post in `room` right now - in which case
+// a slowmode slot is claimed immediately, so two quick sends can't both
+// slip through. The owner and admins are exempt from both, like Discord.
+async function channelPostBlock(username, room) {
+  const channel = await getChannelByRoom(room);
+  if (channel && channel.kind === 'forum') return 'This is a forum - start a new post instead.';
+  if (!channel || (!channel.admins_only && !channel.slowmode_seconds)) return null;
+  if (await isServerAdmin(username, channel.server_id)) return null;
+  if (channel.admins_only) return 'Only admins can send messages in this channel.';
+  const key = room + '\n' + username;
+  const wait = (slowmodeLast.get(key) || 0) + channel.slowmode_seconds * 1000 - Date.now();
+  if (wait > 0) return `Slowmode is on - you can send another message in ${Math.ceil(wait / 1000)}s.`;
+  slowmodeLast.set(key, Date.now());
+  return null;
 }
 
 async function getMute(username) {
@@ -1041,14 +1353,49 @@ async function normaliseMessage(row) {
 // queries PER MESSAGE (author, reply, reactions) - opening a busy channel
 // was ~1,000 round trips to Postgres. Now it's at most four queries total,
 // however many messages there are.
+// Poll data for a set of poll messages: question, options with their
+// voters, and whether it has ended. Three queries however many polls.
+async function pollsFor(messageIds) {
+  const out = new Map();
+  if (!messageIds.length) return out;
+  const polls = await q(`SELECT * FROM polls WHERE message_id = ANY($1)`, [messageIds]);
+  if (!polls.length) return out;
+  const pollIds = polls.map(p => p.id);
+  const [options, votes] = await Promise.all([
+    q(`SELECT * FROM poll_options WHERE poll_id = ANY($1) ORDER BY position, id`, [pollIds]),
+    q(`SELECT option_id, username FROM poll_votes WHERE poll_id = ANY($1) ORDER BY created_at`, [pollIds])
+  ]);
+  const votersBy = new Map();
+  for (const v of votes) {
+    if (!votersBy.has(v.option_id)) votersBy.set(v.option_id, []);
+    votersBy.get(v.option_id).push(v.username);
+  }
+  for (const p of polls) {
+    const opts = options.filter(o => o.poll_id === p.id).map(o => ({ id: o.id, text: o.text, voters: votersBy.get(o.id) || [] }));
+    out.set(p.message_id, {
+      id: p.id,
+      question: p.question,
+      allowMultiple: !!p.allow_multiple,
+      endsAt: p.ends_at || null,
+      ended: !!p.ends_at && new Date(p.ends_at).getTime() <= Date.now(),
+      options: opts,
+      totalVoters: new Set(opts.flatMap(o => o.voters)).size
+    });
+  }
+  return out;
+}
+
 async function normaliseMessages(rows) {
   rows = rows.filter(Boolean);
   if (!rows.length) return [];
-  const [authors, replies, reactions] = await Promise.all([
+  const [authors, replies, reactions, polls, threadRows] = await Promise.all([
     getUsers(rows.map(r => r.user)),
     replyPreviews(rows.map(r => r.reply_to)),
-    reactionSummaries(rows.map(r => r.id))
+    reactionSummaries(rows.map(r => r.id)),
+    pollsFor(rows.filter(r => r.kind === 'poll' && !r.deleted_at).map(r => r.id)),
+    q(`SELECT * FROM threads WHERE starter_message_id = ANY($1)`, [rows.map(r => r.id)])
   ]);
+  const threadsBy = new Map(threadRows.map(t => [t.starter_message_id, threadFromRow(t)]));
   return rows.map(row => {
     const deleted = !!row.deleted_at;
     const u = authors.get(row.user);
@@ -1069,6 +1416,11 @@ async function normaliseMessages(rows) {
       reactions: reactions.get(row.id) || [],
       pinned: !!row.pinned_at && !deleted,
       pinnedBy: row.pinned_by || '',
+      kind: row.kind || '',
+      poll: polls.get(row.id) || null,
+      thread: threadsBy.get(row.id) || null,
+      mentionsEveryone: !!row.mentions_everyone,
+      mentionRoleIds: row.mention_role_ids ? String(row.mention_role_ids).split(',').map(Number) : [],
       createdAt: row.created_at
     };
   });
@@ -1275,6 +1627,13 @@ app.get('/avatars/:username', route(async (req, res) => {
     return row && row.avatar_url;
   });
 }));
+app.get('/server-banners/:id', route(async (req, res) => {
+  const id = Number(req.params.id);
+  await serveImage(res, 'b:' + id, async () => {
+    const row = await one(`SELECT banner_url FROM servers WHERE id = $1`, [id]);
+    return row && row.banner_url;
+  });
+}));
 app.get('/server-icons/:id', route(async (req, res) => {
   const id = Number(req.params.id);
   await serveImage(res, 's:' + id, async () => {
@@ -1457,6 +1816,39 @@ app.get('/profiles', requireAuth, route(async (req, res) => {
   res.json(out);
 }));
 
+// Servers and friends you have in common with someone, for their profile
+// card. The original server is left out - everyone is in it.
+app.get('/users/:username/mutual', requireAuth, route(async (req, res) => {
+  const other = cleanUsername(req.params.username);
+  if (!validUsername(other) || other === req.username) return res.json({ servers: [], friends: [] });
+  const [servers, friends] = await Promise.all([
+    q(
+      `SELECT s.id, s.name, s.icon_url, s.icon_version
+       FROM servers s
+       JOIN server_members a ON a.server_id = s.id AND a.username = $1
+       JOIN server_members b ON b.server_id = s.id AND b.username = $2
+       WHERE s.is_default = 0
+       ORDER BY lower(s.name)`,
+      [req.username, other]
+    ),
+    q(
+      `WITH mine AS (
+         SELECT CASE WHEN requester = $1 THEN addressee ELSE requester END AS friend
+         FROM friendships WHERE status = 'accepted' AND (requester = $1 OR addressee = $1)
+       ), theirs AS (
+         SELECT CASE WHEN requester = $2 THEN addressee ELSE requester END AS friend
+         FROM friendships WHERE status = 'accepted' AND (requester = $2 OR addressee = $2)
+       )
+       SELECT friend FROM mine INTERSECT SELECT friend FROM theirs ORDER BY 1`,
+      [req.username, other]
+    )
+  ]);
+  res.json({
+    servers: servers.map(s => ({ id: s.id, name: s.name, iconUrl: serverIconUrlOf(s) })),
+    friends: friends.map(f => f.friend)
+  });
+}));
+
 app.get('/users', requireAuth, route(async (req, res) => {
   const rows = await q(`SELECT ${USER_COLUMNS} FROM users WHERE banned = 0 ORDER BY LOWER(username) ASC LIMIT 500`);
   for (const row of rows) userCache.set(row.username, { row, at: Date.now() });
@@ -1496,16 +1888,35 @@ app.get('/read-receipts', requireAuth, route(async (req, res) => {
 // Searches every message in one room (not just the 300 a client has
 // loaded). Supports "from:username" alongside plain words, e.g.
 // "from:Purple pizza". Deleted messages never show up.
+// SQL that limits `messages` to rooms `username` can read: channels of
+// servers they're in (and the original server), their group chats and
+// their DMs. $1 = array of channel/group rooms, $2 = username.
+async function readableRoomsClause(username) {
+  return {
+    // usernames can't contain ':', so a DM room splits cleanly into its two people
+    sql: `(room = ANY($1) OR (room LIKE 'dm:%' AND (split_part(room, ':', 2) = $2 OR split_part(room, ':', 3) = $2)))`,
+    values: [await allRoomsFor(username), username]
+  };
+}
+
 app.get('/search', requireAuth, route(async (req, res) => {
+  const everywhere = req.query.scope === 'all';
   const room = String(req.query.room || '');
-  if (!(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
+  if (!everywhere && !(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
   let raw = String(req.query.q || '').slice(0, 200);
   let from = '';
   raw = raw.replace(/(^|\s)from:(\S+)/i, (m, lead, name) => { from = cleanUsername(name.replace(/^@/, '')); return lead; }).trim();
   if (!raw && !from) return res.status(400).json({ error: 'type something to search for' });
 
-  const where = [`room = $1`, `deleted_at IS NULL`];
-  const values = [room];
+  let where, values;
+  if (everywhere) {
+    const readable = await readableRoomsClause(req.username);
+    where = [readable.sql, `deleted_at IS NULL`];
+    values = readable.values;
+  } else {
+    where = [`room = $1`, `deleted_at IS NULL`];
+    values = [room];
+  }
   if (raw) {
     values.push('%' + raw.replace(/[\\%_]/g, '\\$&') + '%');
     where.push(`text ILIKE $${values.length} ESCAPE '\\'`);
@@ -1524,9 +1935,563 @@ app.get('/search', requireAuth, route(async (req, res) => {
 // Who can pin: in a server channel, the same people who can moderate it
 // (server owner/admins, site admins). In DMs and group chats, anyone in
 // the conversation - same as Discord.
+// Recent messages that @mention you, anywhere you can read - the inbox.
+function escapeRegex(text) { return String(text).replace(/[.*+?^${}()|[\]\\-]/g, '\\$&'); }
+app.get('/mentions', requireAuth, route(async (req, res) => {
+  const readable = await readableRoomsClause(req.username);
+  const myRoles = (await q(`SELECT role_id FROM server_member_roles WHERE username = $1`, [req.username])).map(r => r.role_id);
+  const rows = await q(
+    `SELECT * FROM messages
+     WHERE ${readable.sql} AND deleted_at IS NULL AND "user" <> $2
+       AND "user" NOT IN (SELECT blocked FROM blocks WHERE blocker = $2)
+       AND (text ~* $3 OR mentions_everyone = 1
+            OR (mention_role_ids <> '' AND string_to_array(mention_role_ids, ',')::int[] && $4::int[]))
+     ORDER BY id DESC LIMIT 50`,
+    [...readable.values, '(^|[^a-z0-9_.-])@' + escapeRegex(req.username) + '($|[^a-z0-9_.-])', myRoles]
+  );
+  res.json(await normaliseMessages(rows));
+}));
+
+// Where a message lives, for message links. Anything you can't see (or
+// that was deleted) is simply "not found", so links can't be used to
+// probe conversations you're not in.
+app.get('/messages/:id/locate', requireAuth, route(async (req, res) => {
+  const row = await getMessageById(Number(req.params.id));
+  if (!row || row.deleted_at || !(await isAllowedRoom(req.username, row.room))) return res.status(404).json({ error: 'message not found' });
+  const channel = await channelForRoom(row.room);
+  const dmUsers = getDMUsers(row.room);
+  const threadId = threadIdFromRoom(row.room);
+  res.json({
+    id: row.id,
+    room: row.room,
+    type: threadId ? 'thread' : (channel ? 'channel' : (dmUsers ? 'dm' : 'group')),
+    thread: threadId ? threadFromRow(await getThread(threadId)) : null,
+    serverId: channel ? channel.server_id : null,
+    other: dmUsers ? dmUsers.find(u => u !== req.username) || null : null
+  });
+}));
+
+// ---------------- SCHEDULED EVENTS ----------------
+// Events belong to a server. One linked to a private channel is only
+// visible to people who can see that channel.
+async function canSeeEvent(username, ev) {
+  if (!ev || ev.cancelled || !(await isServerMember(username, ev.server_id))) return false;
+  if (!ev.channel_id) return true;
+  return canViewChannel(username, await getChannelById(ev.channel_id));
+}
+async function eventsPayload(username, rows) {
+  if (!rows.length) return [];
+  const ids = rows.map(e => e.id);
+  const [counts, mine, channels] = await Promise.all([
+    q(`SELECT event_id, count(*)::int AS n FROM event_rsvps WHERE event_id = ANY($1) GROUP BY event_id`, [ids]),
+    q(`SELECT event_id FROM event_rsvps WHERE event_id = ANY($1) AND username = $2`, [ids, username]),
+    q(`SELECT id, name, room FROM server_channels WHERE id = ANY($1)`, [rows.map(e => e.channel_id).filter(Boolean)])
+  ]);
+  const countBy = new Map(counts.map(c => [c.event_id, c.n]));
+  const mineSet = new Set(mine.map(m => m.event_id));
+  const channelBy = new Map(channels.map(c => [c.id, c]));
+  return rows.map(e => {
+    const ch = channelBy.get(e.channel_id);
+    return {
+      id: e.id, serverId: e.server_id, name: e.name, description: e.description || '', location: e.location || '',
+      channelId: e.channel_id || null, channelName: ch ? ch.name : '', channelRoom: ch ? ch.room : '',
+      startsAt: e.starts_at, endsAt: e.ends_at, createdBy: e.created_by,
+      interestedCount: countBy.get(e.id) || 0, interested: mineSet.has(e.id)
+    };
+  });
+}
+// Validates and cleans event fields; returns { error } or the values.
+async function eventInput(serverId, username, body, existing) {
+  const name = 'name' in body ? cleanText(body.name, 100) : existing.name;
+  if (!name) return { error: 'the event needs a name' };
+  const startsAt = 'startsAt' in body ? new Date(body.startsAt) : new Date(existing.starts_at);
+  const endsAt = 'endsAt' in body ? (body.endsAt ? new Date(body.endsAt) : null) : (existing && existing.ends_at ? new Date(existing.ends_at) : null);
+  if (isNaN(startsAt)) return { error: 'pick a start date and time' };
+  const changingStart = !existing || 'startsAt' in body;
+  if (changingStart && startsAt.getTime() < Date.now() - 60 * 1000) return { error: 'the start time is in the past' };
+  if (startsAt.getTime() > Date.now() + 366 * 24 * 3600 * 1000) return { error: 'events can be scheduled up to a year ahead' };
+  if (endsAt && (isNaN(endsAt) || endsAt <= startsAt)) return { error: 'the end time must be after the start' };
+  let channelId = 'channelId' in body ? (Number(body.channelId) || null) : (existing ? existing.channel_id : null);
+  if (channelId) {
+    const ch = await getChannelById(channelId);
+    if (!ch || ch.server_id !== serverId || !(await canViewChannel(username, ch))) return { error: 'that channel is not in this server' };
+  }
+  return {
+    name, channelId, startsAt, endsAt,
+    description: 'description' in body ? cleanText(body.description || '', 1000) : (existing ? existing.description : ''),
+    location: 'location' in body ? cleanText(body.location || '', 100) : (existing ? existing.location : '')
+  };
+}
+async function eventsChanged(serverId) {
+  await notifyServerMembers(serverId, 'eventsChanged', { serverId });
+  scheduleEventReminders();
+}
+
+// Upcoming and in-progress events (in progress = started, not yet ended;
+// with no end time, for 2 hours after the start).
+app.get('/servers/:id/events', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await isServerMember(req.username, serverId))) return res.status(403).json({ error: 'forbidden' });
+  const rows = await q(
+    `SELECT * FROM server_events WHERE server_id = $1 AND cancelled = 0
+       AND COALESCE(ends_at, starts_at + interval '2 hours') > NOW()
+     ORDER BY starts_at LIMIT 50`,
+    [serverId]
+  );
+  const visible = [];
+  for (const e of rows) if (await canSeeEvent(req.username, e)) visible.push(e);
+  res.json(await eventsPayload(req.username, visible));
+}));
+
+app.post('/servers/:id/events', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can schedule events' });
+  const input = await eventInput(serverId, req.username, req.body, null);
+  if (input.error) return res.status(400).json({ error: input.error });
+  const ev = await one(
+    `INSERT INTO server_events (server_id, channel_id, name, description, location, starts_at, ends_at, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [serverId, input.channelId, input.name, input.description, input.location, input.startsAt, input.endsAt, req.username]
+  );
+  await pool.query(`INSERT INTO event_rsvps (event_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [ev.id, req.username]);
+  await eventsChanged(serverId);
+  res.status(201).json((await eventsPayload(req.username, [ev]))[0]);
+}));
+
+async function eventForManager(req, res) {
+  const ev = await one(`SELECT * FROM server_events WHERE id = $1`, [Number(req.params.id)]);
+  if (!ev || ev.cancelled || !(await canSeeEvent(req.username, ev))) { res.status(404).json({ error: 'event not found' }); return null; }
+  if (!(await canManageServer(req.username, ev.server_id))) { res.status(403).json({ error: 'only server admins can change events' }); return null; }
+  return ev;
+}
+
+app.post('/events/:id/update', requireAuth, route(async (req, res) => {
+  const ev = await eventForManager(req, res);
+  if (!ev) return;
+  const input = await eventInput(ev.server_id, req.username, req.body, ev);
+  if (input.error) return res.status(400).json({ error: input.error });
+  // moving the start time re-arms the reminder
+  const restart = input.startsAt.getTime() !== new Date(ev.starts_at).getTime();
+  const updated = await one(
+    `UPDATE server_events SET name = $1, description = $2, location = $3, channel_id = $4, starts_at = $5, ends_at = $6,
+       reminder_sent = CASE WHEN $7 THEN 0 ELSE reminder_sent END
+     WHERE id = $8 RETURNING *`,
+    [input.name, input.description, input.location, input.channelId, input.startsAt, input.endsAt, restart, ev.id]
+  );
+  await eventsChanged(ev.server_id);
+  res.json((await eventsPayload(req.username, [updated]))[0]);
+}));
+
+app.post('/events/:id/cancel', requireAuth, route(async (req, res) => {
+  const ev = await eventForManager(req, res);
+  if (!ev) return;
+  await pool.query(`UPDATE server_events SET cancelled = 1 WHERE id = $1`, [ev.id]);
+  await eventsChanged(ev.server_id);
+  res.json({ message: 'ok' });
+}));
+
+app.post('/events/:id/rsvp', requireAuth, route(async (req, res) => {
+  const ev = await one(`SELECT * FROM server_events WHERE id = $1`, [Number(req.params.id)]);
+  if (!ev || !(await canSeeEvent(req.username, ev))) return res.status(404).json({ error: 'event not found' });
+  if (req.body.interested) await pool.query(`INSERT INTO event_rsvps (event_id, username) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [ev.id, req.username]);
+  else await pool.query(`DELETE FROM event_rsvps WHERE event_id = $1 AND username = $2`, [ev.id, req.username]);
+  await notifyServerMembers(ev.server_id, 'eventsChanged', { serverId: ev.server_id });
+  res.json((await eventsPayload(req.username, [ev]))[0]);
+}));
+
+// ---- reminders when an event starts
+// No polling loop: a timer is set for the next due start time (re-checked
+// at least hourly). The free Render server sleeps when nobody is using it,
+// so on wake anything that started in the last hour still gets its
+// reminder; older ones are marked done without spamming people late.
+const REMINDER_GRACE_MS = 60 * 60 * 1000;
+let reminderTimer = null;
+async function sendDueEventReminders() {
+  const due = await q(
+    `UPDATE server_events SET reminder_sent = 1
+     WHERE reminder_sent = 0 AND cancelled = 0 AND starts_at <= NOW()
+     RETURNING *`
+  );
+  for (const ev of due) {
+    if (Date.now() - new Date(ev.starts_at).getTime() > REMINDER_GRACE_MS) continue; // too late to be useful
+    const srv = await getServerById(ev.server_id);
+    if (!srv) continue;
+    const people = (await q(`SELECT username FROM event_rsvps WHERE event_id = $1`, [ev.id])).map(r => r.username);
+    for (const name of people) {
+      if (!(await canSeeEvent(name, ev))) continue;
+      sendToUser(name, 'eventReminder', { serverId: ev.server_id, serverName: srv.name, eventId: ev.id, name: ev.name });
+      await sendPushToUser(name, {
+        title: `Event starting in ${srv.name}`,
+        body: ev.name,
+        tag: 'event:' + ev.id,
+        url: '/'
+      }).catch(err => console.error('event push failed:', err.message));
+    }
+    if (ev.channel_id) {
+      const ch = await getChannelById(ev.channel_id);
+      if (ch) {
+        const created = await one(
+          `INSERT INTO messages (room, "user", text, is_group, kind) VALUES ($1, $2, $3, 0, 'event') RETURNING *`,
+          [ch.room, ev.created_by, ev.name]
+        );
+        io.to(ch.room).emit('message', await normaliseMessage(created));
+      }
+    }
+    await notifyServerMembers(ev.server_id, 'eventsChanged', { serverId: ev.server_id });
+  }
+}
+async function scheduleEventReminders() {
+  clearTimeout(reminderTimer);
+  try {
+    await sendDueEventReminders();
+    const next = await one(`SELECT min(starts_at) AS at FROM server_events WHERE reminder_sent = 0 AND cancelled = 0`);
+    const wait = next && next.at ? Math.max(1000, new Date(next.at).getTime() - Date.now()) : Infinity;
+    reminderTimer = setTimeout(scheduleEventReminders, Math.min(wait, 60 * 60 * 1000));
+  } catch (err) {
+    console.error('event reminders failed:', err.message);
+    reminderTimer = setTimeout(scheduleEventReminders, 5 * 60 * 1000);
+  }
+  reminderTimer.unref();
+}
+
+// ---------------- VOICE + VIDEO CALLS ----------------
+// Audio/video flows directly between browsers (WebRTC). The server only
+// relays the connection setup ("signaling") and tracks who is in which
+// call. Calls live in memory - a restart ends them, which is fine.
+// Call keys: 'call:dm:<a>:<b>' (sorted), 'call:group:<id>', 'voice:<channel room>'.
+const calls = new Map(); // key -> { key, kind, room, startedAt, participants: Map, ringing: Set, ringTimer, messageId, everJoined: Set }
+const MAX_CALL_SIZE = 8; // everyone connects to everyone, so keep calls small
+const RING_MS = 45 * 1000;
+
+function callInfo(key) {
+  key = String(key || '');
+  let m = /^call:dm:([a-zA-Z0-9_.-]{2,30}):([a-zA-Z0-9_.-]{2,30})$/.exec(key);
+  if (m) return makeDMRoom(m[1], m[2]) === 'dm:' + m[1] + ':' + m[2] ? { kind: 'dm', room: 'dm:' + m[1] + ':' + m[2], users: [m[1], m[2]] } : null;
+  m = /^call:group:(\d+)$/.exec(key);
+  if (m) return { kind: 'group', room: 'group:' + m[1] };
+  m = /^voice:(.+)$/.exec(key);
+  if (m) return { kind: 'voice', room: m[1] };
+  return null;
+}
+
+// Why `username` can't join `key` right now, or null if they can.
+async function callJoinProblem(username, key) {
+  const info = callInfo(key);
+  if (!info || !(await isAllowedRoom(username, info.room))) return 'call not found';
+  if (info.kind === 'dm') {
+    const other = info.users.find(u => u !== username);
+    if (!(await getUser(other))) return 'call not found';
+    if (await blockBetween(username, other)) return 'You can\'t call this person.';
+  }
+  if (info.kind === 'voice') {
+    const channel = await getChannelByRoom(info.room);
+    if (!channel || channel.kind !== 'voice') return 'call not found';
+  }
+  if (await isMuted(username)) return 'you are muted';
+  return null;
+}
+
+// Everyone who should see a call's state (who's in it): both people in a
+// DM, a group's members, or whoever can see a voice channel.
+async function callAudience(key) {
+  const info = callInfo(key);
+  if (!info) return [];
+  if (info.kind === 'dm') return info.users;
+  if (info.kind === 'group') return (await q(`SELECT username FROM group_members WHERE group_id = $1`, [groupIdFromRoom(info.room)])).map(r => r.username);
+  const channel = await getChannelByRoom(info.room);
+  if (!channel) return [];
+  return filterChannelViewers(channel, await serverMemberUsernames(channel.server_id));
+}
+
+function callState(call) {
+  return {
+    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt, now: Date.now(),
+    participants: [...call.participants.entries()].map(([username, p]) => ({
+      username, muted: p.muted, deafened: p.deafened, video: p.video, screen: p.screen,
+      camStream: p.camStream, screenStream: p.screenStream, joinedAt: p.joinedAt
+    })),
+    ringing: [...call.ringing]
+  };
+}
+async function broadcastCall(key) {
+  const call = calls.get(key);
+  const state = call ? callState(call) : { key, participants: [], ringing: [], ended: true };
+  for (const name of await callAudience(key)) sendToUser(name, 'voice:state', state);
+}
+
+// "X started a call" in a DM/group, turned into "...lasted 3 minutes" or
+// "missed call" when it ends. Its text holds the outcome; kind = 'call'.
+async function postCallMessage(call, from) {
+  const info = callInfo(call.key);
+  const toUser = info.kind === 'dm' ? info.users.find(u => u !== from) : null;
+  const created = await one(
+    `INSERT INTO messages (room, "user", text, to_user, is_group, kind) VALUES ($1, $2, 'ongoing', $3, $4, 'call') RETURNING *`,
+    [call.room, from, toUser, info.kind === 'group' ? 1 : 0]
+  );
+  call.messageId = created.id;
+  const msg = await normaliseMessage(created);
+  if (toUser) { sendToUser(from, 'dmMessage', msg); sendToUser(toUser, 'dmMessage', msg); }
+  else io.to(call.room).emit('message', msg);
+}
+async function finishCallMessage(call) {
+  if (!call.messageId) return;
+  const secs = Math.round((Date.now() - call.startedAt) / 1000);
+  const text = call.everJoined.size > 1 ? 'ended:' + secs : 'missed';
+  await pool.query(`UPDATE messages SET text = $1 WHERE id = $2`, [text, call.messageId]);
+  const msg = await normaliseMessage(await getMessageById(call.messageId));
+  emitRoomOrDM(msg.room, msg.to, 'messageUpdated', msg);
+}
+
+function stopRinging(call, usernames) {
+  for (const name of usernames) {
+    if (call.ringing.delete(name)) sendToUser(name, 'voice:ringStop', { key: call.key });
+  }
+  if (!call.ringing.size) clearTimeout(call.ringTimer);
+}
+
+async function leaveCall(key, username, reason) {
+  const call = calls.get(key);
+  if (!call || !call.participants.has(username)) return;
+  const p = call.participants.get(username);
+  call.participants.delete(username);
+  if (reason) io.to(p.socketId).emit('voice:forceLeave', { key, reason });
+  if (!call.participants.size) {
+    stopRinging(call, [...call.ringing]);
+    calls.delete(key);
+    await finishCallMessage(call).catch(err => console.error('call message failed:', err.message));
+  }
+  await broadcastCall(key);
+}
+
+// Which call (if any) a user is currently in - one call at a time.
+function callOf(username) {
+  for (const call of calls.values()) if (call.participants.has(username)) return call;
+  return null;
+}
+
+// Kick people out of calls they're no longer allowed in (lost access to a
+// voice channel, got blocked, got muted...). Called from resyncRooms().
+async function enforceCallAccess(usernames) {
+  for (const name of usernames) {
+    const call = callOf(name);
+    if (call && (await callJoinProblem(name, call.key))) await leaveCall(call.key, name, 'You no longer have access to this call.');
+  }
+}
+
+// STUN lets browsers find each other; a TURN relay (optional, set with
+// TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL) carries the call when a
+// network (often school or office wifi) blocks direct connections.
+app.get('/voice/ice', requireAuth, route(async (req, res) => {
+  const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  if (process.env.TURN_URLS) {
+    iceServers.push({
+      urls: process.env.TURN_URLS.split(',').map(u => u.trim()).filter(Boolean),
+      username: process.env.TURN_USERNAME || '',
+      credential: process.env.TURN_CREDENTIAL || ''
+    });
+  }
+  res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
+}));
+
+// ---------------- THREADS + FORUM POSTS ----------------
+function threadFromRow(t) {
+  if (!t) return null;
+  return {
+    id: t.id, room: 'thread:' + t.id, parentRoom: t.parent_room, name: t.name,
+    starterMessageId: t.starter_message_id || null, createdBy: t.created_by,
+    messageCount: t.message_count || 0, lastMessageAt: t.last_message_at, createdAt: t.created_at
+  };
+}
+
+// Start a thread from a channel message, or a new post in a forum channel
+// (name = the post title, text = its first message).
+app.post('/threads', requireAuth, route(async (req, res) => {
+  if (rateLimited('thread:' + req.username, 6, 60 * 1000)) return res.status(429).json({ error: 'You are starting threads too fast - try again in a minute.' });
+  const name = cleanText(req.body.name, 100);
+  if (!name) return res.status(400).json({ error: 'give it a name' });
+  const muted = await isMuted(req.username);
+  if (muted) return res.status(403).json({ error: 'you are muted until ' + muted.muted_until });
+  let parentRoom, starter = null, firstText = '';
+  if (req.body.messageId) {
+    starter = await getMessageById(Number(req.body.messageId));
+    if (!starter || starter.deleted_at || !(await isAllowedRoom(req.username, starter.room))) return res.status(404).json({ error: 'message not found' });
+    const existing = await one(`SELECT * FROM threads WHERE starter_message_id = $1`, [starter.id]);
+    if (existing) return res.json(threadFromRow(existing)); // one thread per message
+    parentRoom = starter.room;
+    const channel = await getChannelByRoom(parentRoom);
+    if (!channel || channel.kind === 'forum' || channel.kind === 'voice') return res.status(400).json({ error: 'threads can only be started from messages in text channels' });
+  } else {
+    parentRoom = String(req.body.parentRoom || '');
+    const channel = await getChannelByRoom(parentRoom);
+    if (!channel || channel.kind !== 'forum') return res.status(400).json({ error: 'new posts go in a forum channel' });
+    if (!(await isAllowedRoom(req.username, parentRoom))) return res.status(403).json({ error: 'forbidden room' });
+    firstText = cleanText(req.body.text, 4000);
+    if (!firstText) return res.status(400).json({ error: 'write something for your post' });
+  }
+  const thread = await one(
+    `INSERT INTO threads (parent_room, starter_message_id, name, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
+    [parentRoom, starter ? starter.id : null, name, req.username]
+  );
+  const room = 'thread:' + thread.id;
+  io.in(parentRoom).socketsJoin(room); // everyone reading the channel can follow it live
+  if (firstText) {
+    const mentions = await mentionFlags(req.username, room, firstText);
+    const created = await insertMessage(room, req.username, firstText, null, 0, null, mentions);
+    await touchThread(room);
+    pushMentions(room, firstText, req.username, mentions).catch(err => console.error('pushMentions failed:', err.message));
+    io.to(room).emit('message', await normaliseMessage(created));
+  }
+  if (starter) io.to(parentRoom).emit('messageUpdated', await normaliseMessage(await getMessageById(starter.id)));
+  io.to(parentRoom).emit('threadsChanged', { parentRoom, threadId: thread.id });
+  res.status(201).json(threadFromRow(await getThread(thread.id)));
+}));
+
+// Threads/posts of a channel, most recently active first.
+app.get('/threads', requireAuth, route(async (req, res) => {
+  const parentRoom = String(req.query.parent || '');
+  if (!(await isAllowedRoom(req.username, parentRoom)) || !(await getChannelByRoom(parentRoom))) return res.status(403).json({ error: 'forbidden room' });
+  const rows = await q(`SELECT * FROM threads WHERE parent_room = $1 ORDER BY last_message_at DESC LIMIT 100`, [parentRoom]);
+  // forum cards show each post's opening message
+  const firsts = rows.length ? await q(
+    `SELECT DISTINCT ON (room) room, "user", text FROM messages WHERE room = ANY($1) AND deleted_at IS NULL ORDER BY room, id`,
+    [rows.map(t => 'thread:' + t.id)]
+  ) : [];
+  const firstBy = new Map(firsts.map(f => [f.room, { user: f.user, text: f.text.slice(0, 200) }]));
+  res.json(rows.map(t => ({ ...threadFromRow(t), firstMessage: firstBy.get('thread:' + t.id) || null })));
+}));
+
+app.get('/threads/:id', requireAuth, route(async (req, res) => {
+  const thread = await getThread(Number(req.params.id));
+  if (!thread || !(await isAllowedRoom(req.username, 'thread:' + thread.id))) return res.status(404).json({ error: 'thread not found' });
+  res.json(threadFromRow(thread));
+}));
+
+app.post('/threads/:id/rename', requireAuth, route(async (req, res) => {
+  const thread = await getThread(Number(req.params.id));
+  if (!thread || !(await isAllowedRoom(req.username, 'thread:' + thread.id))) return res.status(404).json({ error: 'thread not found' });
+  if (thread.created_by !== req.username && !(await canModerateRoom(req.username, thread.parent_room))) return res.status(403).json({ error: 'only whoever started it, or a moderator, can rename it' });
+  const name = cleanText(req.body.name, 100);
+  if (!name) return res.status(400).json({ error: 'give it a name' });
+  await pool.query(`UPDATE threads SET name = $1 WHERE id = $2`, [name, thread.id]);
+  io.to(thread.parent_room).emit('threadsChanged', { parentRoom: thread.parent_room, threadId: thread.id });
+  if (thread.starter_message_id) io.to(thread.parent_room).emit('messageUpdated', await normaliseMessage(await getMessageById(thread.starter_message_id)));
+  res.json(threadFromRow(await getThread(thread.id)));
+}));
+
+// Deleting a thread removes it and hides its messages.
+app.post('/threads/:id/delete', requireAuth, route(async (req, res) => {
+  const thread = await getThread(Number(req.params.id));
+  if (!thread || !(await isAllowedRoom(req.username, 'thread:' + thread.id))) return res.status(404).json({ error: 'thread not found' });
+  if (thread.created_by !== req.username && !(await canModerateRoom(req.username, thread.parent_room))) return res.status(403).json({ error: 'only whoever started it, or a moderator, can delete it' });
+  const room = 'thread:' + thread.id;
+  await pool.query(`UPDATE messages SET deleted_at = NOW(), deleted_by = $1 WHERE room = $2 AND deleted_at IS NULL`, [req.username, room]);
+  await pool.query(`DELETE FROM threads WHERE id = $1`, [thread.id]);
+  io.to(thread.parent_room).emit('threadsChanged', { parentRoom: thread.parent_room, threadId: thread.id, deleted: true });
+  io.to(room).emit('threadDeleted', { room });
+  if (thread.starter_message_id) io.to(thread.parent_room).emit('messageUpdated', await normaliseMessage(await getMessageById(thread.starter_message_id)));
+  io.in(room).socketsLeave(room);
+  res.json({ message: 'ok' });
+}));
+
+// ---------------- POLLS ----------------
+const POLL_DURATIONS_HOURS = [0, 1, 4, 8, 24, 72, 168]; // 0 = never ends on its own
+
+app.post('/polls', requireAuth, route(async (req, res) => {
+  if (rateLimited('msg:' + req.username, 10, 5000)) return res.status(429).json({ error: 'You are sending messages too fast - slow down a little.' });
+  const room = String(req.body.room || '');
+  const question = cleanText(req.body.question, 300);
+  const options = (Array.isArray(req.body.options) ? req.body.options : []).map(o => cleanText(o, 55)).filter(Boolean);
+  const hours = Number(req.body.durationHours) || 0;
+  if (!question) return res.status(400).json({ error: 'the poll needs a question' });
+  if (options.length < 2 || options.length > 10) return res.status(400).json({ error: 'a poll needs 2 to 10 answers' });
+  if (new Set(options.map(o => o.toLowerCase())).size !== options.length) return res.status(400).json({ error: 'each answer must be different' });
+  if (!POLL_DURATIONS_HOURS.includes(hours)) return res.status(400).json({ error: 'unsupported poll length' });
+  if (!(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
+  const muted = await isMuted(req.username);
+  if (muted) return res.status(403).json({ error: 'you are muted until ' + muted.muted_until });
+
+  const dmUsers = getDMUsers(room);
+  const toUser = dmUsers ? dmUsers.find(u => u !== req.username) : null;
+  if (dmUsers && (!toUser || room !== makeDMRoom(req.username, toUser) || !(await getUser(toUser)))) {
+    return res.status(400).json({ error: 'invalid recipient' });
+  }
+  if (toUser) {
+    const block = await blockBetween(req.username, toUser);
+    if (block) return res.status(403).json({ error: dmBlockedError(block) });
+  } else {
+    const blocked = await channelPostBlock(req.username, room);
+    if (blocked) return res.status(403).json({ error: blocked });
+  }
+
+  const created = await one(
+    `INSERT INTO messages (room, "user", text, to_user, is_group, kind) VALUES ($1, $2, $3, $4, $5, 'poll') RETURNING *`,
+    [room, req.username, question, toUser, groupIdFromRoom(room) ? 1 : 0]
+  );
+  const poll = await one(
+    `INSERT INTO polls (message_id, question, allow_multiple, ends_at)
+     VALUES ($1, $2, $3, CASE WHEN $4::int > 0 THEN NOW() + make_interval(hours => $4::int) END) RETURNING id`,
+    [created.id, question, req.body.allowMultiple ? 1 : 0, hours]
+  );
+  await pool.query(
+    `INSERT INTO poll_options (poll_id, position, text) SELECT $1, o.pos - 1, o.text FROM unnest($2::text[]) WITH ORDINALITY AS o(text, pos)`,
+    [poll.id, options]
+  );
+  const msg = await normaliseMessage(created);
+  if (toUser) {
+    sendToUser(req.username, 'dmMessage', msg);
+    sendToUser(toUser, 'dmMessage', msg);
+  } else {
+    io.to(room).emit('message', msg);
+    touchThread(room).catch(err => console.error('touchThread failed:', err.message));
+  }
+  res.status(201).json(msg);
+}));
+
+async function pollForRequest(req, res) {
+  const poll = await one(`SELECT p.*, m.room, m."user" AS author, m.to_user, m.deleted_at FROM polls p JOIN messages m ON m.id = p.message_id WHERE p.id = $1`, [Number(req.params.id)]);
+  if (!poll || poll.deleted_at || !(await isAllowedRoom(req.username, poll.room))) {
+    res.status(404).json({ error: 'poll not found' });
+    return null;
+  }
+  return poll;
+}
+async function broadcastPoll(poll) {
+  const msg = await normaliseMessage(await getMessageById(poll.message_id));
+  emitRoomOrDM(msg.room, msg.to, 'pollUpdated', { id: msg.id, room: msg.room, poll: msg.poll });
+  return msg.poll;
+}
+
+// Replace your votes on a poll ([] removes them).
+app.post('/polls/:id/vote', requireAuth, route(async (req, res) => {
+  const poll = await pollForRequest(req, res);
+  if (!poll) return;
+  if (poll.ends_at && new Date(poll.ends_at).getTime() <= Date.now()) return res.status(400).json({ error: 'this poll has ended' });
+  const wanted = [...new Set((Array.isArray(req.body.optionIds) ? req.body.optionIds : []).map(Number))];
+  if (!poll.allow_multiple && wanted.length > 1) return res.status(400).json({ error: 'you can only pick one answer in this poll' });
+  const own = new Set((await q(`SELECT id FROM poll_options WHERE poll_id = $1`, [poll.id])).map(o => o.id));
+  if (!wanted.every(id => own.has(id))) return res.status(400).json({ error: 'that answer is not in this poll' });
+  await pool.query(`DELETE FROM poll_votes WHERE poll_id = $1 AND username = $2`, [poll.id, req.username]);
+  if (wanted.length) {
+    await pool.query(
+      `INSERT INTO poll_votes (poll_id, option_id, username) SELECT $1, unnest($2::int[]), $3 ON CONFLICT DO NOTHING`,
+      [poll.id, wanted, req.username]
+    );
+  }
+  res.json({ poll: await broadcastPoll(poll) });
+}));
+
+// Close a poll now - its author, or anyone who can moderate the room.
+app.post('/polls/:id/end', requireAuth, route(async (req, res) => {
+  const poll = await pollForRequest(req, res);
+  if (!poll) return;
+  if (poll.author !== req.username && !(await canModerateRoom(req.username, poll.room))) return res.status(403).json({ error: 'only the poll\'s author or a moderator can end it' });
+  await pool.query(`UPDATE polls SET ends_at = NOW() WHERE id = $1 AND (ends_at IS NULL OR ends_at > NOW())`, [poll.id]);
+  res.json({ poll: await broadcastPoll(poll) });
+}));
+
 async function canPinIn(username, room) {
   if (!(await isAllowedRoom(username, room))) return false;
-  if (await getChannelByRoom(room)) return canModerateRoom(username, room);
+  if (await channelForRoom(room)) return canModerateRoom(username, room);
   return true;
 }
 
@@ -1664,14 +2629,15 @@ async function deliverPush(username, payload) {
 // allowed in this room and not currently online - lets someone find out
 // they were mentioned even with the app fully closed, without pushing
 // every channel message to every member (which would be spammy).
-async function pushMentions(room, text, fromUser) {
+const MAX_GROUP_MENTION_PUSHES = 100; // @everyone/@role in a big server: don't push to hundreds
+async function pushMentions(room, text, fromUser, mentions) {
   const names = new Set();
   const re = /@([a-zA-Z0-9_.-]{2,30})/g;
   let match;
-  while ((match = re.exec(text))) names.add(match[1]);
-  if (!names.size) return;
-  const channel = await getChannelByRoom(room);
-  const roomLabel = channel ? channel.name : room;
+  while ((match = re.exec(text))) if (match[1].toLowerCase() !== 'everyone') names.add(match[1]);
+  const channel = await channelForRoom(room);
+  const thread = await getThread(threadIdFromRoom(room));
+  const roomLabel = channel ? channel.name + (thread ? ' › ' + thread.name : '') : room;
   for (const name of names) {
     if (name === fromUser) continue;
     const user = await getUser(name);
@@ -1681,6 +2647,29 @@ async function pushMentions(room, text, fromUser) {
     await sendPushToUser(name, {
       title: `${fromUser} mentioned you in #${roomLabel}`,
       body: text.slice(0, 140),
+      tag: 'mention:' + room,
+      url: '/'
+    });
+  }
+  if (!channel || !mentions || (!mentions.everyone && !mentions.roles)) return;
+  let group, label;
+  if (mentions.everyone) {
+    group = await serverMemberUsernames(channel.server_id);
+    label = '@everyone';
+  } else {
+    const roleIds = mentions.roles.split(',').map(Number);
+    group = (await q(`SELECT DISTINCT username FROM server_member_roles WHERE role_id = ANY($1)`, [roleIds])).map(r => r.username);
+    label = (await q(`SELECT name FROM server_roles WHERE id = ANY($1) ORDER BY position`, [roleIds])).map(r => '@' + r.name).join(', ');
+  }
+  // online people already got it live, and anyone named above already got
+  // a push; only the first MAX_GROUP_MENTION_PUSHES offline people get one
+  group = await filterChannelViewers(channel, group);
+  const offline = group.filter(u => u !== fromUser && !names.has(u) && !onlineUsers.has(u)).slice(0, MAX_GROUP_MENTION_PUSHES);
+  for (const name of offline) {
+    if (await blockBetween(name, fromUser)) continue;
+    await sendPushToUser(name, {
+      title: `${fromUser} mentioned ${label} in #${roomLabel}`,
+      body: text.replace(/<@&\d+>/g, '@role').slice(0, 140),
       tag: 'mention:' + room,
       url: '/'
     });
@@ -1756,7 +2745,24 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
   const code = cleanText(req.body.code, 40).toLowerCase();
   const srv = await getServerByCode(code);
   if (!srv) return res.status(404).json({ error: 'invite code not found' });
-  await pool.query(`INSERT INTO server_members (server_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`, [srv.id, req.username]);
+  const joined = await one(
+    `INSERT INTO server_members (server_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING RETURNING username`,
+    [srv.id, req.username]
+  );
+  // Only for someone actually new - re-using an invite you're already in
+  // shouldn't announce you again. Posted before serversChanged goes out:
+  // that event makes every member's client reload the channel's history,
+  // and a reload that started before the insert would wipe the message.
+  if (joined && srv.system_channel_id) {
+    const channel = await getChannelById(srv.system_channel_id);
+    if (channel && channel.server_id === srv.id) {
+      const created = await one(
+        `INSERT INTO messages (room, "user", text, is_group, kind) VALUES ($1, $2, 'joined the server', 0, 'join') RETURNING *`,
+        [channel.room, req.username]
+      );
+      io.to(channel.room).emit('message', await normaliseMessage(created));
+    }
+  }
   await notifyServerMembers(srv.id, 'serversChanged', {});
   res.json({ id: srv.id, name: srv.name });
 }));
@@ -1766,6 +2772,30 @@ app.post('/servers/:id/update', requireAuth, route(async (req, res) => {
   if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can do that' });
   const srv = await getServerById(serverId);
   const name = cleanText(req.body.name || srv.name, 60) || srv.name;
+  if ('description' in req.body) {
+    await pool.query(`UPDATE servers SET description = $1 WHERE id = $2`, [cleanText(req.body.description || '', 300), serverId]);
+  }
+  if ('bannerColor' in req.body) {
+    const color = req.body.bannerColor ? String(req.body.bannerColor) : '';
+    if (color && !validHexColor(color)) return res.status(400).json({ error: 'banner colour must be a hex colour like #5865f2' });
+    await pool.query(`UPDATE servers SET banner_color = $1 WHERE id = $2`, [color, serverId]);
+  }
+  // "/server-banners/..." is our own cached URL echoed back = unchanged
+  if ('bannerUrl' in req.body && !String(req.body.bannerUrl || '').startsWith('/server-banners/')) {
+    const banner = cleanText(req.body.bannerUrl || '', 2100000);
+    if (banner && !banner.startsWith('data:image/')) return res.status(400).json({ error: 'banner must be an uploaded image' });
+    const version = banner ? crypto.createHash('md5').update(banner).digest('hex').slice(0, 10) : null;
+    await pool.query(`UPDATE servers SET banner_url = $1, banner_version = $2 WHERE id = $3`, [banner, version, serverId]);
+    imageCache.delete('b:' + serverId);
+  }
+  if ('systemChannelId' in req.body) {
+    const channelId = Number(req.body.systemChannelId) || null;
+    if (channelId) {
+      const channel = await getChannelById(channelId);
+      if (!channel || channel.server_id !== serverId) return res.status(400).json({ error: 'that channel is not in this server' });
+    }
+    await pool.query(`UPDATE servers SET system_channel_id = $1 WHERE id = $2`, [channelId, serverId]);
+  }
   const sent = req.body.iconUrl;
   // "/server-icons/..." is our own cached URL echoed back = unchanged
   if (sent !== undefined && !String(sent).startsWith('/server-icons/')) {
@@ -1805,6 +2835,12 @@ app.post('/servers/:id/channels', requireAuth, route(async (req, res) => {
   try {
     const position = (await getChannelsForServer(serverId)).length;
     const created = await insertServerChannel(serverId, name, room, position, req.username);
+    const categoryId = Number(req.body.categoryId) || null;
+    if (categoryId && (await one(`SELECT 1 FROM server_categories WHERE id = $1 AND server_id = $2`, [categoryId, serverId]))) {
+      await pool.query(`UPDATE server_channels SET category_id = $1 WHERE id = $2`, [categoryId, created.id]);
+    }
+    if (req.body.isPrivate) await pool.query(`UPDATE server_channels SET is_private = 1 WHERE id = $1`, [created.id]);
+    if (['forum', 'voice'].includes(req.body.kind)) await pool.query(`UPDATE server_channels SET kind = $1 WHERE id = $2`, [req.body.kind, created.id]);
     if (srv.is_default) { try { await insertChannel(name, req.username); } catch (_) {} }
     await notifyServerMembers(serverId, 'serversChanged', {});
     res.status(201).json({ id: created.id, name, room, serverId });
@@ -1823,6 +2859,11 @@ app.post('/servers/:id/channels/:channelId/delete', requireAuth, route(async (re
   if ((await getChannelsForServer(serverId)).length <= 1) return res.status(400).json({ error: 'a server needs at least one channel' });
 
   await pool.query(`DELETE FROM server_channels WHERE id = $1`, [channelId]);
+  await pool.query(`DELETE FROM channel_access WHERE channel_id = $1`, [channelId]);
+  const voiceCall = calls.get('voice:' + channel.room);
+  if (voiceCall) for (const name of [...voiceCall.participants.keys()]) await leaveCall(voiceCall.key, name, 'This voice channel was deleted.');
+  await pool.query(`DELETE FROM threads WHERE parent_room = $1`, [channel.room]);
+  await pool.query(`UPDATE servers SET system_channel_id = NULL WHERE id = $1 AND system_channel_id = $2`, [serverId, channelId]);
   await deleteChannelRow(channel.name);
   // A renamed default-server channel keeps its original name as its room
   // id, and that's what the legacy channels table is keyed on - clear it
@@ -1839,6 +2880,8 @@ app.post('/servers/:id/leave', requireAuth, route(async (req, res) => {
   if (srv.is_default) return res.status(400).json({ error: 'you cannot leave the general server' });
   if (srv.owner === req.username) return res.status(400).json({ error: 'the owner cannot leave their own server' });
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  await resyncRooms([req.username]);
   sendToUser(req.username, 'serversChanged', {});
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok' });
@@ -1852,9 +2895,17 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   if (srv.owner !== req.username && !(await isAdmin(req.username))) return res.status(403).json({ error: 'only the server owner can delete this server' });
 
   const members = await serverMemberUsernames(serverId);
+  await pool.query(`DELETE FROM channel_access WHERE channel_id IN (SELECT id FROM server_channels WHERE server_id = $1)`, [serverId]);
+  await pool.query(`DELETE FROM threads WHERE parent_room IN (SELECT room FROM server_channels WHERE server_id = $1)`, [serverId]);
   await pool.query(`DELETE FROM server_channels WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_members WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM server_categories WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM event_rsvps WHERE event_id IN (SELECT id FROM server_events WHERE server_id = $1)`, [serverId]);
+  await pool.query(`DELETE FROM server_events WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM server_roles WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
+  await resyncRooms(members);
   for (const member of members) sendToUser(member, 'serversChanged', {});
   res.json({ message: 'ok' });
 }));
@@ -1863,16 +2914,30 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   if (!(await isServerMember(req.username, serverId))) return res.status(403).json({ error: 'forbidden' });
   const srv = await getServerById(serverId);
-  const names = await serverMemberUsernames(serverId);
-  const roleRows = await q(`SELECT username, role FROM server_members WHERE server_id = $1`, [serverId]);
+  let names = await serverMemberUsernames(serverId);
+  if (req.query.channel) {
+    // the member list of a private channel shows only who can see it
+    const channel = await getChannelById(Number(req.query.channel));
+    if (!channel || channel.server_id !== serverId || !(await canViewChannel(req.username, channel))) return res.status(404).json({ error: 'channel not found' });
+    names = await filterChannelViewers(channel, names);
+  }
+  const [roleRows, customRows] = await Promise.all([
+    q(`SELECT username, role FROM server_members WHERE server_id = $1`, [serverId]),
+    q(`SELECT username, role_id FROM server_member_roles WHERE server_id = $1`, [serverId])
+  ]);
   const roles = new Map(roleRows.map(r => [r.username, r.role]));
+  const customRoles = new Map();
+  for (const r of customRows) {
+    if (!customRoles.has(r.username)) customRoles.set(r.username, []);
+    customRoles.get(r.username).push(r.role_id);
+  }
   const users = await getUsers(names);
   const out = [];
   for (const name of names) {
     const u = users.get(name);
     const profile = u ? profileFromRow(u) : { username: name, displayName: name, avatarUrl: '', isAdmin: false };
     const role = srv.owner === name ? 'owner' : (roles.get(name) === 'admin' ? 'admin' : 'member');
-    out.push({ ...profile, role, online: isVisiblyOnline(name) });
+    out.push({ ...profile, role, roleIds: customRoles.get(name) || [], online: isVisiblyOnline(name) });
   }
   out.sort((a, b) => (Number(b.online) - Number(a.online)) || a.username.localeCompare(b.username));
   res.json(out);
@@ -1896,6 +2961,7 @@ app.post('/servers/:id/members/:username/role', requireAuth, route(async (req, r
   }
 
   await pool.query(`UPDATE server_members SET role = $1 WHERE server_id = $2 AND username = $3`, [role, serverId, target]);
+  await resyncRooms([target]); // admins see every private channel
   await notifyServerMembers(serverId, 'serversChanged', {});
   sendToUser(target, 'adminNotice', {
     message: role === 'admin'
@@ -1924,6 +2990,8 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
     return res.status(403).json({ error: 'only the owner can kick another server admin' });
   }
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await resyncRooms([target]);
   sendToUser(target, 'adminNotice', { message: `You were removed from ${srv.name}.` });
   sendToUser(target, 'serversChanged', {});
   await notifyServerMembers(serverId, 'serversChanged', {});
@@ -1949,11 +3017,216 @@ app.post('/servers/:id/channels/:channelId/update', requireAuth, route(async (re
     if (clash) return res.status(409).json({ error: 'a channel with that name already exists' });
   }
   const topic = 'topic' in req.body ? cleanText(req.body.topic || '', 1024) : (channel.topic || '');
+  let slowmode = channel.slowmode_seconds || 0;
+  if ('slowmode' in req.body) {
+    slowmode = Number(req.body.slowmode) || 0;
+    if (!SLOWMODE_OPTIONS.includes(slowmode)) return res.status(400).json({ error: 'unsupported slowmode length' });
+  }
+  const adminsOnly = 'adminsOnly' in req.body ? (req.body.adminsOnly ? 1 : 0) : (channel.admins_only || 0);
+  let categoryId = channel.category_id || null;
+  if ('categoryId' in req.body) {
+    categoryId = Number(req.body.categoryId) || null;
+    if (categoryId && !(await one(`SELECT 1 FROM server_categories WHERE id = $1 AND server_id = $2`, [categoryId, serverId]))) {
+      return res.status(400).json({ error: 'that category is not in this server' });
+    }
+  }
   // Only the display name changes - the room id stays the same, so message
   // history, unread counts and pins all stay attached to the channel.
-  await pool.query(`UPDATE server_channels SET name = $1, topic = $2 WHERE id = $3`, [name, topic, channelId]);
+  await pool.query(
+    `UPDATE server_channels SET name = $1, topic = $2, slowmode_seconds = $3, admins_only = $4, category_id = $5 WHERE id = $6`,
+    [name, topic, slowmode, adminsOnly, categoryId, channelId]
+  );
   await notifyServerMembers(serverId, 'serversChanged', {});
-  res.json({ message: 'ok', id: channelId, name, topic });
+  res.json({ message: 'ok', id: channelId, name, topic, slowmode, adminsOnly: !!adminsOnly });
+}));
+
+// Sets positions from a full list of ids, in one statement so a half-done
+// reorder can never be saved. `ids` must be exactly the server's own rows.
+async function applyOrder(table, serverId, ids) {
+  const own = (await q(`SELECT id FROM ${table} WHERE server_id = $1`, [serverId])).map(r => r.id);
+  const wanted = Array.isArray(ids) ? ids.map(Number) : [];
+  if (wanted.length !== own.length || new Set(wanted).size !== own.length || !wanted.every(id => own.includes(id))) return false;
+  await pool.query(
+    `UPDATE ${table} AS t SET position = o.pos - 1
+     FROM unnest($1::int[]) WITH ORDINALITY AS o(id, pos)
+     WHERE t.id = o.id AND t.server_id = $2`,
+    [wanted, serverId]
+  );
+  return true;
+}
+
+app.post('/servers/:id/channels/reorder', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can reorder channels' });
+  if (!(await applyOrder('server_channels', serverId, req.body.order))) return res.status(400).json({ error: 'order must list every channel in this server exactly once' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// ---- categories (collapsible groups of channels)
+app.post('/servers/:id/categories', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  const name = cleanText(req.body.name, 40);
+  if (!name) return res.status(400).json({ error: 'the category needs a name' });
+  const count = await one(`SELECT count(*)::int AS n, COALESCE(max(position), -1) AS top FROM server_categories WHERE server_id = $1`, [serverId]);
+  if (count.n >= 30) return res.status(400).json({ error: 'a server can have up to 30 categories' });
+  const row = await one(`INSERT INTO server_categories (server_id, name, position) VALUES ($1, $2, $3) RETURNING *`, [serverId, name, count.top + 1]);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.status(201).json({ id: row.id, name: row.name, position: row.position });
+}));
+
+app.post('/servers/:id/categories/reorder', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  if (!(await applyOrder('server_categories', serverId, req.body.order))) return res.status(400).json({ error: 'order must list every category in this server exactly once' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+app.post('/servers/:id/categories/:catId/update', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  const name = cleanText(req.body.name, 40);
+  if (!name) return res.status(400).json({ error: 'the category needs a name' });
+  const row = await one(`UPDATE server_categories SET name = $1 WHERE id = $2 AND server_id = $3 RETURNING id`, [name, Number(req.params.catId), serverId]);
+  if (!row) return res.status(404).json({ error: 'category not found' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// Deleting a category keeps its channels - they just become uncategorised.
+app.post('/servers/:id/categories/:catId/delete', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const catId = Number(req.params.catId);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  const row = await one(`DELETE FROM server_categories WHERE id = $1 AND server_id = $2 RETURNING id`, [catId, serverId]);
+  if (!row) return res.status(404).json({ error: 'category not found' });
+  await pool.query(`UPDATE server_channels SET category_id = NULL WHERE category_id = $1`, [catId]);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// ---- private channels: who besides the owner/admins can see a channel
+app.post('/servers/:id/channels/:channelId/access', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const channelId = Number(req.params.channelId);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can change who sees a channel' });
+  const channel = await getChannelById(channelId);
+  if (!channel || channel.server_id !== serverId) return res.status(404).json({ error: 'channel not found' });
+  const isPrivate = req.body.isPrivate ? 1 : 0;
+  const roleIds = [...new Set((Array.isArray(req.body.roleIds) ? req.body.roleIds : []).map(Number))];
+  const usernames = [...new Set((Array.isArray(req.body.usernames) ? req.body.usernames : []).map(cleanUsername))];
+  const ownRoles = new Set((await q(`SELECT id FROM server_roles WHERE server_id = $1`, [serverId])).map(r => r.id));
+  if (!roleIds.every(id => ownRoles.has(id))) return res.status(400).json({ error: 'one of those roles is not in this server' });
+  const members = new Set(await serverMemberUsernames(serverId));
+  if (!usernames.every(u => members.has(u))) return res.status(400).json({ error: 'one of those people is not in this server' });
+
+  await pool.query(`UPDATE server_channels SET is_private = $1 WHERE id = $2`, [isPrivate, channelId]);
+  await pool.query(`DELETE FROM channel_access WHERE channel_id = $1`, [channelId]);
+  if (isPrivate && roleIds.length) {
+    await pool.query(`INSERT INTO channel_access (channel_id, role_id) SELECT $1, unnest($2::int[])`, [channelId, roleIds]);
+  }
+  if (isPrivate && usernames.length) {
+    await pool.query(`INSERT INTO channel_access (channel_id, username) SELECT $1, unnest($2::text[])`, [channelId, usernames]);
+  }
+  await resyncRooms([...members]);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok', isPrivate: !!isPrivate, roleIds, usernames });
+}));
+
+// ---- custom roles (cosmetic: a name and colour; permissions stay owner/admin)
+const MAX_ROLES_PER_SERVER = 50;
+function cleanRoleInput(body) {
+  const out = {};
+  if ('name' in body) out.name = cleanText(body.name || '', 32);
+  if ('color' in body) out.color = body.color ? String(body.color) : '';
+  if ('hoist' in body) out.hoist = body.hoist ? 1 : 0;
+  if ('mentionable' in body) out.mentionable = body.mentionable ? 1 : 0;
+  return out;
+}
+function roleInputError(input) {
+  if ('name' in input && !input.name) return 'the role needs a name';
+  if (input.color && !validHexColor(input.color)) return 'role colour must be a hex colour like #e91e63';
+  return null;
+}
+
+app.post('/servers/:id/roles', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  const input = cleanRoleInput({ name: 'new role', ...req.body });
+  const problem = roleInputError(input);
+  if (problem) return res.status(400).json({ error: problem });
+  const count = await one(`SELECT count(*)::int AS n, COALESCE(max(position), -1) AS top FROM server_roles WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_ROLES_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_ROLES_PER_SERVER} roles` });
+  const role = await one(
+    `INSERT INTO server_roles (server_id, name, color, hoist, mentionable, position) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, count.top + 1]
+  );
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.status(201).json(roleFromRow(role));
+}));
+
+app.post('/servers/:id/roles/reorder', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  if (!(await applyOrder('server_roles', serverId, req.body.order))) return res.status(400).json({ error: 'order must list every role in this server exactly once' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+app.post('/servers/:id/roles/:roleId/update', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const roleId = Number(req.params.roleId);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  const role = await one(`SELECT * FROM server_roles WHERE id = $1 AND server_id = $2`, [roleId, serverId]);
+  if (!role) return res.status(404).json({ error: 'role not found' });
+  const input = cleanRoleInput(req.body);
+  const problem = roleInputError(input);
+  if (problem) return res.status(400).json({ error: problem });
+  const next = { name: role.name, color: role.color, hoist: role.hoist, mentionable: role.mentionable, ...input };
+  const updated = await one(
+    `UPDATE server_roles SET name = $1, color = $2, hoist = $3, mentionable = $4 WHERE id = $5 RETURNING *`,
+    [next.name, next.color || '', next.hoist ? 1 : 0, next.mentionable ? 1 : 0, roleId]
+  );
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json(roleFromRow(updated));
+}));
+
+app.post('/servers/:id/roles/:roleId/delete', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const roleId = Number(req.params.roleId);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  const role = await one(`DELETE FROM server_roles WHERE id = $1 AND server_id = $2 RETURNING id`, [roleId, serverId]);
+  if (!role) return res.status(404).json({ error: 'role not found' });
+  const holders = (await q(`DELETE FROM server_member_roles WHERE role_id = $1 RETURNING username`, [roleId])).map(r => r.username);
+  await pool.query(`DELETE FROM channel_access WHERE role_id = $1`, [roleId]);
+  await resyncRooms(holders);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// Replace the full set of custom roles a member has in this server.
+app.post('/servers/:id/members/:username/roles', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const target = cleanUsername(req.params.username);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can give out roles' });
+  if (!(await isServerMember(target, serverId))) return res.status(404).json({ error: 'user is not a member of this server' });
+  const wanted = [...new Set((Array.isArray(req.body.roleIds) ? req.body.roleIds : []).map(Number))];
+  const own = new Set((await q(`SELECT id FROM server_roles WHERE server_id = $1`, [serverId])).map(r => r.id));
+  if (!wanted.every(id => own.has(id))) return res.status(400).json({ error: 'one of those roles is not in this server' });
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  if (wanted.length) {
+    await pool.query(
+      `INSERT INTO server_member_roles (server_id, role_id, username) SELECT $1, unnest($2::int[]), $3 ON CONFLICT DO NOTHING`,
+      [serverId, wanted, target]
+    );
+  }
+  await resyncRooms([target]); // roles can open or close private channels
+  await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+  sendToUser(target, 'serversChanged', {}); // their channel list may have changed
+  sendToUser(target, 'myRolesChanged', { serverId });
+  res.json({ message: 'ok', roleIds: wanted });
 }));
 
 // Make a fresh invite code - the old one stops working immediately.
@@ -2096,6 +3369,7 @@ app.post('/friends/block', requireAuth, route(async (req, res) => {
     [req.username, other]
   );
   await pool.query(`INSERT INTO blocks (blocker, blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.username, other]);
+  await enforceCallAccess([req.username, other]); // ends a call between them
   // The other person only sees the friendship (if any) disappear.
   friendsChanged(req.username, other);
   res.json({ message: 'blocked' });
@@ -2184,6 +3458,7 @@ app.post('/groups/:id/remove-member', requireAuth, route(async (req, res) => {
   if (username === group.owner) return res.status(400).json({ error: 'cannot remove group owner' });
   if (group.owner !== req.username && !(await isAdmin(req.username))) return res.status(403).json({ error: 'only the group owner can remove members' });
   await pool.query(`DELETE FROM group_members WHERE group_id = $1 AND username = $2`, [groupId, username]);
+  await resyncRooms([username]); // stop their open tabs receiving the group
   sendToUser(username, 'groupsChanged', {});
   io.to(`group:${groupId}`).emit('groupsChanged', {});
   res.json({ message: 'ok' });
@@ -2195,6 +3470,7 @@ app.post('/groups/:id/leave', requireAuth, route(async (req, res) => {
   if (!group || !(await isGroupMember(req.username, groupId))) return res.status(404).json({ error: 'group not found' });
   if (group.owner === req.username) return res.status(400).json({ error: 'owner cannot leave. Remove members or rename instead.' });
   await pool.query(`DELETE FROM group_members WHERE group_id = $1 AND username = $2`, [groupId, req.username]);
+  await resyncRooms([req.username]);
   io.to(`group:${groupId}`).emit('groupsChanged', {});
   res.json({ message: 'ok' });
 }));
@@ -2259,6 +3535,10 @@ app.post('/upload', requireAuth, route(async (req, res) => {
   }
 
   if (await isMuted(req.username)) return res.status(403).json({ error: 'you are muted' });
+  if (!toUser) {
+    const blocked = await channelPostBlock(req.username, finalRoom);
+    if (blocked) return res.status(403).json({ error: blocked });
+  }
 
   const ext = path.extname(originalName).slice(0, 16);
   const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
@@ -2276,6 +3556,7 @@ app.post('/upload', requireAuth, route(async (req, res) => {
       sendToUser(toUser, 'dmFile', fileMsg);
     } else {
       io.to(finalRoom).emit('file', fileMsg);
+      touchThread(finalRoom).catch(err => console.error('touchThread failed:', err.message));
     }
 
     res.status(201).json(fileMsg);
@@ -2383,11 +3664,18 @@ io.on('connection', (socket) => {
       return;
     }
     if (!text) return;
+    const blocked = await channelPostBlock(socket.username, room);
+    if (blocked) {
+      if (typeof ack === 'function') ack({ error: blocked });
+      return;
+    }
 
-    const created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo);
+    const mentions = await mentionFlags(socket.username, room, text);
+    const created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
-    pushMentions(room, text, socket.username).catch(err => console.error('pushMentions failed:', err.message));
+    touchThread(room).catch(err => console.error('touchThread failed:', err.message));
+    pushMentions(room, text, socket.username, mentions).catch(err => console.error('pushMentions failed:', err.message));
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });
   });
 
@@ -2437,12 +3725,17 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'message not found' });
       return;
     }
-    if (row.user !== socket.username) {
+    if (row.user !== socket.username || row.kind || !(await isAllowedRoom(socket.username, row.room))) {
       if (typeof ack === 'function') ack({ error: 'you can only edit your own messages' });
       return;
     }
     if (!text) return;
-    await pool.query(`UPDATE messages SET text = $1, edited_at = NOW() WHERE id = $2`, [text, id]);
+    // re-check mentions so highlights match the new text (edits never re-ping)
+    const mentions = getDMUsers(row.room) ? { everyone: 0, roles: '' } : await mentionFlags(socket.username, row.room, text);
+    await pool.query(
+      `UPDATE messages SET text = $1, edited_at = NOW(), mentions_everyone = $2, mention_role_ids = $3 WHERE id = $4`,
+      [text, mentions.everyone, mentions.roles, id]
+    );
     const msg = await normaliseMessage(await getMessageById(id));
     emitRoomOrDM(msg.room, msg.to, 'messageUpdated', msg);
     if (typeof ack === 'function') ack({ message: 'ok' });
@@ -2455,7 +3748,7 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'message not found' });
       return;
     }
-    if (row.user !== socket.username && !(await canModerateRoom(socket.username, row.room))) {
+    if (!(await isAllowedRoom(socket.username, row.room)) || (row.user !== socket.username && !(await canModerateRoom(socket.username, row.room)))) {
       if (typeof ack === 'function') ack({ error: 'you can only delete your own messages' });
       return;
     }
@@ -2548,6 +3841,7 @@ io.on('connection', (socket) => {
         const name = cleanUsername(data.name).replace(/^#/, '');
         if (DEFAULT_CHANNELS.includes(name)) throw new Error('default channels cannot be deleted');
         await deleteChannelRow(name);
+        await pool.query(`DELETE FROM channel_access WHERE channel_id IN (SELECT id FROM server_channels WHERE server_id = $1 AND name = $2)`, [DEFAULT_SERVER.id, name]);
         await pool.query(`DELETE FROM server_channels WHERE server_id = $1 AND name = $2`, [DEFAULT_SERVER.id, name]);
         io.emit('serversChanged', {});
         if (typeof ack === 'function') ack({ message: 'channel deleted' });
@@ -2562,6 +3856,7 @@ io.on('connection', (socket) => {
           [user, until, socket.username]
         );
         sendToUser(user, 'adminNotice', { message: `You have been muted until ${until.toISOString()}.` });
+        await enforceCallAccess([user]); // muted people can't stay in calls
         if (typeof ack === 'function') ack({ message: 'user muted' });
       } else if (action === 'unmute') {
         const user = cleanUsername(data.username);
@@ -2607,7 +3902,129 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---- calls
+  socket.on('voice:join', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const key = String(data.key || '');
+    if (rateLimited('voicejoin:' + socket.username, 12, 60 * 1000)) return reply({ error: 'Slow down a little.' });
+    const problem = await callJoinProblem(socket.username, key);
+    if (problem) return reply({ error: problem });
+    const info = callInfo(key);
+    // one call at a time: leave any other call (or this one, from another tab)
+    const current = callOf(socket.username);
+    if (current && current.key !== key) await leaveCall(current.key, socket.username, 'You joined another call.');
+    let call = calls.get(key);
+    if (call && call.participants.has(socket.username)) {
+      const old = call.participants.get(socket.username);
+      if (old.socketId !== socket.id) io.to(old.socketId).emit('voice:forceLeave', { key, reason: 'You joined this call from somewhere else.' });
+      call.participants.delete(socket.username);
+    }
+    if (call && call.participants.size >= MAX_CALL_SIZE) return reply({ error: `This call is full (${MAX_CALL_SIZE} people max).` });
+    const isNew = !call;
+    if (isNew) {
+      call = { key, kind: info.kind, room: info.room, startedAt: Date.now(), participants: new Map(), ringing: new Set(), ringTimer: null, messageId: null, everJoined: new Set() };
+      calls.set(key, call);
+    }
+    const others = [...call.participants.keys()];
+    call.participants.set(socket.username, {
+      socketId: socket.id, muted: !!data.muted, deafened: !!data.deafened, video: false, screen: false,
+      camStream: null, screenStream: null, joinedAt: Date.now()
+    });
+    call.everJoined.add(socket.username);
+    stopRinging(call, [socket.username]);
+    reply({ message: 'ok', participants: others });
+    if (isNew && info.kind !== 'voice' && !data.rejoin) {
+      // ring everyone else in the DM / group (not when someone's app is just
+      // reconnecting to a call the server forgot about in a restart)
+      const targets = (await callAudience(key)).filter(u => u !== socket.username);
+      const group = info.kind === 'group' ? await getGroup(groupIdFromRoom(info.room)) : null;
+      for (const name of targets) {
+        if (info.kind === 'group' && (await blockBetween(name, socket.username))) continue;
+        call.ringing.add(name);
+        sendToUser(name, 'voice:ring', { key, from: socket.username, kind: info.kind, room: info.room, groupName: group ? group.name : '' });
+        sendPushToUser(name, {
+          title: info.kind === 'dm' ? `${socket.username} is calling you` : `${socket.username} started a call in ${group ? group.name : 'a group chat'}`,
+          body: 'Open Chat to answer',
+          tag: 'call:' + key,
+          url: '/'
+        }).catch(err => console.error('call push failed:', err.message));
+      }
+      call.ringTimer = setTimeout(() => {
+        const c = calls.get(key);
+        if (!c) return;
+        const unanswered = [...c.ringing];
+        stopRinging(c, unanswered);
+        for (const p of c.participants.values()) io.to(p.socketId).emit('voice:noAnswer', { key, users: unanswered });
+        broadcastCall(key).catch(() => {});
+      }, RING_MS);
+      call.ringTimer.unref();
+      await postCallMessage(call, socket.username).catch(err => console.error('call message failed:', err.message));
+    }
+    await broadcastCall(key);
+  });
+
+  // Relay connection-setup data between two people in the same call - and
+  // only then, so this can't be used to message strangers.
+  socket.on('voice:signal', (data = {}) => {
+    if (rateLimited('voicesignal:' + socket.id, 3000, 60 * 1000)) return;
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    const target = call && call.participants.get(String(data.to || ''));
+    if (!me || me.socketId !== socket.id || !target) return;
+    io.to(target.socketId).emit('voice:signal', { key: call.key, from: socket.username, data: data.data });
+  });
+
+  socket.on('voice:update', async (data = {}) => {
+    if (rateLimited('voiceupdate:' + socket.username, 60, 10 * 1000)) return;
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    if (!me || me.socketId !== socket.id) return;
+    for (const f of ['muted', 'deafened', 'video', 'screen']) if (f in data) me[f] = !!data[f];
+    for (const f of ['camStream', 'screenStream']) if (f in data) me[f] = data[f] ? String(data[f]).slice(0, 100) : null;
+    await broadcastCall(call.key);
+  });
+
+  socket.on('voice:leave', async (data = {}) => {
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    if (me && me.socketId === socket.id) await leaveCall(call.key, socket.username);
+  });
+
+  socket.on('voice:decline', async (data = {}) => {
+    if (rateLimited('voicedecline:' + socket.username, 30, 60 * 1000)) return;
+    const call = calls.get(String(data.key || ''));
+    if (!call || !call.ringing.has(socket.username)) return;
+    stopRinging(call, [socket.username]);
+    for (const p of call.participants.values()) io.to(p.socketId).emit('voice:declined', { key: call.key, by: socket.username });
+    await broadcastCall(call.key);
+  });
+
+  // Every call this person can currently see (to draw who's in voice).
+  socket.on('voice:snapshot', async (a, b) => {
+    const ack = typeof a === 'function' ? a : b; // works with or without a data argument
+    if (rateLimited('voicesnapshot:' + socket.username, 30, 60 * 1000)) { if (typeof ack === 'function') ack({ calls: [], error: 'Slow down a little.' }); return; }
+    const out = [];
+    for (const call of calls.values()) {
+      if ((await callAudience(call.key)).includes(socket.username)) out.push(callState(call));
+    }
+    if (typeof ack === 'function') ack({ calls: out });
+  });
+
+  // Server admins can disconnect someone from a voice channel.
+  socket.on('voice:kick', async (data = {}, ack) => {
+    const call = calls.get(String(data.key || ''));
+    const target = String(data.username || '');
+    if (!call || call.kind !== 'voice' || !call.participants.has(target)) { if (typeof ack === 'function') ack({ error: 'not in this call' }); return; }
+    if (!(await canModerateRoom(socket.username, call.room))) { if (typeof ack === 'function') ack({ error: 'only server admins can do that' }); return; }
+    await leaveCall(call.key, target, `You were disconnected by ${socket.username}.`);
+    if (typeof ack === 'function') ack({ message: 'ok' });
+  });
+
   socket.on('disconnect', () => {
+    for (const call of [...calls.values()]) {
+      const p = call.participants.get(socket.username);
+      if (p && p.socketId === socket.id) leaveCall(call.key, socket.username).catch(err => console.error('leaveCall failed:', err.message));
+    }
     removeOnlineUser(socket.id);
     idleSockets.delete(socket.id);
     broadcastPresence();
@@ -2623,12 +4040,15 @@ async function main() {
     await pool.query(`INSERT INTO channels (name, created_by) VALUES ($1, 'system') ON CONFLICT (name) DO NOTHING`, [name]);
   }
   await applySeedAccounts();
+  // calls are kept in memory, so none survive a restart - close their logs
+  await pool.query(`UPDATE messages SET text = 'ended' WHERE kind = 'call' AND text = 'ongoing'`);
   // every 10 minutes (was every minute): shared files live 6 hours, and a
   // query every minute would keep a sleeping serverless database awake
   setInterval(() => { removeOldFiles().catch(err => console.error('removeOldFiles failed:', err)); }, 10 * 60 * 1000);
   setInterval(() => { removeExpiredSessions().catch(err => console.error('removeExpiredSessions failed:', err)); }, 60 * 60 * 1000);
   await removeExpiredSessions();
   await removeOldFiles();
+  await scheduleEventReminders();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);

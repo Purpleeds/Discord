@@ -506,6 +506,49 @@ async function setupSchema() {
   // constraint already covers requester, this covers addressee.
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_friendships_addressee ON friendships (addressee)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks (blocked)`);
+
+  // Webhooks, custom slash commands, auto-roles and reaction roles. A
+  // webhook's token is never stored, only its SHA-256 (token_hash).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS webhooks (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      channel_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS server_commands (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      response TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (server_id, name)
+    );
+    CREATE TABLE IF NOT EXISTS reaction_roles (
+      message_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      role_id INTEGER NOT NULL,
+      server_id INTEGER NOT NULL,
+      created_by TEXT,
+      PRIMARY KEY (message_id, emoji)
+    );
+  `);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_webhooks_server ON webhooks (server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_reaction_roles_role ON reaction_roles (role_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_reaction_roles_server ON reaction_roles (server_id)`);
+  // webhook messages: "user" is 'webhook:<id>' (never a real username - those
+  // can't contain ':'), author_name is the name shown. command_name: which
+  // slash command made a kind 'roll' / 'command' message.
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS webhook_id INTEGER`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS author_name TEXT`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS command_name TEXT`);
+  await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS auto_assign INTEGER DEFAULT 0`);
 }
 
 // ---------------- SERVERS (guilds) ----------------
@@ -693,7 +736,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT 300
      ) recent ORDER BY id ASC`,
     [room]
@@ -702,7 +745,7 @@ async function getMessagesForRoom(room) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
@@ -991,7 +1034,7 @@ function serverBannerUrlOf(s) {
 }
 
 function roleFromRow(r) {
-  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, mentionable: !!r.mentionable, position: r.position };
+  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, mentionable: !!r.mentionable, autoAssign: !!r.auto_assign, position: r.position };
 }
 
 async function serversForUser(username) {
@@ -1329,14 +1372,15 @@ async function replyPreviews(ids) {
   const out = new Map();
   const wanted = [...new Set(ids.filter(Boolean))];
   if (!wanted.length) return out;
-  const rows = await q(`SELECT id, "user", left(text, 180) AS text, deleted_at FROM messages WHERE id = ANY($1)`, [wanted]);
+  const rows = await q(`SELECT id, "user", left(text, 180) AS text, deleted_at, webhook_id, author_name FROM messages WHERE id = ANY($1)`, [wanted]);
   const authors = await getUsers(rows.map(r => r.user));
   for (const row of rows) {
-    const u = authors.get(row.user);
+    const u = row.webhook_id ? null : authors.get(row.user);
     out.set(row.id, {
       id: row.id,
       user: row.user,
-      displayName: u ? (u.display_name || u.username) : row.user,
+      bot: !!row.webhook_id,
+      displayName: row.webhook_id ? (row.author_name || 'Webhook') : (u ? (u.display_name || u.username) : row.user),
       avatarUrl: u ? avatarUrlOf(u) : '',
       text: row.deleted_at ? '[message deleted]' : String(row.text || '')
     });
@@ -1388,23 +1432,34 @@ async function pollsFor(messageIds) {
 async function normaliseMessages(rows) {
   rows = rows.filter(Boolean);
   if (!rows.length) return [];
-  const [authors, replies, reactions, polls, threadRows] = await Promise.all([
-    getUsers(rows.map(r => r.user)),
+  const [authors, replies, reactions, polls, threadRows, roleRows] = await Promise.all([
+    getUsers(rows.filter(r => !r.webhook_id).map(r => r.user)),
     replyPreviews(rows.map(r => r.reply_to)),
     reactionSummaries(rows.map(r => r.id)),
     pollsFor(rows.filter(r => r.kind === 'poll' && !r.deleted_at).map(r => r.id)),
-    q(`SELECT * FROM threads WHERE starter_message_id = ANY($1)`, [rows.map(r => r.id)])
+    q(`SELECT * FROM threads WHERE starter_message_id = ANY($1)`, [rows.map(r => r.id)]),
+    q(`SELECT message_id, emoji, role_id FROM reaction_roles WHERE message_id = ANY($1)`, [rows.map(r => r.id)])
   ]);
   const threadsBy = new Map(threadRows.map(t => [t.starter_message_id, threadFromRow(t)]));
+  const reactionRolesBy = new Map();
+  for (const r of roleRows) {
+    if (!reactionRolesBy.has(r.message_id)) reactionRolesBy.set(r.message_id, []);
+    reactionRolesBy.get(r.message_id).push({ emoji: r.emoji, roleId: r.role_id });
+  }
   return rows.map(row => {
     const deleted = !!row.deleted_at;
-    const u = authors.get(row.user);
+    const u = row.webhook_id ? null : authors.get(row.user);
     return {
       id: row.id,
       room: row.room,
       user: row.user,
-      displayName: u ? (u.display_name || u.username) : row.user,
+      // webhook posts show their own name, always marked as a bot
+      bot: !!row.webhook_id,
+      webhookId: row.webhook_id || null,
+      displayName: row.webhook_id ? (row.author_name || 'Webhook') : (u ? (u.display_name || u.username) : row.user),
       avatarUrl: u ? avatarUrlOf(u) : '',
+      commandName: row.command_name || '',
+      reactionRoles: deleted ? [] : (reactionRolesBy.get(row.id) || []),
       text: deleted ? '[message deleted]' : row.text,
       to: row.to_user || '',
       dmTo: row.to_user || '',
@@ -2293,6 +2348,310 @@ app.get('/voice/ice', requireAuth, route(async (req, res) => {
   res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
 }));
 
+// ---------------- WEBHOOKS, SLASH COMMANDS, REACTION ROLES ----------------
+async function emitMessageUpdate(id) {
+  const row = await getMessageById(id);
+  if (!row) return;
+  const msg = await normaliseMessage(row);
+  emitRoomOrDM(msg.room, msg.to, 'messageUpdated', msg);
+}
+
+// Incoming webhooks let other apps (GitHub, monitoring, scripts...) post in
+// a channel. They accept Discord's webhook format at the same path
+// (/api/webhooks/<id>/<token>), so tools made for Discord work by swapping
+// the host. The token is a password: only its SHA-256 is stored, it is shown
+// once (when created or reset) and compared in constant time.
+const MAX_WEBHOOKS_PER_SERVER = 25;
+const WEBHOOK_TOKEN_RE = /^[A-Za-z0-9_-]{20,128}$/;
+function sha256Hex(text) {
+  return crypto.createHash('sha256').update(String(text)).digest('hex');
+}
+function webhookTokenMatches(token, hash) {
+  if (!WEBHOOK_TOKEN_RE.test(String(token || '')) || !hash) return false;
+  const a = Buffer.from(sha256Hex(token), 'hex');
+  const b = Buffer.from(String(hash), 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function newWebhookToken() {
+  return crypto.randomBytes(32).toString('base64url');
+}
+function cleanBotName(value) {
+  return cleanText(String(value || '').replace(/\s+/g, ' '), 32);
+}
+function webhookFromRow(w) {
+  return { id: w.id, name: w.name, channelId: w.channel_id, createdBy: w.created_by, createdAt: w.created_at, lastUsedAt: w.last_used_at || null };
+}
+function webhookUrlFor(req, id, token) {
+  return `${req.protocol}://${req.get('host')}/api/webhooks/${id}/${token}`;
+}
+// A text channel of this server, or an error to show.
+async function webhookChannel(serverId, channelId) {
+  const channel = await getChannelById(Number(channelId) || 0);
+  if (!channel || channel.server_id !== serverId) return { error: 'pick a channel in this server' };
+  if (channel.kind === 'forum' || channel.kind === 'voice') return { error: 'webhooks can only post in text channels' };
+  return { channel };
+}
+
+// Discord-style body -> message text. `content` (or Slack's `text`), plus
+// any embeds flattened into quoted Markdown so nothing is silently lost.
+function webhookText(body) {
+  const parts = [];
+  const content = body.content != null ? body.content : body.text;
+  if (content != null && String(content).trim()) parts.push(String(content));
+  for (const e of (Array.isArray(body.embeds) ? body.embeds : []).slice(0, 10)) {
+    if (!e || typeof e !== 'object') continue;
+    const lines = [];
+    if (e.author && e.author.name) lines.push(String(e.author.name));
+    if (e.title) lines.push('**' + String(e.title) + '**' + (e.url ? ' ' + String(e.url) : ''));
+    if (e.description) lines.push(String(e.description));
+    for (const f of (Array.isArray(e.fields) ? e.fields : []).slice(0, 25)) {
+      if (f && f.name != null) lines.push('**' + String(f.name) + '**: ' + String(f.value != null ? f.value : ''));
+    }
+    if (e.image && e.image.url) lines.push(String(e.image.url));
+    if (e.footer && e.footer.text) lines.push(String(e.footer.text));
+    if (lines.length) parts.push(lines.join('\n').split('\n').map(line => '> ' + line).join('\n'));
+  }
+  return cleanText(parts.join('\n'), 4000);
+}
+
+async function webhookFromRequest(req) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const hook = await one(`SELECT * FROM webhooks WHERE id = $1`, [id]);
+  return hook && webhookTokenMatches(req.params.token, hook.token_hash) ? hook : null;
+}
+const WEBHOOK_RATE_LIMITED = { message: 'You are being rate limited.', retry_after: 60, global: false };
+
+// Discord tools often GET the URL first to check it works.
+app.get('/api/webhooks/:id/:token', route(async (req, res) => {
+  if (rateLimited('webhookip:' + req.ip, 60, 60 * 1000)) return res.status(429).json(WEBHOOK_RATE_LIMITED);
+  const hook = await webhookFromRequest(req);
+  if (!hook) return res.status(401).json({ message: 'Invalid Webhook Token', code: 50027 });
+  res.json({ type: 1, id: String(hook.id), name: hook.name, channel_id: String(hook.channel_id), guild_id: String(hook.server_id) });
+}));
+
+app.post('/api/webhooks/:id/:token', route(async (req, res) => {
+  if (rateLimited('webhookip:' + req.ip, 60, 60 * 1000)) return res.status(429).json(WEBHOOK_RATE_LIMITED);
+  const hook = await webhookFromRequest(req);
+  if (!hook) return res.status(401).json({ message: 'Invalid Webhook Token', code: 50027 });
+  if (rateLimited('webhook:' + hook.id, 30, 60 * 1000)) return res.status(429).json(WEBHOOK_RATE_LIMITED);
+  const { channel } = await webhookChannel(hook.server_id, hook.channel_id);
+  if (!channel) return res.status(404).json({ message: 'Unknown Channel', code: 10003 });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const text = webhookText(body);
+  if (!text) return res.status(400).json({ message: 'Cannot send an empty message', code: 50006 });
+  const name = cleanBotName(body.username) || hook.name;
+  // webhook posts never ping (@everyone, roles) - mention flags stay off
+  const created = await one(
+    `INSERT INTO messages (room, "user", text, is_group, webhook_id, author_name) VALUES ($1, $2, $3, 0, $4, $5) RETURNING *`,
+    [channel.room, 'webhook:' + hook.id, text, hook.id, name]
+  );
+  pool.query(`UPDATE webhooks SET last_used_at = NOW() WHERE id = $1`, [hook.id]).catch(err => console.error('webhook last_used_at failed:', err.message));
+  const msg = await normaliseMessage(created);
+  io.to(channel.room).emit('message', msg);
+  if (String(req.query.wait) === 'true') {
+    return res.json({ id: String(msg.id), type: 0, channel_id: String(channel.id), content: msg.text, timestamp: msg.createdAt, author: { id: String(hook.id), username: name, bot: true } });
+  }
+  res.status(204).end();
+}));
+
+// ---- managing webhooks (server admins)
+async function managedWebhook(req, res) {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) { res.status(403).json({ error: 'only server admins can manage webhooks' }); return null; }
+  const hook = await one(`SELECT * FROM webhooks WHERE id = $1 AND server_id = $2`, [Number(req.params.hookId) || 0, serverId]);
+  if (!hook) { res.status(404).json({ error: 'webhook not found' }); return null; }
+  return hook;
+}
+
+app.get('/servers/:id/webhooks', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage webhooks' });
+  res.json((await q(`SELECT * FROM webhooks WHERE server_id = $1 ORDER BY id`, [serverId])).map(webhookFromRow));
+}));
+
+app.post('/servers/:id/webhooks', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage webhooks' });
+  const { channel, error } = await webhookChannel(serverId, req.body.channelId);
+  if (error) return res.status(400).json({ error });
+  const count = await one(`SELECT count(*)::int AS n FROM webhooks WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_WEBHOOKS_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_WEBHOOKS_PER_SERVER} webhooks` });
+  const token = newWebhookToken();
+  const hook = await one(
+    `INSERT INTO webhooks (server_id, channel_id, name, token_hash, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [serverId, channel.id, cleanBotName(req.body.name) || 'Webhook', sha256Hex(token), req.username]
+  );
+  res.status(201).json({ ...webhookFromRow(hook), url: webhookUrlFor(req, hook.id, token) });
+}));
+
+app.post('/servers/:id/webhooks/:hookId/update', requireAuth, route(async (req, res) => {
+  const hook = await managedWebhook(req, res);
+  if (!hook) return;
+  let channelId = hook.channel_id;
+  if ('channelId' in req.body) {
+    const { channel, error } = await webhookChannel(hook.server_id, req.body.channelId);
+    if (error) return res.status(400).json({ error });
+    channelId = channel.id;
+  }
+  const name = 'name' in req.body ? (cleanBotName(req.body.name) || hook.name) : hook.name;
+  const updated = await one(`UPDATE webhooks SET name = $1, channel_id = $2 WHERE id = $3 RETURNING *`, [name, channelId, hook.id]);
+  res.json(webhookFromRow(updated));
+}));
+
+// A new token - the old URL stops working immediately.
+app.post('/servers/:id/webhooks/:hookId/reset', requireAuth, route(async (req, res) => {
+  const hook = await managedWebhook(req, res);
+  if (!hook) return;
+  const token = newWebhookToken();
+  await pool.query(`UPDATE webhooks SET token_hash = $1 WHERE id = $2`, [sha256Hex(token), hook.id]);
+  res.json({ ...webhookFromRow(hook), url: webhookUrlFor(req, hook.id, token) });
+}));
+
+app.post('/servers/:id/webhooks/:hookId/delete', requireAuth, route(async (req, res) => {
+  const hook = await managedWebhook(req, res);
+  if (!hook) return;
+  await pool.query(`DELETE FROM webhooks WHERE id = $1`, [hook.id]);
+  res.json({ message: 'ok' });
+}));
+
+// ---- slash commands
+// Built-ins are handled by the composer (/shrug, /me...) or here (/roll and
+// /flip, so nobody can fake a result). Admins add their own: /rules posts a
+// saved reply. Built-in names can't be taken by custom commands.
+const MAX_COMMANDS_PER_SERVER = 50;
+const COMMAND_NAME_RE = /^[a-z0-9_-]{1,32}$/;
+const BUILTIN_COMMANDS = new Set(['shrug', 'tableflip', 'unflip', 'lenny', 'me', 'spoiler', 'roll', 'flip', 'poll', 'msg', 'nick', 'thread', 'call', 'giphy', 'tenor', 'tts']);
+function commandFromRow(c) {
+  return { id: c.id, name: c.name, description: c.description || '', response: c.response };
+}
+function cleanCommandInput(body) {
+  const out = {};
+  if ('name' in body) out.name = String(body.name || '').trim().replace(/^\//, '').toLowerCase();
+  if ('description' in body) out.description = cleanText(body.description, 100);
+  if ('response' in body) out.response = cleanText(body.response, 2000);
+  return out;
+}
+function commandInputError(input) {
+  if ('name' in input) {
+    if (!COMMAND_NAME_RE.test(input.name)) return 'command names are 1-32 lowercase letters, numbers, - or _';
+    if (BUILTIN_COMMANDS.has(input.name)) return `/${input.name} is a built-in command`;
+  }
+  if ('response' in input && !input.response) return 'the command needs a reply';
+  return null;
+}
+async function managedCommand(req, res) {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) { res.status(403).json({ error: 'only server admins can manage commands' }); return null; }
+  const cmd = await one(`SELECT * FROM server_commands WHERE id = $1 AND server_id = $2`, [Number(req.params.commandId) || 0, serverId]);
+  if (!cmd) { res.status(404).json({ error: 'command not found' }); return null; }
+  return cmd;
+}
+
+app.get('/servers/:id/commands', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await isServerMember(req.username, serverId))) return res.status(403).json({ error: 'forbidden' });
+  res.json((await q(`SELECT * FROM server_commands WHERE server_id = $1 ORDER BY name`, [serverId])).map(commandFromRow));
+}));
+
+app.post('/servers/:id/commands', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage commands' });
+  const input = cleanCommandInput({ description: '', ...req.body, name: req.body.name || '', response: req.body.response || '' });
+  const problem = commandInputError(input);
+  if (problem) return res.status(400).json({ error: problem });
+  const count = await one(`SELECT count(*)::int AS n FROM server_commands WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_COMMANDS_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_COMMANDS_PER_SERVER} commands` });
+  const cmd = await one(
+    `INSERT INTO server_commands (server_id, name, description, response, created_by) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (server_id, name) DO NOTHING RETURNING *`,
+    [serverId, input.name, input.description, input.response, req.username]
+  );
+  if (!cmd) return res.status(400).json({ error: `/${input.name} already exists` });
+  await notifyServerMembers(serverId, 'commandsChanged', { serverId });
+  res.status(201).json(commandFromRow(cmd));
+}));
+
+app.post('/servers/:id/commands/:commandId/update', requireAuth, route(async (req, res) => {
+  const cmd = await managedCommand(req, res);
+  if (!cmd) return;
+  const input = cleanCommandInput(req.body);
+  const problem = commandInputError(input);
+  if (problem) return res.status(400).json({ error: problem });
+  const next = { name: cmd.name, description: cmd.description || '', response: cmd.response, ...input };
+  const clash = next.name !== cmd.name && await one(`SELECT 1 FROM server_commands WHERE server_id = $1 AND name = $2`, [cmd.server_id, next.name]);
+  if (clash) return res.status(400).json({ error: `/${next.name} already exists` });
+  const updated = await one(
+    `UPDATE server_commands SET name = $1, description = $2, response = $3 WHERE id = $4 RETURNING *`,
+    [next.name, next.description, next.response, cmd.id]
+  );
+  await notifyServerMembers(cmd.server_id, 'commandsChanged', { serverId: cmd.server_id });
+  res.json(commandFromRow(updated));
+}));
+
+app.post('/servers/:id/commands/:commandId/delete', requireAuth, route(async (req, res) => {
+  const cmd = await managedCommand(req, res);
+  if (!cmd) return;
+  await pool.query(`DELETE FROM server_commands WHERE id = $1`, [cmd.id]);
+  await notifyServerMembers(cmd.server_id, 'commandsChanged', { serverId: cmd.server_id });
+  res.json({ message: 'ok' });
+}));
+
+// "2d6", "d20", "1d100+5", "20" (= d20); empty = one six-sided die.
+function rollDice(spec) {
+  let text = String(spec || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!text) text = '1d6';
+  if (/^\d{1,4}$/.test(text)) text = 'd' + text;
+  const m = /^(\d{0,2})d(\d{1,4})(?:([+-])(\d{1,4}))?$/.exec(text);
+  if (!m) return { error: 'Try /roll 2d6, /roll d20 or /roll 1d100+5.' };
+  const count = Number(m[1] || 1);
+  const sides = Number(m[2]);
+  const bonus = m[4] ? Number(m[4]) * (m[3] === '-' ? -1 : 1) : 0;
+  if (count < 1 || count > 20) return { error: 'You can roll 1 to 20 dice at once.' };
+  if (sides < 2 || sides > 1000) return { error: 'Dice can have 2 to 1000 sides.' };
+  const rolls = Array.from({ length: count }, () => crypto.randomInt(1, sides + 1));
+  const total = rolls.reduce((a, b) => a + b, 0) + bonus;
+  const label = count + 'd' + sides + (bonus ? (bonus > 0 ? '+' : '-') + Math.abs(bonus) : '');
+  const working = count > 1 || bonus ? rolls.join(' + ') + (bonus ? (bonus > 0 ? ' + ' : ' - ') + Math.abs(bonus) : '') + ' = ' : '';
+  return { text: `rolled ${label}: ${working}**${total}**` };
+}
+
+// ---- reaction roles: react to a message to get a role (set up by admins)
+const MAX_REACTION_ROLES_PER_MESSAGE = 20;
+async function reactionRoleMessage(req, res) {
+  const row = await getMessageById(Number(req.params.id) || 0);
+  const channel = row && !row.deleted_at ? await channelForRoom(row.room) : null;
+  if (!channel || !(await isAllowedRoom(req.username, row.room))) { res.status(404).json({ error: 'message not found' }); return null; }
+  if (!(await canManageServer(req.username, channel.server_id))) { res.status(403).json({ error: 'only server admins can set up reaction roles' }); return null; }
+  return { row, channel };
+}
+
+app.post('/messages/:id/reaction-roles', requireAuth, route(async (req, res) => {
+  const target = await reactionRoleMessage(req, res);
+  if (!target) return;
+  const emoji = String(req.body.emoji || '');
+  if (!REACTION_EMOJIS.has(emoji)) return res.status(400).json({ error: 'pick one of the reaction emojis' });
+  const role = await one(`SELECT id FROM server_roles WHERE id = $1 AND server_id = $2`, [Number(req.body.roleId) || 0, target.channel.server_id]);
+  if (!role) return res.status(400).json({ error: 'that role is not in this server' });
+  const count = await one(`SELECT count(*)::int AS n FROM reaction_roles WHERE message_id = $1 AND emoji <> $2`, [target.row.id, emoji]);
+  if (count.n >= MAX_REACTION_ROLES_PER_MESSAGE) return res.status(400).json({ error: `a message can have up to ${MAX_REACTION_ROLES_PER_MESSAGE} reaction roles` });
+  await pool.query(
+    `INSERT INTO reaction_roles (message_id, emoji, role_id, server_id, created_by) VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (message_id, emoji) DO UPDATE SET role_id = EXCLUDED.role_id`,
+    [target.row.id, emoji, role.id, target.channel.server_id, req.username]
+  );
+  await emitMessageUpdate(target.row.id);
+  res.json({ message: 'ok' });
+}));
+
+app.post('/messages/:id/reaction-roles/delete', requireAuth, route(async (req, res) => {
+  const target = await reactionRoleMessage(req, res);
+  if (!target) return;
+  await pool.query(`DELETE FROM reaction_roles WHERE message_id = $1 AND emoji = $2`, [target.row.id, String(req.body.emoji || '')]);
+  await emitMessageUpdate(target.row.id);
+  res.json({ message: 'ok' });
+}));
+
 // ---------------- THREADS + FORUM POSTS ----------------
 function threadFromRow(t) {
   if (!t) return null;
@@ -2753,6 +3112,17 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
   // shouldn't announce you again. Posted before serversChanged goes out:
   // that event makes every member's client reload the channel's history,
   // and a reload that started before the insert would wipe the message.
+  if (joined) {
+    // auto-roles: given to everyone who joins (they can unlock private channels)
+    const autoRoles = (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND auto_assign = 1`, [srv.id])).map(r => r.id);
+    if (autoRoles.length) {
+      await pool.query(
+        `INSERT INTO server_member_roles (server_id, role_id, username) SELECT $1, unnest($2::int[]), $3 ON CONFLICT DO NOTHING`,
+        [srv.id, autoRoles, req.username]
+      );
+      await resyncRooms([req.username]);
+    }
+  }
   if (joined && srv.system_channel_id) {
     const channel = await getChannelById(srv.system_channel_id);
     if (channel && channel.server_id === srv.id) {
@@ -2860,6 +3230,7 @@ app.post('/servers/:id/channels/:channelId/delete', requireAuth, route(async (re
 
   await pool.query(`DELETE FROM server_channels WHERE id = $1`, [channelId]);
   await pool.query(`DELETE FROM channel_access WHERE channel_id = $1`, [channelId]);
+  await pool.query(`DELETE FROM webhooks WHERE channel_id = $1`, [channelId]);
   const voiceCall = calls.get('voice:' + channel.room);
   if (voiceCall) for (const name of [...voiceCall.participants.keys()]) await leaveCall(voiceCall.key, name, 'This voice channel was deleted.');
   await pool.query(`DELETE FROM threads WHERE parent_room = $1`, [channel.room]);
@@ -2904,6 +3275,9 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   await pool.query(`DELETE FROM server_events WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_roles WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM webhooks WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM server_commands WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM reaction_roles WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
   await resyncRooms(members);
   for (const member of members) sendToUser(member, 'serversChanged', {});
@@ -3143,6 +3517,7 @@ function cleanRoleInput(body) {
   if ('color' in body) out.color = body.color ? String(body.color) : '';
   if ('hoist' in body) out.hoist = body.hoist ? 1 : 0;
   if ('mentionable' in body) out.mentionable = body.mentionable ? 1 : 0;
+  if ('autoAssign' in body) out.autoAssign = body.autoAssign ? 1 : 0;
   return out;
 }
 function roleInputError(input) {
@@ -3160,8 +3535,8 @@ app.post('/servers/:id/roles', requireAuth, route(async (req, res) => {
   const count = await one(`SELECT count(*)::int AS n, COALESCE(max(position), -1) AS top FROM server_roles WHERE server_id = $1`, [serverId]);
   if (count.n >= MAX_ROLES_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_ROLES_PER_SERVER} roles` });
   const role = await one(
-    `INSERT INTO server_roles (server_id, name, color, hoist, mentionable, position) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, count.top + 1]
+    `INSERT INTO server_roles (server_id, name, color, hoist, mentionable, auto_assign, position) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, input.autoAssign || 0, count.top + 1]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.status(201).json(roleFromRow(role));
@@ -3184,10 +3559,10 @@ app.post('/servers/:id/roles/:roleId/update', requireAuth, route(async (req, res
   const input = cleanRoleInput(req.body);
   const problem = roleInputError(input);
   if (problem) return res.status(400).json({ error: problem });
-  const next = { name: role.name, color: role.color, hoist: role.hoist, mentionable: role.mentionable, ...input };
+  const next = { name: role.name, color: role.color, hoist: role.hoist, mentionable: role.mentionable, autoAssign: role.auto_assign, ...input };
   const updated = await one(
-    `UPDATE server_roles SET name = $1, color = $2, hoist = $3, mentionable = $4 WHERE id = $5 RETURNING *`,
-    [next.name, next.color || '', next.hoist ? 1 : 0, next.mentionable ? 1 : 0, roleId]
+    `UPDATE server_roles SET name = $1, color = $2, hoist = $3, mentionable = $4, auto_assign = $5 WHERE id = $6 RETURNING *`,
+    [next.name, next.color || '', next.hoist ? 1 : 0, next.mentionable ? 1 : 0, next.autoAssign ? 1 : 0, roleId]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json(roleFromRow(updated));
@@ -3201,7 +3576,9 @@ app.post('/servers/:id/roles/:roleId/delete', requireAuth, route(async (req, res
   if (!role) return res.status(404).json({ error: 'role not found' });
   const holders = (await q(`DELETE FROM server_member_roles WHERE role_id = $1 RETURNING username`, [roleId])).map(r => r.username);
   await pool.query(`DELETE FROM channel_access WHERE role_id = $1`, [roleId]);
+  const menus = (await q(`DELETE FROM reaction_roles WHERE role_id = $1 RETURNING message_id`, [roleId])).map(r => r.message_id);
   await resyncRooms(holders);
+  for (const id of new Set(menus)) await emitMessageUpdate(id);
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok' });
 }));
@@ -3679,6 +4056,55 @@ io.on('connection', (socket) => {
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });
   });
 
+  // Slash commands the server runs: /roll and /flip (random on the server,
+  // so results can't be faked) and a server's custom commands.
+  socket.on('runCommand', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (rateLimited('msg:' + socket.username, 10, 5000)) return reply({ error: 'You are sending messages too fast - slow down a little.' });
+    const room = String(data.room || '');
+    const name = String(data.name || '').trim().toLowerCase();
+    const args = cleanText(data.args, 200);
+    const muted = await isMuted(socket.username);
+    if (muted) return reply({ error: 'you are muted until ' + muted.muted_until });
+    if (!(await isAllowedRoom(socket.username, room))) return reply({ error: 'forbidden room' });
+    const dmUsers = getDMUsers(room);
+    const toUser = dmUsers ? dmUsers.find(u => u !== socket.username) : null;
+    if (toUser) {
+      const block = await blockBetween(socket.username, toUser);
+      if (block) return reply({ error: dmBlockedError(block) });
+    }
+    let text, kind;
+    if (name === 'roll' || name === 'flip') {
+      const result = name === 'flip' ? { text: 'flipped a coin: **' + (crypto.randomInt(2) ? 'Heads' : 'Tails') + '**' } : rollDice(args);
+      if (result.error) return reply({ error: result.error });
+      text = result.text;
+      kind = 'roll';
+    } else {
+      const channel = COMMAND_NAME_RE.test(name) ? await channelForRoom(room) : null;
+      const cmd = channel ? await one(`SELECT * FROM server_commands WHERE server_id = $1 AND name = $2`, [channel.server_id, name]) : null;
+      if (!cmd) return reply({ error: `There's no /${name.slice(0, 32)} command here.` });
+      text = cmd.response;
+      kind = 'command';
+    }
+    if (!dmUsers) {
+      const blocked = await channelPostBlock(socket.username, room);
+      if (blocked) return reply({ error: blocked });
+    }
+    const created = await one(
+      `INSERT INTO messages (room, "user", text, to_user, is_group, kind, command_name) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [room, socket.username, text, toUser, groupIdFromRoom(room) ? 1 : 0, kind, name]
+    );
+    const msg = await normaliseMessage(created);
+    if (toUser) {
+      sendToUser(socket.username, 'dmMessage', msg);
+      sendToUser(toUser, 'dmMessage', msg);
+    } else {
+      io.to(room).emit('message', msg);
+      touchThread(room).catch(err => console.error('touchThread failed:', err.message));
+    }
+    reply({ message: 'ok', id: msg.id });
+  });
+
   socket.on('dmMessage', async (data = {}, ack) => {
     if (rateLimited('msg:' + socket.username, 10, 5000)) {
       if (typeof ack === 'function') ack({ error: 'You are sending messages too fast - slow down a little.' });
@@ -3770,6 +4196,16 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'invalid reaction' });
       return;
     }
+    // a reaction role: reacting gives the role, un-reacting takes it away
+    const roleMenu = await one(
+      `SELECT rr.role_id, rr.server_id FROM reaction_roles rr JOIN server_roles r ON r.id = rr.role_id AND r.server_id = rr.server_id
+       WHERE rr.message_id = $1 AND rr.emoji = $2`,
+      [id, emoji]
+    );
+    if (roleMenu && rateLimited('reactrole:' + socket.username, 6, 10 * 1000)) {
+      if (typeof ack === 'function') ack({ error: 'Slow down a little.' });
+      return;
+    }
     const existing = await one(`SELECT 1 FROM message_reactions WHERE message_id = $1 AND username = $2 AND emoji = $3`, [id, socket.username, emoji]);
     if (existing) {
       await pool.query(`DELETE FROM message_reactions WHERE message_id = $1 AND username = $2 AND emoji = $3`, [id, socket.username, emoji]);
@@ -3778,6 +4214,14 @@ io.on('connection', (socket) => {
     }
     const payload = { id, room: row.room, reactions: await reactionSummary(id) };
     emitRoomOrDM(row.room, row.to_user || '', 'reactionUpdated', payload);
+    if (roleMenu && (await isServerMember(socket.username, roleMenu.server_id))) {
+      if (existing) await pool.query(`DELETE FROM server_member_roles WHERE role_id = $1 AND username = $2`, [roleMenu.role_id, socket.username]);
+      else await pool.query(`INSERT INTO server_member_roles (server_id, role_id, username) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [roleMenu.server_id, roleMenu.role_id, socket.username]);
+      await resyncRooms([socket.username]); // the role may open or close private channels
+      await notifyServerMembers(roleMenu.server_id, 'serverMembersChanged', { serverId: roleMenu.server_id });
+      sendToUser(socket.username, 'serversChanged', {});
+      sendToUser(socket.username, 'myRolesChanged', { serverId: roleMenu.server_id });
+    }
     if (typeof ack === 'function') ack({ message: 'ok' });
   });
 

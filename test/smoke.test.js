@@ -337,3 +337,55 @@ test('batch 3: calls ring, connect, relay only between participants, and end', a
 
   assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
 });
+
+test('batch 4: webhooks, slash commands, auto-roles and reaction roles', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Bots ' + tag })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  const general = s.channels[0];
+  await emit(sockets.b, 'joinRoom', general.room);
+
+  // webhooks: admins only, token shown once, wrong tokens refused, posts are marked as bots
+  assert.equal((await api(tokens.b, `/servers/${sid}/webhooks`, { name: 'x', channelId: general.id })).status, 403);
+  const hook = (await api(tokens.a, `/servers/${sid}/webhooks`, { name: 'CI', channelId: general.id })).data;
+  const url = hook.url.replace(/^https?:\/\/[^/]+/, BASE);
+  assert.ok(!JSON.stringify((await api(tokens.a, `/servers/${sid}/webhooks`)).data).includes(url.split('/').pop()));
+  const post = (u, body) => fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal((await post(url.slice(0, -4) + 'AAAA', { content: 'x' })).status, 401);
+  const live = nextEvent(sockets.b, 'message', m => m.bot);
+  assert.equal((await post(url, { content: 'build ok @everyone' })).status, 204);
+  const m = await live;
+  assert.equal(m.displayName, 'CI');
+  assert.equal(m.mentionsEveryone, false);
+  await api(tokens.a, `/servers/${sid}/webhooks/${hook.id}/reset`, {});
+  assert.equal((await post(url, { content: 'x' })).status, 401);
+
+  // slash commands: dice are rolled by the server and can't be edited
+  const rolled = nextEvent(sockets.b, 'message', x => x.kind === 'roll');
+  const ack = await emit(sockets.b, 'runCommand', { room: general.room, name: 'roll', args: '2d6' });
+  assert.match((await rolled).text, /^rolled 2d6: \d+ \+ \d+ = \*\*\d+\*\*$/);
+  assert.ok((await emit(sockets.b, 'editMessage', { id: ack.id, text: 'rolled 2d6: **12**' })).error);
+  assert.equal((await api(tokens.a, `/servers/${sid}/commands`, { name: 'roll', response: 'x' })).status, 400);
+  await api(tokens.a, `/servers/${sid}/commands`, { name: 'rules', response: 'Be kind' });
+  assert.equal((await emit(sockets.b, 'runCommand', { room: general.room, name: 'rules' })).message, 'ok');
+  assert.ok((await emit(sockets.c, 'runCommand', { room: general.room, name: 'rules' })).error);
+
+  // auto-roles + reaction roles both unlock a private channel
+  const role = (await api(tokens.a, `/servers/${sid}/roles`, { name: 'Member', autoAssign: true })).data;
+  const priv = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'members-only', isPrivate: true })).data;
+  await api(tokens.a, `/servers/${sid}/channels/${priv.id}/access`, { isPrivate: true, roleIds: [role.id] });
+  const sees = async k => ((await api(tokens[k], '/servers')).data.find(x => x.id === sid) || { channels: [] }).channels.some(c => c.id === priv.id);
+  await api(tokens.c, '/servers/join', { code: s.inviteCode });
+  assert.equal(await sees('c'), true, 'auto-role given on join');
+  assert.equal(await sees('b'), false);
+  const menu = await emit(sockets.a, 'message', { room: general.room, text: 'pick roles' });
+  assert.equal((await api(tokens.b, `/messages/${menu.id}/reaction-roles`, { emoji: '🎉', roleId: role.id })).status, 403);
+  assert.equal((await api(tokens.a, `/messages/${menu.id}/reaction-roles`, { emoji: '🎉', roleId: role.id })).status, 200);
+  await emit(sockets.b, 'reactMessage', { id: menu.id, emoji: '🎉' });
+  assert.equal(await sees('b'), true, 'reacting gives the role');
+  await emit(sockets.b, 'reactMessage', { id: menu.id, emoji: '🎉' });
+  assert.equal(await sees('b'), false, 'un-reacting takes it away');
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+  assert.equal((await post(url, { content: 'x' })).status, 401);
+});

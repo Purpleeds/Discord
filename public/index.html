@@ -475,6 +475,32 @@ select option{background:var(--bg-floating);color:var(--text-bright);}
 .contextItem.danger{color:#f23f43;}
 .contextItem.danger:hover{background:var(--red);color:#fff;}
 .contextSep{height:1px;background:var(--divider);margin:4px 0;}
+/* bots, slash commands, reaction roles, spoilers */
+.avatar.botAvatar{color:#fff;display:flex;align-items:center;justify-content:center;}
+.avatar.botAvatar svg{width:58%;height:58%;}
+.tagChip.bot{background:var(--brand);color:#fff;}
+.cmdUsed{font-size:12px;color:var(--text-muted);margin:1px 0 2px;}
+.cmdUsed b{color:var(--text-normal);font-weight:600;}
+.msgText.cmdReply{border-left:3px solid var(--brand);background:var(--bg-secondary-alt, rgba(0,0,0,.12));border-radius:4px;padding:6px 10px;margin-top:2px;max-width:640px;}
+.msgText.rollText b{font-size:1.1em;}
+.roleMenu{margin-top:6px;padding:10px 12px;border-radius:6px;background:rgba(0,0,0,.14);border:1px solid var(--divider);max-width:520px;}
+.roleMenuTitle{font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin-bottom:6px;}
+.roleMenuList{display:flex;flex-wrap:wrap;gap:6px;}
+.roleMenuItem{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:14px;background:var(--bg-tertiary);border:1px solid transparent;color:var(--text-normal);font-size:14px;}
+.roleMenuItem:hover{border-color:var(--text-muted);}
+.roleMenuItem.mine{border-color:var(--brand);background:rgba(88,101,242,.18);}
+.roleMenuItem .rmName{font-weight:600;}
+.spoiler{background:#1e1f22;color:transparent;border-radius:3px;cursor:pointer;padding:0 2px;}
+.spoiler *{visibility:hidden;}
+.spoiler.shown{background:rgba(255,255,255,.08);color:inherit;cursor:auto;}
+.spoiler.shown *{visibility:visible;}
+.mentionItem .slashName{font-weight:600;color:var(--text-normal);}
+.mentionItem .slashUsage{color:var(--text-muted);font-size:12px;margin-left:4px;}
+.mentionItem .slashDesc{margin-left:auto;color:var(--text-muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-left:12px;}
+.whReveal{border:1px solid var(--brand);border-radius:6px;padding:12px;margin-bottom:12px;background:rgba(88,101,242,.08);}
+.whReveal .inlineCode{word-break:break-all;white-space:normal;}
+.botBadgeIcon{width:28px;height:28px;border-radius:50%;background:var(--brand);color:#fff;display:flex;align-items:center;justify-content:center;flex:0 0 28px;}
+.botBadgeIcon svg{width:17px;height:17px;}
 .contextRange{display:block;padding:6px 8px;font-size:12px;color:var(--text-muted);}
 .contextRange > div{display:flex;justify-content:space-between;margin-bottom:4px;font-weight:600;text-transform:uppercase;}
 .contextRange b{color:var(--text-normal);}
@@ -1636,6 +1662,7 @@ function connectSocket(){
     renderUserPanel();
     renderFriendsView();
   });
+  socket.on('commandsChanged', data => { if(data && data.serverId) loadServerCommands(data.serverId, true); });
   socket.on('presence', map => {
     presenceMap = map && typeof map === 'object' ? map : {};
     renderMembers();
@@ -1806,7 +1833,7 @@ function handleIncoming(msg, kind){
     else bumpUnreadQuietly(msg.room);
     return;
   }
-  maybeNotifyDesktop(msg, kind, '#' + roomLabel(msg.room) + ' - ' + displayNameFor(msg.user));
+  maybeNotifyDesktop(msg, kind, '#' + roomLabel(msg.room) + ' - ' + senderName(msg));
   alertForIncoming(msg, msg.room);
   if(msg.room === currentRoom){
     appendItem({ kind, data:msg });
@@ -1849,7 +1876,7 @@ function maybeNotifyDesktop(msg, kind, title, room){
   try{
     let body;
     if(kind === 'file') body = displayNameFor(msg.user) + ' sent a file: ' + (msg.fileName || 'attachment');
-    else body = displayText(plainMentions(msg.text || ''), msg.room).slice(0, 140) || (displayNameFor(msg.user) + ' sent a message');
+    else body = displayText(plainMentions(msg.text || ''), msg.room).slice(0, 140) || (senderName(msg) + ' sent a message');
     const note = new Notification(title, { body });
     note.onclick = () => { window.focus(); note.close(); };
   }catch(e){}
@@ -1971,7 +1998,7 @@ function createAvatar(user, size, options){
     dot.title = PRESENCE_LABELS[state] || '';
     wrap.appendChild(dot);
   }
-  if(user && !profiles[user]) fetchProfiles([user]);
+  if(user && !profiles[user] && !String(user).includes(':')) fetchProfiles([user]);
   return wrap;
 }
 
@@ -2499,6 +2526,7 @@ function shouldGroup(item, prev){
   if(!prev) return false;
   if(appearance.compact) return false; // compact mode puts a name on every line, like Discord's
   if(prev.data.user !== item.data.user) return false;
+  if(item.data.bot && prev.data.displayName !== item.data.displayName) return false; // one webhook, several names
   if(item.data.kind || prev.data.kind) return false; // system messages stand alone
   if(item.kind === 'message' && item.data.replyTo) return false;
   const gap = parseTime(item.data.createdAt) - parseTime(prev.data.createdAt);
@@ -2690,11 +2718,15 @@ function buildMessageEl(item, grouped){
     time.textContent = formatTime(data.createdAt);
     wrap.appendChild(time);
   }else{
-    const avatar = createAvatar(data.user, '', { wrapClass:'onChat' });
-    avatar.style.cursor = 'pointer';
-    avatar.onclick = e => openProfilePopout(e, data.user, data.room);
-    avatar.oncontextmenu = e => showUserMenu(e, data.user, data.room);
-    gutter.appendChild(avatar);
+    if(data.bot){
+      gutter.appendChild(botAvatar(data.displayName, '', 'onChat'));
+    }else{
+      const avatar = createAvatar(data.user, '', { wrapClass:'onChat' });
+      avatar.style.cursor = 'pointer';
+      avatar.onclick = e => openProfilePopout(e, data.user, data.room);
+      avatar.oncontextmenu = e => showUserMenu(e, data.user, data.room);
+      gutter.appendChild(avatar);
+    }
   }
   wrap.appendChild(gutter);
 
@@ -2705,8 +2737,7 @@ function buildMessageEl(item, grouped){
     const reply = document.createElement('div');
     reply.className = 'replyPreview';
     reply.innerHTML = '<div class="replySpine"></div>';
-    const avatar = createAvatar(data.replyTo.user, 'xs');
-    reply.appendChild(avatar);
+    reply.appendChild(data.replyTo.bot ? botAvatar(data.replyTo.displayName, 'xs') : createAvatar(data.replyTo.user, 'xs'));
     const who = document.createElement('span');
     who.className = 'replyAuthor';
     who.textContent = data.replyTo.displayName || data.replyTo.user;
@@ -2723,15 +2754,24 @@ function buildMessageEl(item, grouped){
     const head = document.createElement('div');
     head.className = 'msgHead';
     const author = document.createElement('span');
-    author.className = 'msgAuthor authorName' + (isAdminUser(data.user) ? ' adminName' : '');
-    author.dataset.user = data.user;
-    author.textContent = data.displayName || displayNameFor(data.user);
-    paintNameColor(author, data.user, data.room);
-    author.onclick = e => openProfilePopout(e, data.user, data.room);
-    author.oncontextmenu = e => showUserMenu(e, data.user, data.room);
-    head.appendChild(author);
-    const badge = buildRoleBadge(data.user, data.room);
-    if(badge) head.appendChild(badge);
+    if(data.bot){
+      // a webhook: its own name, a BOT tag, and no profile to open
+      author.className = 'msgAuthor';
+      author.textContent = data.displayName || 'Webhook';
+      author.title = 'Posted by a webhook (an app or script this server connected)';
+      head.appendChild(author);
+      head.appendChild(chip('BOT', 'bot'));
+    }else{
+      author.className = 'msgAuthor authorName' + (isAdminUser(data.user) ? ' adminName' : '');
+      author.dataset.user = data.user;
+      author.textContent = data.displayName || displayNameFor(data.user);
+      paintNameColor(author, data.user, data.room);
+      author.onclick = e => openProfilePopout(e, data.user, data.room);
+      author.oncontextmenu = e => showUserMenu(e, data.user, data.room);
+      head.appendChild(author);
+      const badge = buildRoleBadge(data.user, data.room);
+      if(badge) head.appendChild(badge);
+    }
     if(data.dmTo){ head.appendChild(chip('DM','dm')); }
     if(data.isGroup){ head.appendChild(chip('GROUP','group')); }
     const time = document.createElement('span');
@@ -2749,9 +2789,16 @@ function buildMessageEl(item, grouped){
     body.appendChild(reactions);
     paintReactions(reactions, data);
   }else if(item.kind === 'message'){
+    if(data.kind === 'command' && data.commandName){
+      const used = document.createElement('div');
+      used.className = 'cmdUsed';
+      used.innerHTML = 'used <b></b>';
+      used.querySelector('b').textContent = '/' + data.commandName;
+      body.appendChild(used);
+    }
     const text = document.createElement('div');
-    text.className = 'msgText';
-    text.innerHTML = renderMarkdown(data.text || '');
+    text.className = 'msgText' + (data.kind === 'command' ? ' cmdReply' : '') + (data.kind === 'roll' ? ' rollText' : '');
+    text.innerHTML = messageTextHtml(data);
     muteUnpingedMentions(text, data);
     censorRenderedElement(text, data.room);
     if(data.editedAt){
@@ -2763,6 +2810,7 @@ function buildMessageEl(item, grouped){
     if(data.pinned) text.appendChild(pinMarker());
     body.appendChild(text);
     appendLinkedImages(body, data.text || '');
+    if(!data.deleted && (data.reactionRoles || []).length) body.appendChild(buildRoleMenu(data));
     const reactions = document.createElement('div');
     reactions.className = 'reactions';
     body.appendChild(reactions);
@@ -2799,6 +2847,7 @@ function chip(label, kind){
   return el;
 }
 
+const ICON_ROLES_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.5" fill="currentColor"/></svg>';
 // Toolbar icons as inline SVG (crisper and more Discord-like than emoji glyphs)
 const ICONS = {
   react:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c.9 1.2 2.1 1.8 3.5 1.8s2.6-.6 3.5-1.8"/><circle cx="9" cy="10" r=".7" fill="currentColor"/><circle cx="15" cy="10" r=".7" fill="currentColor"/></svg>',
@@ -2855,6 +2904,10 @@ function buildActions(item){
       bar.appendChild(toolbarButton(ICON_THREAD_SVG, 'Create Thread', e => openCreateThread(liveData(e.currentTarget, data))));
     }
     bar.appendChild(toolbarButton(ICONS.link, 'Copy Message Link', e => { copyText(messageLink(liveData(e.currentTarget, data).id)); }));
+    const roleHome = channelByRoom(data.room);
+    if(roleHome && (roleHome.server.canManage || myProfile.isAdmin) && !data.deleted){
+      bar.appendChild(toolbarButton(ICON_ROLES_SVG, 'Reaction Roles', e => openReactionRoles(liveData(e.currentTarget, data))));
+    }
     if(canPinHere(data.room)){
       bar.appendChild(toolbarButton(ICONS.pin, data.pinned ? 'Unpin Message' : 'Pin Message', e => {
         const live = liveData(e.currentTarget, data);
@@ -2879,7 +2932,10 @@ function renderMarkdown(text){
   html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
   html = html.replace(/__([^_]+)__/g, '<u>$1</u>');
   html = html.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+  html = html.replace(/\|\|([^|\n]+?)\|\|/g, '<span class="spoiler" title="Spoiler - click to show" onclick="this.classList.add(\'shown\')">$1</span>');
   html = html.replace(/^&gt;\s?(.*)$/gm, '<span class="quoteLine">$1</span>');
+  // a quote line is already a block - the newline after it would add a blank line
+  html = html.replace(/(<span class="quoteLine">[^\n]*<\/span>)\n/g, '$1');
   html = html.replace(/@([a-zA-Z0-9_.-]{2,30})/g, (m, name) => name.toLowerCase() === 'everyone'
     ? '<span class="mention everyone">@everyone</span>'
     : '<span class="mention" onclick="openDM(\'' + name + '\')">@' + name + '</span>');
@@ -3054,8 +3110,19 @@ function applyReactions(payload){
   if(!el) return;
   const holder = el.querySelector('.reactions');
   if(holder) paintReactions(holder, { id:payload.id, reactions:payload.reactions });
+  // reaction-role buttons light up for the roles you've picked
+  if(el._item && el._item.data){
+    el._item.data = Object.assign({}, el._item.data, { reactions: payload.reactions });
+    const menu = el.querySelector('.roleMenu');
+    if(menu) menu.replaceWith(buildRoleMenu(el._item.data));
+  }
 }
 
+// A roll's text comes from the server (people can't send kind 'roll'), so
+// it gets a dice/coin in front; everything else is plain Markdown.
+function messageTextHtml(data){
+  return (data.kind === 'roll' ? (data.commandName === 'flip' ? '🪙 ' : '🎲 ') : '') + renderMarkdown(data.text || '');
+}
 function applyUpdatedMessage(msg){
   const el = document.querySelector('.message[data-message-id="' + msg.id + '"]');
   if(!el) return;
@@ -3063,7 +3130,7 @@ function applyUpdatedMessage(msg){
   if(el._item) el._item.data = Object.assign({}, el._item.data, msg);
   const text = el.querySelector('.msgText');
   if(text && !msg.deleted && editingId !== msg.id){
-    text.innerHTML = renderMarkdown(msg.text || '');
+    text.innerHTML = messageTextHtml(msg);
     muteUnpingedMentions(text, msg);
     censorRenderedElement(text, msg.room);
     if(msg.editedAt){
@@ -3078,6 +3145,14 @@ function applyUpdatedMessage(msg){
   const chip = el.querySelector('.threadChip');
   if(chip) chip.remove();
   if(msg.thread){ const b = el.querySelector('.msgBody'); if(b) b.appendChild(buildThreadChip(msg)); }
+  // reaction roles added / removed by an admin
+  const oldMenu = el.querySelector('.roleMenu');
+  if(oldMenu) oldMenu.remove();
+  if(!msg.deleted && (msg.reactionRoles || []).length && el._item){
+    const menu = buildRoleMenu(el._item.data);
+    const reactions = el.querySelector('.msgBody > .reactions');
+    if(reactions) reactions.before(menu); else { const b = el.querySelector('.msgBody'); if(b) b.appendChild(menu); }
+  }
   // pin/unpin label on the hover toolbar depends on the new state
   const oldBar = el.querySelector('.msgActions');
   if(oldBar && el._item) oldBar.replaceWith(buildActions(el._item));
@@ -3194,7 +3269,13 @@ async function sendMessage(){
   }
 
   if(!text) return;
-  const payload = { text, replyTo: replyTo ? replyTo.id : null };
+  let sendText = text;
+  if(text.startsWith('/')){
+    const handled = await runSlashCommand(text);
+    if(handled === true){ input.value = ''; autoResize(); cancelReply(); stopTyping(); return; }
+    if(typeof handled === 'string') sendText = handled;
+  }
+  const payload = { text: sendText, replyTo: replyTo ? replyTo.id : null };
   const room = activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom;
 
   // Show it right away, greyed out, instead of waiting for the round trip.
@@ -3203,7 +3284,7 @@ async function sendMessage(){
     kind: 'message',
     data: {
       id: tempId, room, user: username, displayName: displayNameFor(username),
-      avatarUrl: avatarUrlFor(username), text, to: activeDMUser || '', dmTo: activeDMUser || '',
+      avatarUrl: avatarUrlFor(username), text: sendText, to: activeDMUser || '', dmTo: activeDMUser || '',
       isGroup: !!currentGroupRoom, replyTo: replyTo ? { id:replyTo.id, user:replyTo.user, displayName:replyTo.displayName, text:replyTo.text } : null,
       editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true
     }
@@ -7247,6 +7328,7 @@ function openServerSettings(serverId, sectionKey){
       { key:'channels', label:'Channels', render:c => renderServerChannels(c, sid) },
       { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
+      { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!(server.canManage || myProfile.isAdmin) },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
     ]},
@@ -7665,8 +7747,9 @@ function renderServerRoles(c, sid){
   if(!server){ c.innerHTML = ''; return; }
   const roles = server.roles || [];
   c.innerHTML = '<h2 class="settingsTitle">Roles</h2>' +
-    '<div class="settingsSub">Roles give members a coloured name and can list them in their own section of the member list. ' +
-    'They\'re just for show: what people can do is still set by Owner and Admin (under Members).</div>' +
+    '<div class="settingsSub">Roles give members a coloured name, can list them in their own section of the member list, ' +
+    'and can unlock private channels. Admin powers still come only from Owner and Admin (under Members). ' +
+    'Members can also pick roles themselves through reaction roles (hover a message → the tag button).</div>' +
     (server.canManage ? '<div class="rowFlex" style="margin-bottom:20px"><button class="btn" id="newRoleBtn">Create Role</button><span class="inlineMsg" id="newRoleMsg" style="margin:0"></span></div>' : '') +
     section('Roles — ' + roles.length, '<div id="roleList"></div>');
   const list = $('roleList');
@@ -7683,7 +7766,7 @@ function renderServerRoles(c, sid){
     info.innerHTML = '<div class="rowTitle"></div><div class="rowSub"></div>';
     info.querySelector('.rowTitle').textContent = role.name;
     info.querySelector('.rowTitle').style.color = role.color || '';
-    info.querySelector('.rowSub').textContent = role.hoist ? 'Shown separately in the member list' : 'Shown with everyone else';
+    info.querySelector('.rowSub').textContent = (role.hoist ? 'Shown separately in the member list' : 'Shown with everyone else') + (role.autoAssign ? ' · given to new members' : '');
     row.appendChild(info);
     list.appendChild(row);
     if(!server.canManage) return;
@@ -7700,6 +7783,7 @@ function renderServerRoles(c, sid){
       '<div><div class="fieldLabel" style="margin-bottom:6px">Role colour</div><div class="colorRow" data-f="colors"></div></div>' +
       switchRow('roleHoist' + role.id, 'Display role members separately', 'Online members with this role get their own section in the member list.', role.hoist, false) +
       switchRow('roleMention' + role.id, 'Allow anyone to @mention this role', 'Admins can always mention every role. Everyone with the role gets notified.', role.mentionable, false) +
+      switchRow('roleAuto' + role.id, 'Give to new members automatically', 'Everyone who joins the server from now on gets this role.', role.autoAssign, false) +
       '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete">Delete Role</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
     list.appendChild(editor);
     let color = role.color || '';
@@ -7710,7 +7794,8 @@ function renderServerRoles(c, sid){
       const body = {
         name: editor.querySelector('[data-f=name]').value.trim(), color,
         hoist: editor.querySelector('#roleHoist' + role.id).checked,
-        mentionable: editor.querySelector('#roleMention' + role.id).checked
+        mentionable: editor.querySelector('#roleMention' + role.id).checked,
+        autoAssign: editor.querySelector('#roleAuto' + role.id).checked
       };
       try{
         const response = await fetch('/servers/' + sid + '/roles/' + role.id + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
@@ -8269,6 +8354,323 @@ function autoResize(){
   input.style.height = Math.min(input.scrollHeight, 220) + 'px';
 }
 
+/* ============================ bots, slash commands, reaction roles ============================ */
+const ICON_BOT_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a1.5 1.5 0 0 1 1 2.6V6h4a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H7a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h4V4.6A1.5 1.5 0 0 1 12 2zM9 11a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm6 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM1 11h1.5v4H1zm20.5 0H23v4h-1.5z"/></svg>';
+// Webhook posts have no account behind them: a robot avatar, never a profile.
+function botAvatar(name, size, wrapClass){
+  const wrap = document.createElement('div');
+  wrap.className = 'avatarWrap' + (wrapClass ? ' ' + wrapClass : '') + (size === 'sm' ? ' sm' : '');
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar botAvatar' + (size ? ' ' + size : '');
+  avatar.style.background = avatarColour(name || 'bot');
+  avatar.innerHTML = ICON_BOT_SVG;
+  avatar.title = (name || 'Webhook') + ' (bot)';
+  wrap.appendChild(avatar);
+  return wrap;
+}
+// The name a notification shows for a message's sender (bots say so).
+function senderName(msg){
+  return msg && msg.bot ? (msg.displayName || 'Webhook') + ' (bot)' : displayNameFor(msg.user);
+}
+
+// "React to get a role" buttons under a message (the reaction is the switch).
+function buildRoleMenu(data){
+  const box = document.createElement('div');
+  box.className = 'roleMenu';
+  const title = document.createElement('div');
+  title.className = 'roleMenuTitle';
+  title.textContent = 'React to get a role';
+  box.appendChild(title);
+  const list = document.createElement('div');
+  list.className = 'roleMenuList';
+  (data.reactionRoles || []).forEach(rr => {
+    const role = roleById(rr.roleId);
+    if(!role) return;
+    const mine = (data.reactions || []).some(r => r.emoji === rr.emoji && (r.users || []).includes(username));
+    const b = document.createElement('button');
+    b.className = 'roleMenuItem' + (mine ? ' mine' : '');
+    b.innerHTML = '<span class="rmEmoji"></span><span class="rmName"></span>';
+    b.querySelector('.rmEmoji').textContent = rr.emoji;
+    b.querySelector('.rmName').textContent = role.name;
+    if(role.color) b.querySelector('.rmName').style.color = role.color;
+    b.title = mine ? 'You have this role - click to remove it' : 'Click to get the ' + role.name + ' role';
+    b.onclick = () => sendReaction(data.id, rr.emoji);
+    list.appendChild(b);
+  });
+  box.appendChild(list);
+  return box;
+}
+
+function openReactionRoles(data){
+  const found = channelByRoom(data.room);
+  if(!found) return;
+  const server = found.server;
+  let current = (data.reactionRoles || []).slice();
+  openModal(
+    '<div class="modalHead"><h2>Reaction Roles</h2><p>Anyone who reacts to this message with an emoji gets its role. Taking the reaction off takes the role away.</p></div>' +
+    '<div class="modalBody"><div id="rrList"></div>' +
+    '<label class="formLabel">Add one</label>' +
+    '<div class="rowFlex" style="gap:8px;flex-wrap:wrap"><select class="formInput" id="rrEmoji" style="width:auto;margin:0"></select>' +
+    '<select class="formInput" id="rrRole" style="width:auto;margin:0;min-width:160px"></select>' +
+    '<button class="btn" id="rrAdd">Add</button></div>' +
+    '<div class="switchDesc" style="margin-top:10px">Tip: a role can also unlock private channels (Server Settings → Channels).</div>' +
+    '<div class="modalMsg" id="modalMsg"></div></div>' +
+    '<div class="modalFoot"><button class="btn" onclick="closeModal()">Done</button></div>'
+  );
+  REACTION_EMOJIS.forEach(e => $('rrEmoji').appendChild(Object.assign(document.createElement('option'), { value:e, textContent:e })));
+  const roles = server.roles || [];
+  if(!roles.length) $('rrRole').appendChild(Object.assign(document.createElement('option'), { value:'', textContent:'Create a role first' }));
+  roles.forEach(r => $('rrRole').appendChild(Object.assign(document.createElement('option'), { value:r.id, textContent:r.name })));
+  function paint(){
+    const list = $('rrList');
+    if(!list) return;
+    list.innerHTML = current.length ? '' : '<div class="panelEmpty" style="padding:8px 0 14px">None yet.</div>';
+    current.forEach(rr => {
+      const role = roleById(rr.roleId);
+      const row = document.createElement('div');
+      row.className = 'manageRow';
+      row.innerHTML = '<span style="font-size:20px"></span><div class="grow"><div class="rowTitle"></div></div>';
+      row.querySelector('span').textContent = rr.emoji;
+      row.querySelector('.rowTitle').textContent = role ? role.name : 'deleted role';
+      if(role && role.color) row.querySelector('.rowTitle').style.color = role.color;
+      const remove = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Remove' });
+      remove.onclick = async () => {
+        try{
+          await postJSON('/messages/' + data.id + '/reaction-roles/delete', { emoji: rr.emoji });
+          current = current.filter(x => x.emoji !== rr.emoji);
+          paint();
+        }catch(err){ modalMessage(err.message, true); }
+      };
+      row.appendChild(remove);
+      list.appendChild(row);
+    });
+  }
+  paint();
+  $('rrAdd').onclick = async () => {
+    const emoji = $('rrEmoji').value, roleId = Number($('rrRole').value);
+    if(!roleId){ modalMessage('Create a role first (Server Settings → Roles).', true); return; }
+    try{
+      await postJSON('/messages/' + data.id + '/reaction-roles', { emoji, roleId });
+      current = current.filter(x => x.emoji !== emoji).concat({ emoji, roleId });
+      paint();
+      modalMessage('Added - react with ' + emoji + ' to try it.');
+    }catch(err){ modalMessage(err.message, true); }
+  };
+}
+
+async function postJSON(url, body){
+  const response = await fetch(url, { method:'POST', headers:authHeaders(), body:JSON.stringify(body || {}) });
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok) throw new Error(data.error || 'something went wrong');
+  return data;
+}
+
+// ---- slash commands. Built-ins run here (text ones) or on the server
+// (/roll, /flip - so results are real); custom ones are per server.
+const SHRUG = '¯\\_(ツ)_/¯';
+const BUILTIN_SLASH = [
+  { name:'shrug', usage:'[message]', description:'Adds ' + SHRUG + ' to your message' },
+  { name:'tableflip', usage:'[message]', description:'Adds (╯°□°)╯︵ ┻━┻ to your message' },
+  { name:'unflip', usage:'[message]', description:'Adds ┬─┬ノ( º _ ºノ) to your message' },
+  { name:'lenny', usage:'[message]', description:'Adds ( ͡° ͜ʖ ͡°) to your message' },
+  { name:'me', usage:'<action>', description:'Says it as an action, in italics' },
+  { name:'spoiler', usage:'<message>', description:'Hides your message until someone clicks it' },
+  { name:'roll', usage:'[2d6]', description:'Rolls dice - the server rolls, so nobody can fake it' },
+  { name:'flip', usage:'', description:'Flips a coin' },
+  { name:'poll', usage:'[question]', description:'Creates a poll' }
+];
+const serverCommands = {}; // serverId -> [{ name, description }]
+const serverCommandLoads = {}; // serverId -> the fetch in flight / done
+function loadServerCommands(serverId, force){
+  if(!serverId) return Promise.resolve();
+  if(!force && serverCommandLoads[serverId]) return serverCommandLoads[serverId];
+  if(!serverCommands[serverId]) serverCommands[serverId] = [];
+  serverCommandLoads[serverId] = fetch('/servers/' + serverId + '/commands', { headers:authHeaders() })
+    .then(r => r.ok ? r.json() : [])
+    .then(list => { serverCommands[serverId] = Array.isArray(list) ? list : []; if(mentionState && mentionState.slash) updateMentionState(); })
+    .catch(() => {});
+  return serverCommandLoads[serverId];
+}
+function slashServerId(){
+  if(view !== 'server') return null;
+  const found = channelByRoom(currentRoom);
+  return found ? found.server.id : null;
+}
+function slashCandidates(query){
+  const q = query.toLowerCase();
+  const sid = slashServerId();
+  if(sid) loadServerCommands(sid);
+  const custom = sid ? (serverCommands[sid] || []).map(c => ({ name:c.name, usage:'', description:c.description || 'Custom command', custom:true })) : [];
+  return BUILTIN_SLASH.concat(custom).filter(c => c.name.startsWith(q)).slice(0, 10).map(c => Object.assign({ type:'command' }, c));
+}
+
+// Returns true if the command was handled, a string to send instead of the
+// typed text, or null to send what was typed as a normal message.
+async function runSlashCommand(text){
+  const m = /^\/([a-z0-9_-]{1,32})(?:\s+([\s\S]*))?$/i.exec(text);
+  if(!m) return null;
+  const name = m[1].toLowerCase(), args = (m[2] || '').trim();
+  const add = suffix => (args ? args + ' ' : '') + suffix;
+  if(name === 'shrug') return add(SHRUG);
+  if(name === 'tableflip') return add('(╯°□°)╯︵ ┻━┻');
+  if(name === 'unflip') return add('┬─┬ノ( º _ ºノ)');
+  if(name === 'lenny') return add('( ͡° ͜ʖ ͡°)');
+  if(name === 'me'){ if(!args){ showError('Type what you\'re doing after /me'); return true; } return '*' + args.replace(/\*/g, '') + '*'; }
+  if(name === 'spoiler'){ if(!args){ showError('Type the message to hide after /spoiler'); return true; } return '||' + args.replace(/\|\|/g, '') + '||'; }
+  if(name === 'poll'){ openCreatePoll(); if(args && $('pollQuestion')) $('pollQuestion').value = args.slice(0, 300); return true; }
+  const sid = slashServerId();
+  if(sid) await loadServerCommands(sid); // first use: make sure the list is here
+  const isCustom = !!(sid && (serverCommands[sid] || []).some(c => c.name === name));
+  if(name !== 'roll' && name !== 'flip' && !isCustom) return null;
+  const room = activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom;
+  socket.emit('runCommand', { room, name, args }, result => { if(result && result.error) showError(result.error); });
+  return true;
+}
+
+// ---- Server Settings > Integrations (webhooks + custom commands)
+function renderServerIntegrations(c, sid){
+  const server = serverById(sid);
+  if(!server){ c.innerHTML = ''; return; }
+  c.innerHTML = '<h2 class="settingsTitle">Integrations</h2>' +
+    '<div class="settingsSub">Let other apps post in your channels, and add your own slash commands.</div>' +
+    section('Webhooks',
+      '<div class="switchDesc" style="margin-bottom:12px">A webhook is a secret link that lets another app or script post messages in one channel ' +
+      '(build alerts, GitHub, a bot you write...). It speaks Discord\'s webhook format, so tools made for Discord work too. ' +
+      'Its posts show a BOT tag and never ping @everyone.</div>' +
+      '<div class="rowFlex" style="gap:8px;flex-wrap:wrap;margin-bottom:12px"><input class="settingsInput" id="whName" maxlength="32" placeholder="Name, e.g. Build Alerts" style="max-width:220px">' +
+      '<select class="settingsInput" id="whChannel" style="max-width:200px"></select><button class="btn" id="whCreate">New Webhook</button>' +
+      '<span class="inlineMsg" id="whMsg" style="margin:0"></span></div><div id="whReveal"></div><div id="whList"></div>') +
+    section('Custom Commands',
+      '<div class="switchDesc" style="margin-bottom:12px">Members type <b>/name</b> and the saved reply is posted, showing who used it. ' +
+      'Built-in commands like /roll, /flip, /shrug and /poll work everywhere.</div>' +
+      '<div class="channelEditor" style="display:grid;margin-bottom:12px" id="cmdForm">' +
+      '<div class="rowFlex" style="gap:8px;flex-wrap:wrap"><input class="settingsInput" id="cmdName" maxlength="33" placeholder="/rules" style="max-width:160px">' +
+      '<input class="settingsInput" id="cmdDesc" maxlength="100" placeholder="What it does (optional)" style="max-width:320px"></div>' +
+      '<textarea class="settingsInput" id="cmdResponse" maxlength="2000" rows="3" placeholder="The reply, e.g. 1. Be kind  2. No spam"></textarea>' +
+      '<div class="rowFlex"><button class="btn" id="cmdAdd">Add Command</button><span class="inlineMsg" id="cmdMsg" style="margin:0"></span></div></div>' +
+      '<div id="cmdList"></div>');
+  const textChannels = (server.channels || []).filter(ch => ch.kind === 'text');
+  textChannels.forEach(ch => $('whChannel').appendChild(Object.assign(document.createElement('option'), { value:ch.id, textContent:'#' + ch.name })));
+  const channelName = id => { const ch = (server.channels || []).find(x => x.id === id); return ch ? '#' + ch.name : 'deleted channel'; };
+
+  function reveal(hook, url, isNew){
+    const box = $('whReveal');
+    box.innerHTML = '<div class="whReveal"><div class="rowTitle"></div><div class="switchDesc"></div>' +
+      '<div class="rowFlex" style="gap:8px;margin:8px 0;flex-wrap:nowrap"><input class="settingsInput" readonly style="font-family:monospace;font-size:12px;flex:1;min-width:0"><button class="btn">Copy</button></div>' +
+      '<div class="switchDesc">Try it: <code class="inlineCode"></code></div></div>';
+    box.querySelector('.rowTitle').textContent = (isNew ? 'Created ' : 'New link for ') + hook.name;
+    box.querySelector('.switchDesc').textContent = 'Copy this link now - it won\'t be shown again. Anyone who has it can post in ' + channelName(hook.channelId) + '. If it leaks, make a new link.';
+    box.querySelector('input').value = url;
+    box.querySelector('button').onclick = () => copyText(url);
+    box.querySelector('code').textContent = 'curl -H "Content-Type: application/json" -d \'{"content":"Hello!"}\' ' + url;
+  }
+  async function loadHooks(){
+    let hooks = [];
+    try{ const r = await fetch('/servers/' + sid + '/webhooks', { headers:authHeaders() }); hooks = r.ok ? await r.json() : []; }catch(e){}
+    const list = $('whList');
+    if(!list) return;
+    list.innerHTML = hooks.length ? '' : '<div class="panelEmpty">No webhooks yet.</div>';
+    hooks.forEach(hook => {
+      const row = document.createElement('div');
+      row.className = 'manageRow';
+      row.innerHTML = '<span class="botBadgeIcon"></span><div class="grow"><div class="rowTitle"></div><div class="rowSub"></div></div>';
+      row.querySelector('.botBadgeIcon').innerHTML = ICON_BOT_SVG;
+      row.querySelector('.rowTitle').textContent = hook.name;
+      row.querySelector('.rowSub').textContent = channelName(hook.channelId) + ' · ' + (hook.lastUsedAt ? 'last used ' + parseTime(hook.lastUsedAt).toLocaleString() : 'never used') + ' · made by ' + displayNameFor(hook.createdBy);
+      const edit = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Edit' });
+      const reset = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'New Link' });
+      const del = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Delete' });
+      row.append(edit, reset, del);
+      list.appendChild(row);
+      const editor = document.createElement('div');
+      editor.className = 'channelEditor';
+      editor.style.display = 'none';
+      editor.innerHTML = '<div class="rowFlex" style="gap:8px;flex-wrap:wrap"><input class="settingsInput" data-f="name" maxlength="32" style="max-width:220px"><select class="settingsInput" data-f="channel" style="max-width:200px"></select>' +
+        '<button class="btn" data-a="save">Save</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
+      editor.querySelector('[data-f=name]').value = hook.name;
+      textChannels.forEach(ch => editor.querySelector('[data-f=channel]').appendChild(Object.assign(document.createElement('option'), { value:ch.id, textContent:'#' + ch.name, selected: ch.id === hook.channelId })));
+      list.appendChild(editor);
+      edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+      editor.querySelector('[data-a=save]').onclick = async () => {
+        try{
+          await postJSON('/servers/' + sid + '/webhooks/' + hook.id + '/update', { name: editor.querySelector('[data-f=name]').value, channelId: Number(editor.querySelector('[data-f=channel]').value) });
+          toast('Webhook saved');
+          loadHooks();
+        }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
+      };
+      reset.onclick = async () => {
+        if(!confirm('Make a new link for "' + hook.name + '"? The old link stops working straight away, so update anything that uses it.')) return;
+        try{ const data = await postJSON('/servers/' + sid + '/webhooks/' + hook.id + '/reset'); reveal(data, data.url, false); }catch(err){ toast(err.message); }
+      };
+      del.onclick = async () => {
+        if(!confirm('Delete the "' + hook.name + '" webhook? Anything using its link will stop being able to post.')) return;
+        try{ await postJSON('/servers/' + sid + '/webhooks/' + hook.id + '/delete'); $('whReveal').innerHTML = ''; loadHooks(); }catch(err){ toast(err.message); }
+      };
+    });
+  }
+  $('whCreate').onclick = async () => {
+    if(!textChannels.length){ inlineMessage($('whMsg'), 'Make a text channel first.', true); return; }
+    try{
+      const data = await postJSON('/servers/' + sid + '/webhooks', { name: $('whName').value, channelId: Number($('whChannel').value) });
+      $('whName').value = '';
+      reveal(data, data.url, true);
+      loadHooks();
+    }catch(err){ inlineMessage($('whMsg'), err.message, true); }
+  };
+
+  async function loadCommands(){
+    let cmds = [];
+    try{ const r = await fetch('/servers/' + sid + '/commands', { headers:authHeaders() }); cmds = r.ok ? await r.json() : []; }catch(e){}
+    serverCommands[sid] = cmds;
+    const list = $('cmdList');
+    if(!list) return;
+    list.innerHTML = cmds.length ? '' : '<div class="panelEmpty">No custom commands yet.</div>';
+    cmds.forEach(cmd => {
+      const row = document.createElement('div');
+      row.className = 'manageRow';
+      row.innerHTML = '<div class="grow"><div class="rowTitle"></div><div class="rowSub"></div></div>';
+      row.querySelector('.rowTitle').textContent = '/' + cmd.name;
+      row.querySelector('.rowSub').textContent = cmd.description || cmd.response.slice(0, 80);
+      const edit = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Edit' });
+      const del = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Delete' });
+      row.append(edit, del);
+      list.appendChild(row);
+      const editor = document.createElement('div');
+      editor.className = 'channelEditor';
+      editor.style.display = 'none';
+      editor.innerHTML = '<div class="rowFlex" style="gap:8px;flex-wrap:wrap"><input class="settingsInput" data-f="name" maxlength="33" style="max-width:160px"><input class="settingsInput" data-f="desc" maxlength="100" placeholder="What it does (optional)" style="max-width:320px"></div>' +
+        '<textarea class="settingsInput" data-f="response" maxlength="2000" rows="3"></textarea>' +
+        '<div class="rowFlex"><button class="btn" data-a="save">Save</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
+      editor.querySelector('[data-f=name]').value = cmd.name;
+      editor.querySelector('[data-f=desc]').value = cmd.description;
+      editor.querySelector('[data-f=response]').value = cmd.response;
+      list.appendChild(editor);
+      edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+      editor.querySelector('[data-a=save]').onclick = async () => {
+        try{
+          await postJSON('/servers/' + sid + '/commands/' + cmd.id + '/update', { name: editor.querySelector('[data-f=name]').value, description: editor.querySelector('[data-f=desc]').value, response: editor.querySelector('[data-f=response]').value });
+          toast('Command saved');
+          loadCommands();
+        }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
+      };
+      del.onclick = async () => {
+        if(!confirm('Delete /' + cmd.name + '?')) return;
+        try{ await postJSON('/servers/' + sid + '/commands/' + cmd.id + '/delete'); loadCommands(); }catch(err){ toast(err.message); }
+      };
+    });
+  }
+  $('cmdAdd').onclick = async () => {
+    try{
+      await postJSON('/servers/' + sid + '/commands', { name: $('cmdName').value, description: $('cmdDesc').value, response: $('cmdResponse').value });
+      $('cmdName').value = ''; $('cmdDesc').value = ''; $('cmdResponse').value = '';
+      inlineMessage($('cmdMsg'), 'Added');
+      loadCommands();
+    }catch(err){ inlineMessage($('cmdMsg'), err.message, true); }
+  };
+  loadHooks();
+  loadCommands();
+}
+
 /* ============================ @mention autocomplete ============================ */
 // currentMembersList is kept in sync by renderMembers() with whoever's
 // visible in the room/DM/group you're currently looking at.
@@ -8298,6 +8700,16 @@ function updateMentionState(){
   const el = $('messageInput');
   const pos = el.selectionStart;
   const uptoCursor = el.value.slice(0, pos);
+  // "/name" at the very start: suggest slash commands
+  const slash = /^\/([a-z0-9_-]{0,32})$/i.exec(uptoCursor);
+  if(slash){
+    const commands = slashCandidates(slash[1]);
+    if(!commands.length){ closeMentionAutocomplete(); return; }
+    mentionState = { start: 0, end: pos, slash: true };
+    mentionActiveIndex = 0;
+    renderMentionAutocomplete(commands);
+    return;
+  }
   const match = /(?:^|\s)@([a-zA-Z0-9_.-]{0,30})$/.exec(uptoCursor);
   if(!match){ closeMentionAutocomplete(); return; }
   const query = match[1];
@@ -8315,6 +8727,15 @@ function renderMentionAutocomplete(candidates){
   candidates.forEach((m, i) => {
     const row = document.createElement('div');
     row.className = 'mentionItem' + (i === mentionActiveIndex ? ' active' : '');
+    if(m.type === 'command'){
+      row.innerHTML = '<span class="slashName"></span><span class="slashUsage"></span><span class="slashDesc"></span>';
+      row.querySelector('.slashName').textContent = '/' + m.name;
+      row.querySelector('.slashUsage').textContent = m.usage || '';
+      row.querySelector('.slashDesc').textContent = m.description;
+      row.onmousedown = e => { e.preventDefault(); selectMention(m); };
+      box.appendChild(row);
+      return;
+    }
     if(m.type !== 'user'){
       const label = document.createElement('span');
       label.className = 'mentionName';
@@ -8368,7 +8789,8 @@ function selectMention(candidate){
   const value = el.value;
   const before = value.slice(0, mentionState.start);
   const after = value.slice(mentionState.end);
-  const inserted = candidate.type === 'everyone' ? '@everyone '
+  const inserted = candidate.type === 'command' ? '/' + candidate.name + ' '
+    : candidate.type === 'everyone' ? '@everyone '
     : candidate.type === 'role' ? '<@&' + candidate.role.id + '> '
     : '@' + candidate.username + ' ';
   el.value = before + inserted + after;

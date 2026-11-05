@@ -475,6 +475,10 @@ select option{background:var(--bg-floating);color:var(--text-bright);}
 .contextItem.danger{color:#f23f43;}
 .contextItem.danger:hover{background:var(--red);color:#fff;}
 .contextSep{height:1px;background:var(--divider);margin:4px 0;}
+.contextRange{display:block;padding:6px 8px;font-size:12px;color:var(--text-muted);}
+.contextRange > div{display:flex;justify-content:space-between;margin-bottom:4px;font-weight:600;text-transform:uppercase;}
+.contextRange b{color:var(--text-normal);}
+.contextRange input{width:100%;accent-color:var(--brand);}
 
 /* lightbox */
 #lightbox{
@@ -1028,6 +1032,8 @@ video.mirror{transform:scaleX(-1);}
 .callTileName svg{width:14px;height:14px;flex:0 0 14px;color:#f23f43;}
 .callTileStatus{position:absolute;top:6px;left:8px;right:8px;text-align:center;font-size:12px;color:#fff;background:rgba(0,0,0,.55);border-radius:4px;padding:2px 6px;}
 .callEmpty{color:var(--text-muted);font-size:14px;padding:18px;}
+.callTimer{align-self:center;font-size:12px;font-weight:600;color:var(--text-muted);font-variant-numeric:tabular-nums;margin-bottom:-4px;}
+.mutedForMe{color:#f0b232;font-size:11px;}
 .callControls{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;}
 .callCtl{width:46px;height:46px;border-radius:50%;background:var(--btn-grey);color:#fff;display:flex;align-items:center;justify-content:center;}
 .callCtl:hover{filter:brightness(1.15);}
@@ -1602,8 +1608,13 @@ function connectSocket(){
     reportedIdle = false;
     await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends()]);
     socket.emit('syncRooms');
-    const first = servers.find(s => s.isDefault) || servers[0];
-    if(first) switchServer(first.id, true);
+    // a REconnect (phone waking up, wifi blip, server redeploy) keeps you
+    // where you were - it used to throw everyone back to #general
+    if(!everConnected || !restoreViewAfterReconnect()){
+      const first = servers.find(s => s.isDefault) || servers[0];
+      if(first) switchServer(first.id, true);
+    }
+    everConnected = true;
     handleLocationHash();
     syncVoiceAfterConnect();
   });
@@ -2045,6 +2056,23 @@ function serverInitials(name){
   return String(name || '?').trim().split(/\s+/).map(w => w.charAt(0).toUpperCase()).join('').slice(0,2) || '?';
 }
 
+let everConnected = false;
+// Re-open whatever was on screen (reloading its history, so messages sent
+// while we were offline show up). False if it's gone - e.g. we were removed.
+function restoreViewAfterReconnect(){
+  if(friendsOpen){ openFriends(); return true; }
+  if(view === 'dm'){
+    if(activeDMUser){ openDM(activeDMUser); return true; }
+    if(currentGroupRoom && groupByRoom[currentGroupRoom]){ openGroup(currentGroupRoom); return true; }
+    openFriends();
+    return true;
+  }
+  const server = serverById(currentServerId);
+  if(view !== 'server' || !server) return false;
+  if(isThreadRoom(currentRoom)){ openChannel(currentRoom, true); return true; }
+  switchServer(server.id, true); // keeps the channel if it still exists
+  return true;
+}
 function switchServer(serverId, silent){
   const server = serverById(serverId);
   if(!server) return;
@@ -3703,6 +3731,22 @@ function showMenu(event, items){
   items.forEach(item => {
     if(item.sep){ const sep = document.createElement('div'); sep.className = 'contextSep'; menu.appendChild(sep); return; }
     if(item.header){ const h = document.createElement('div'); h.className = 'contextHeader'; h.textContent = item.header; menu.appendChild(h); return; }
+    if(item.range){
+      // a slider that stays open while you drag it
+      const row = document.createElement('label');
+      row.className = 'contextRange';
+      const top = document.createElement('div');
+      top.innerHTML = '<span></span><b></b>';
+      top.querySelector('span').textContent = item.label;
+      const input = Object.assign(document.createElement('input'), { type:'range', min:item.min ?? 0, max:item.max ?? 100, value:item.value });
+      const show = () => { top.querySelector('b').textContent = input.value + (item.unit || ''); };
+      show();
+      input.oninput = () => { show(); item.onInput(Number(input.value)); };
+      row.append(top, input);
+      row.addEventListener('click', e => e.stopPropagation());
+      menu.appendChild(row);
+      return;
+    }
     const el = document.createElement('div');
     el.className = 'contextItem' + (item.danger ? ' danger' : '');
     el.textContent = item.label;
@@ -5812,7 +5856,7 @@ async function joinCall(key, opts){
   let mic = null;
   try{ mic = await navigator.mediaDevices.getUserMedia(micConstraints()); }
   catch(e){ toast('No microphone access - you can listen, but others won\'t hear you. Allow the microphone for this site to talk.'); }
-  socket.emit('voice:join', { key, muted: !mic || voice.muted, deafened: voice.deafened }, ack => {
+  socket.emit('voice:join', { key, muted: !mic || voice.muted, deafened: voice.deafened, rejoin: !!opts.rejoin }, ack => {
     voice.joining = false;
     if(!ack || ack.error){
       if(mic) mic.getTracks().forEach(t => t.stop());
@@ -5928,6 +5972,24 @@ function closePeer(user){
   voice.speaking.delete(user);
   voice.peers.delete(user);
 }
+let userVolumes = {};
+try{ userVolumes = JSON.parse(localStorage.getItem('voiceUserVolumes') || '{}') || {}; }catch(e){ userVolumes = {}; }
+function userVolume(user){ const v = userVolumes[user]; return v && typeof v.volume === 'number' ? Math.min(1, Math.max(0, v.volume)) : 1; }
+function mutedForMe(user){ return !!(userVolumes[user] && userVolumes[user].muted); }
+function setUserVolumePref(user, change){
+  const next = Object.assign({}, userVolumes[user], change);
+  if(next.volume === 1) delete next.volume;
+  if(!next.muted) delete next.muted;
+  if(Object.keys(next).length) userVolumes[user] = next; else delete userVolumes[user];
+  try{ localStorage.setItem('voiceUserVolumes', JSON.stringify(userVolumes)); }catch(e){}
+  applyPeerAudio(user);
+}
+function applyPeerAudio(user){
+  const peer = voice.peers.get(user);
+  if(!peer || !peer.audioEl) return;
+  peer.audioEl.muted = voice.deafened || mutedForMe(user);
+  peer.audioEl.volume = userVolume(user);
+}
 function attachAudio(user, stream){
   const peer = voice.peers.get(user);
   if(!peer) return;
@@ -5938,7 +6000,7 @@ function attachAudio(user, stream){
     $('voiceAudio').appendChild(peer.audioEl);
   }
   peer.audioEl.srcObject = stream;
-  peer.audioEl.muted = voice.deafened;
+  applyPeerAudio(user);
   if(voicePrefs.outputId && peer.audioEl.setSinkId) peer.audioEl.setSinkId(voicePrefs.outputId).catch(() => {});
   peer.audioEl.play().catch(() => {});
   watchLevel(user, stream);
@@ -5991,7 +6053,7 @@ function toggleMute(){
 }
 function setDeafened(on){
   voice.deafened = on;
-  voice.peers.forEach(p => { if(p.audioEl) p.audioEl.muted = on; });
+  voice.peers.forEach((p, user) => applyPeerAudio(user));
   applyMicEnabled();
 }
 function toggleDeafen(){
@@ -6099,10 +6161,23 @@ function stopIncomingCall(key){
 }
 
 // ---- server events
+// the server's clock may differ from ours: work out when the call started in our time
+function stampCallClock(st){
+  if(st && st.startedAt && st.now) st.localStart = Date.now() - Math.max(0, st.now - st.startedAt);
+}
+function formatCallTime(ms){
+  const t = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = String(t % 60).padStart(2, '0');
+  return h ? h + ':' + String(m).padStart(2, '0') + ':' + sec : m + ':' + sec;
+}
+setInterval(() => {
+  document.querySelectorAll('.callTimer[data-start]').forEach(el => { el.textContent = formatCallTime(Date.now() - Number(el.dataset.start)); });
+}, 1000);
 function applyCallState(state){
   if(!state || !state.key) return;
+  stampCallClock(state);
   if(state.participants && state.participants.length) callStates[state.key] = state;
   else delete callStates[state.key];
+  if(incomingCall && incomingCall.key === state.key && !(state.ringing || []).includes(username)) stopIncomingCall(state.key);
   if(state.key === voice.key){
     const present = new Set((state.participants || []).map(p => p.username));
     if(!present.has(username) && !voice.joining){ cleanupCall(); return; }
@@ -6129,12 +6204,18 @@ function setupVoiceSocket(){
 function syncVoiceAfterConnect(){
   socket.emit('voice:snapshot', res => {
     Object.keys(callStates).forEach(k => delete callStates[k]);
-    ((res && res.calls) || []).forEach(st => { callStates[st.key] = st; });
+    ((res && res.calls) || []).forEach(st => { stampCallClock(st); callStates[st.key] = st; });
     const key = voice.key;
     if(key && !(callStates[key] && callStates[key].participants.some(p => p.username === username))){
       cleanupCall();
       toast('Reconnecting to the call…');
-      joinCall(key);
+      joinCall(key, { rejoin:true });
+    }
+    // someone is still ringing us (e.g. the app was opened from the call notification)
+    if(!voice.key && !incomingCall){
+      const st = Object.values(callStates).find(c => c.kind !== 'voice' && (c.ringing || []).includes(username));
+      const caller = st && st.participants.slice().sort((a, b) => a.joinedAt - b.joinedAt)[0];
+      if(caller && !isBlocked(caller.username)) showIncomingCall({ key: st.key, from: caller.username, kind: st.kind, room: st.room, groupName: st.kind === 'group' ? callTitle(st.key) : '' });
     }
     renderCallUI();
     renderSidebar();
@@ -6191,12 +6272,15 @@ function participantTile(p, inCall){
   label.textContent = displayNameFor(p.username);
   if(p.deafened) label.insertAdjacentHTML('afterbegin', ICON_DEAF_SVG);
   else if(p.muted) label.insertAdjacentHTML('afterbegin', ICON_MIC_OFF_SVG);
+  if(!mine && mutedForMe(p.username)) label.appendChild(Object.assign(document.createElement('span'), { className:'mutedForMe', textContent:' · muted for you' }));
   tile.appendChild(label);
   if(inCall && !mine){
     const status = !peer ? 'Connecting…' : (peer.state === 'blocked' ? 'Can\'t connect - this network may block calls' : (peer.state === 'connected' ? '' : 'Connecting…'));
     if(status){ const s = document.createElement('div'); s.className = 'callTileStatus'; s.textContent = status; tile.appendChild(s); }
   }
   tile.oncontextmenu = e => showVoiceUserMenu(e, p.username);
+  // phones have no right-click (iPhones don't even long-press): tap for the menu
+  if(!mine && matchMedia('(pointer: coarse)').matches) tile.onclick = e => showVoiceUserMenu(e, p.username);
   return tile;
 }
 function screenTile(p){
@@ -6216,9 +6300,9 @@ function screenTile(p){
 }
 function showVoiceUserMenu(e, user){
   const items = [{ label:'Profile', action:() => openProfilePopout(null, user) }];
-  const peer = voice.peers.get(user);
-  if(peer && peer.audioEl){
-    items.push({ label: peer.audioEl.volume < 1 ? 'Volume: normal' : 'Volume: quieter', action:() => { peer.audioEl.volume = peer.audioEl.volume < 1 ? 1 : 0.4; } });
+  if(user !== username){
+    items.push({ range:true, label:'User Volume', unit:'%', value: Math.round(userVolume(user) * 100), onInput: v => setUserVolumePref(user, { volume: v / 100 }) });
+    items.push({ label: mutedForMe(user) ? 'Unmute for me' : 'Mute for me', action:() => { setUserVolumePref(user, { muted: !mutedForMe(user) }); renderCallUI(); renderSidebar(); } });
   }
   const key = voice.key || callKeyForRoom(currentRoom);
   if(key && key.startsWith('voice:') && user !== username && canModerateHere(callRoomOf(key))){
@@ -6271,6 +6355,12 @@ function renderCallPanel(){
   });
   if(!participants.length && !(state && state.ringing.length)){
     grid.appendChild(Object.assign(document.createElement('div'), { className:'callEmpty', textContent: voice.joining ? 'Joining…' : 'No one is here yet.' }));
+  }
+  if(state && state.localStart && participants.length){
+    const timer = Object.assign(document.createElement('div'), { className:'callTimer', textContent: formatCallTime(Date.now() - state.localStart) });
+    timer.dataset.start = state.localStart;
+    timer.title = 'Call length';
+    panel.appendChild(timer);
   }
   panel.appendChild(grid);
   const controls = document.createElement('div');

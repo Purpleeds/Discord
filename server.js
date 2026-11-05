@@ -2205,7 +2205,7 @@ async function callAudience(key) {
 
 function callState(call) {
   return {
-    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt,
+    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt, now: Date.now(),
     participants: [...call.participants.entries()].map(([username, p]) => ({
       username, muted: p.muted, deafened: p.deafened, video: p.video, screen: p.screen,
       camStream: p.camStream, screenStream: p.screenStream, joinedAt: p.joinedAt
@@ -3933,8 +3933,9 @@ io.on('connection', (socket) => {
     call.everJoined.add(socket.username);
     stopRinging(call, [socket.username]);
     reply({ message: 'ok', participants: others });
-    if (isNew && info.kind !== 'voice') {
-      // ring everyone else in the DM / group
+    if (isNew && info.kind !== 'voice' && !data.rejoin) {
+      // ring everyone else in the DM / group (not when someone's app is just
+      // reconnecting to a call the server forgot about in a restart)
       const targets = (await callAudience(key)).filter(u => u !== socket.username);
       const group = info.kind === 'group' ? await getGroup(groupIdFromRoom(info.room)) : null;
       for (const name of targets) {
@@ -3965,6 +3966,7 @@ io.on('connection', (socket) => {
   // Relay connection-setup data between two people in the same call - and
   // only then, so this can't be used to message strangers.
   socket.on('voice:signal', (data = {}) => {
+    if (rateLimited('voicesignal:' + socket.id, 3000, 60 * 1000)) return;
     const call = calls.get(String(data.key || ''));
     const me = call && call.participants.get(socket.username);
     const target = call && call.participants.get(String(data.to || ''));
@@ -3973,6 +3975,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voice:update', async (data = {}) => {
+    if (rateLimited('voiceupdate:' + socket.username, 60, 10 * 1000)) return;
     const call = calls.get(String(data.key || ''));
     const me = call && call.participants.get(socket.username);
     if (!me || me.socketId !== socket.id) return;
@@ -3988,6 +3991,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('voice:decline', async (data = {}) => {
+    if (rateLimited('voicedecline:' + socket.username, 30, 60 * 1000)) return;
     const call = calls.get(String(data.key || ''));
     if (!call || !call.ringing.has(socket.username)) return;
     stopRinging(call, [socket.username]);
@@ -3998,6 +4002,7 @@ io.on('connection', (socket) => {
   // Every call this person can currently see (to draw who's in voice).
   socket.on('voice:snapshot', async (a, b) => {
     const ack = typeof a === 'function' ? a : b; // works with or without a data argument
+    if (rateLimited('voicesnapshot:' + socket.username, 30, 60 * 1000)) { if (typeof ack === 'function') ack({ calls: [], error: 'Slow down a little.' }); return; }
     const out = [];
     for (const call of calls.values()) {
       if ((await callAudience(call.key)).includes(socket.username)) out.push(callState(call));
@@ -4035,6 +4040,8 @@ async function main() {
     await pool.query(`INSERT INTO channels (name, created_by) VALUES ($1, 'system') ON CONFLICT (name) DO NOTHING`, [name]);
   }
   await applySeedAccounts();
+  // calls are kept in memory, so none survive a restart - close their logs
+  await pool.query(`UPDATE messages SET text = 'ended' WHERE kind = 'call' AND text = 'ongoing'`);
   // every 10 minutes (was every minute): shared files live 6 hours, and a
   // query every minute would keep a sleeping serverless database awake
   setInterval(() => { removeOldFiles().catch(err => console.error('removeOldFiles failed:', err)); }, 10 * 60 * 1000);

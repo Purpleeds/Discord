@@ -229,6 +229,31 @@ async function setupSchema() {
       PRIMARY KEY (role_id, username)
     );
 
+    -- A poll is a message (kind 'poll', text = the question) plus these.
+    CREATE TABLE IF NOT EXISTS polls (
+      id SERIAL PRIMARY KEY,
+      message_id INTEGER UNIQUE NOT NULL,
+      question TEXT NOT NULL,
+      allow_multiple INTEGER DEFAULT 0,
+      ends_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS poll_options (
+      id SERIAL PRIMARY KEY,
+      poll_id INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      text TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS poll_votes (
+      poll_id INTEGER NOT NULL,
+      option_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (option_id, username)
+    );
+
     CREATE TABLE IF NOT EXISTS messages (
       id SERIAL PRIMARY KEY,
       room TEXT NOT NULL,
@@ -387,6 +412,14 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS slowmode_seconds INTEGER DEFAULT 0`);
   await pool.query(`ALTER TABLE server_channels ADD COLUMN IF NOT EXISTS admins_only INTEGER DEFAULT 0`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS kind TEXT`);
+  // @everyone / @role mentions that are allowed to ping, decided by the
+  // server when the message is sent (typing "@everyone" as a regular
+  // member is just text). mention_role_ids is a comma-separated id list.
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mentions_everyone INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mention_role_ids TEXT`);
+  await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS mentionable INTEGER DEFAULT 0`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_poll_options_poll ON poll_options (poll_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_poll_votes_poll ON poll_votes (poll_id, username)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_server_roles_server ON server_roles (server_id)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_member_roles_server ON server_member_roles (server_id, username)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_reactions_message ON message_reactions (message_id)`);
@@ -597,7 +630,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT 300
      ) recent ORDER BY id ASC`,
     [room]
@@ -606,17 +639,37 @@ async function getMessagesForRoom(room) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
   );
 }
-async function insertMessage(room, user, text, toUser, isGroup, replyTo) {
+async function insertMessage(room, user, text, toUser, isGroup, replyTo, mentions) {
+  mentions = mentions || { everyone: 0, roles: '' };
   return one(
-    `INSERT INTO messages (room, "user", text, to_user, is_group, reply_to) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [room, user, text, toUser, isGroup, replyTo]
+    `INSERT INTO messages (room, "user", text, to_user, is_group, reply_to, mentions_everyone, mention_role_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+    [room, user, text, toUser, isGroup, replyTo, mentions.everyone, mentions.roles]
   );
+}
+
+// Which @everyone / <@&roleId> mentions in a server-channel message may
+// actually ping. @everyone: owner/admins only. A role: if it's marked
+// mentionable, or the sender is an owner/admin. Anything else stays text.
+const EVERYONE_RE = /(^|[^a-z0-9_.-])@everyone($|[^a-z0-9_.-])/i;
+async function mentionFlags(username, room, text) {
+  const none = { everyone: 0, roles: '' };
+  const wantsEveryone = EVERYONE_RE.test(text);
+  const roleIds = [...new Set([...String(text).matchAll(/<@&(\d+)>/g)].map(m => Number(m[1])))].slice(0, 20);
+  if (!wantsEveryone && !roleIds.length) return none;
+  const channel = await getChannelByRoom(room);
+  if (!channel) return none;
+  const admin = await isServerAdmin(username, channel.server_id);
+  const roles = roleIds.length
+    ? (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND id = ANY($2) AND ($3 OR mentionable = 1)`, [channel.server_id, roleIds, admin])).map(r => r.id)
+    : [];
+  return { everyone: wantsEveryone && admin ? 1 : 0, roles: roles.join(',') };
 }
 async function insertFile(room, user, toUser, isGroup, fileName, fileType, fileUrl, fileSize, caption) {
   return one(
@@ -875,7 +928,7 @@ function serverBannerUrlOf(s) {
 }
 
 function roleFromRow(r) {
-  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, position: r.position };
+  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, mentionable: !!r.mentionable, position: r.position };
 }
 
 async function serversForUser(username) {
@@ -893,10 +946,11 @@ async function serversForUser(username) {
   );
   if (!rows.length) return [];
   const ids = rows.map(s => s.id);
-  const [roleRows, channelRows, customRoleRows] = await Promise.all([
+  const [roleRows, channelRows, customRoleRows, myRoleRows] = await Promise.all([
     q(`SELECT server_id, role FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
-    q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids])
+    q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
+    q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids])
   ]);
   const roles = new Map(roleRows.map(r => [r.server_id, r.role]));
   const channelsBy = new Map();
@@ -929,6 +983,7 @@ async function serversForUser(username) {
       bannerUrl: serverBannerUrlOf(s),
       systemChannelId: s.system_channel_id || null,
       roles: customRolesBy.get(s.id) || [],
+      myRoleIds: myRoleRows.filter(r => r.server_id === s.id).map(r => r.role_id),
       channels: (channelsBy.get(s.id) || []).map(c => ({
         id: c.id,
         serverId: c.server_id,
@@ -1121,13 +1176,46 @@ async function normaliseMessage(row) {
 // queries PER MESSAGE (author, reply, reactions) - opening a busy channel
 // was ~1,000 round trips to Postgres. Now it's at most four queries total,
 // however many messages there are.
+// Poll data for a set of poll messages: question, options with their
+// voters, and whether it has ended. Three queries however many polls.
+async function pollsFor(messageIds) {
+  const out = new Map();
+  if (!messageIds.length) return out;
+  const polls = await q(`SELECT * FROM polls WHERE message_id = ANY($1)`, [messageIds]);
+  if (!polls.length) return out;
+  const pollIds = polls.map(p => p.id);
+  const [options, votes] = await Promise.all([
+    q(`SELECT * FROM poll_options WHERE poll_id = ANY($1) ORDER BY position, id`, [pollIds]),
+    q(`SELECT option_id, username FROM poll_votes WHERE poll_id = ANY($1) ORDER BY created_at`, [pollIds])
+  ]);
+  const votersBy = new Map();
+  for (const v of votes) {
+    if (!votersBy.has(v.option_id)) votersBy.set(v.option_id, []);
+    votersBy.get(v.option_id).push(v.username);
+  }
+  for (const p of polls) {
+    const opts = options.filter(o => o.poll_id === p.id).map(o => ({ id: o.id, text: o.text, voters: votersBy.get(o.id) || [] }));
+    out.set(p.message_id, {
+      id: p.id,
+      question: p.question,
+      allowMultiple: !!p.allow_multiple,
+      endsAt: p.ends_at || null,
+      ended: !!p.ends_at && new Date(p.ends_at).getTime() <= Date.now(),
+      options: opts,
+      totalVoters: new Set(opts.flatMap(o => o.voters)).size
+    });
+  }
+  return out;
+}
+
 async function normaliseMessages(rows) {
   rows = rows.filter(Boolean);
   if (!rows.length) return [];
-  const [authors, replies, reactions] = await Promise.all([
+  const [authors, replies, reactions, polls] = await Promise.all([
     getUsers(rows.map(r => r.user)),
     replyPreviews(rows.map(r => r.reply_to)),
-    reactionSummaries(rows.map(r => r.id))
+    reactionSummaries(rows.map(r => r.id)),
+    pollsFor(rows.filter(r => r.kind === 'poll' && !r.deleted_at).map(r => r.id))
   ]);
   return rows.map(row => {
     const deleted = !!row.deleted_at;
@@ -1150,6 +1238,9 @@ async function normaliseMessages(rows) {
       pinned: !!row.pinned_at && !deleted,
       pinnedBy: row.pinned_by || '',
       kind: row.kind || '',
+      poll: polls.get(row.id) || null,
+      mentionsEveryone: !!row.mentions_everyone,
+      mentionRoleIds: row.mention_role_ids ? String(row.mention_role_ids).split(',').map(Number) : [],
       createdAt: row.created_at
     };
   });
@@ -1545,6 +1636,39 @@ app.get('/profiles', requireAuth, route(async (req, res) => {
   res.json(out);
 }));
 
+// Servers and friends you have in common with someone, for their profile
+// card. The original server is left out - everyone is in it.
+app.get('/users/:username/mutual', requireAuth, route(async (req, res) => {
+  const other = cleanUsername(req.params.username);
+  if (!validUsername(other) || other === req.username) return res.json({ servers: [], friends: [] });
+  const [servers, friends] = await Promise.all([
+    q(
+      `SELECT s.id, s.name, s.icon_url, s.icon_version
+       FROM servers s
+       JOIN server_members a ON a.server_id = s.id AND a.username = $1
+       JOIN server_members b ON b.server_id = s.id AND b.username = $2
+       WHERE s.is_default = 0
+       ORDER BY lower(s.name)`,
+      [req.username, other]
+    ),
+    q(
+      `WITH mine AS (
+         SELECT CASE WHEN requester = $1 THEN addressee ELSE requester END AS friend
+         FROM friendships WHERE status = 'accepted' AND (requester = $1 OR addressee = $1)
+       ), theirs AS (
+         SELECT CASE WHEN requester = $2 THEN addressee ELSE requester END AS friend
+         FROM friendships WHERE status = 'accepted' AND (requester = $2 OR addressee = $2)
+       )
+       SELECT friend FROM mine INTERSECT SELECT friend FROM theirs ORDER BY 1`,
+      [req.username, other]
+    )
+  ]);
+  res.json({
+    servers: servers.map(s => ({ id: s.id, name: s.name, iconUrl: serverIconUrlOf(s) })),
+    friends: friends.map(f => f.friend)
+  });
+}));
+
 app.get('/users', requireAuth, route(async (req, res) => {
   const rows = await q(`SELECT ${USER_COLUMNS} FROM users WHERE banned = 0 ORDER BY LOWER(username) ASC LIMIT 500`);
   for (const row of rows) userCache.set(row.username, { row, at: Date.now() });
@@ -1584,16 +1708,40 @@ app.get('/read-receipts', requireAuth, route(async (req, res) => {
 // Searches every message in one room (not just the 300 a client has
 // loaded). Supports "from:username" alongside plain words, e.g.
 // "from:Purple pizza". Deleted messages never show up.
+// SQL that limits `messages` to rooms `username` can read: channels of
+// servers they're in (and the original server), their group chats and
+// their DMs. $1 = array of channel/group rooms, $2 = username.
+async function readableRoomsClause(username) {
+  const [channels, groups] = await Promise.all([
+    q(`SELECT c.room FROM server_channels c JOIN servers s ON s.id = c.server_id
+       WHERE s.is_default = 1 OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1)`, [username]),
+    q(`SELECT 'group:' || group_id AS room FROM group_members WHERE username = $1`, [username])
+  ]);
+  return {
+    // usernames can't contain ':', so a DM room splits cleanly into its two people
+    sql: `(room = ANY($1) OR (room LIKE 'dm:%' AND (split_part(room, ':', 2) = $2 OR split_part(room, ':', 3) = $2)))`,
+    values: [channels.concat(groups).map(r => r.room), username]
+  };
+}
+
 app.get('/search', requireAuth, route(async (req, res) => {
+  const everywhere = req.query.scope === 'all';
   const room = String(req.query.room || '');
-  if (!(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
+  if (!everywhere && !(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
   let raw = String(req.query.q || '').slice(0, 200);
   let from = '';
   raw = raw.replace(/(^|\s)from:(\S+)/i, (m, lead, name) => { from = cleanUsername(name.replace(/^@/, '')); return lead; }).trim();
   if (!raw && !from) return res.status(400).json({ error: 'type something to search for' });
 
-  const where = [`room = $1`, `deleted_at IS NULL`];
-  const values = [room];
+  let where, values;
+  if (everywhere) {
+    const readable = await readableRoomsClause(req.username);
+    where = [readable.sql, `deleted_at IS NULL`];
+    values = readable.values;
+  } else {
+    where = [`room = $1`, `deleted_at IS NULL`];
+    values = [room];
+  }
   if (raw) {
     values.push('%' + raw.replace(/[\\%_]/g, '\\$&') + '%');
     where.push(`text ILIKE $${values.length} ESCAPE '\\'`);
@@ -1612,6 +1760,135 @@ app.get('/search', requireAuth, route(async (req, res) => {
 // Who can pin: in a server channel, the same people who can moderate it
 // (server owner/admins, site admins). In DMs and group chats, anyone in
 // the conversation - same as Discord.
+// Recent messages that @mention you, anywhere you can read - the inbox.
+function escapeRegex(text) { return String(text).replace(/[.*+?^${}()|[\]\\-]/g, '\\$&'); }
+app.get('/mentions', requireAuth, route(async (req, res) => {
+  const readable = await readableRoomsClause(req.username);
+  const myRoles = (await q(`SELECT role_id FROM server_member_roles WHERE username = $1`, [req.username])).map(r => r.role_id);
+  const rows = await q(
+    `SELECT * FROM messages
+     WHERE ${readable.sql} AND deleted_at IS NULL AND "user" <> $2
+       AND "user" NOT IN (SELECT blocked FROM blocks WHERE blocker = $2)
+       AND (text ~* $3 OR mentions_everyone = 1
+            OR (mention_role_ids <> '' AND string_to_array(mention_role_ids, ',')::int[] && $4::int[]))
+     ORDER BY id DESC LIMIT 50`,
+    [...readable.values, '(^|[^a-z0-9_.-])@' + escapeRegex(req.username) + '($|[^a-z0-9_.-])', myRoles]
+  );
+  res.json(await normaliseMessages(rows));
+}));
+
+// Where a message lives, for message links. Anything you can't see (or
+// that was deleted) is simply "not found", so links can't be used to
+// probe conversations you're not in.
+app.get('/messages/:id/locate', requireAuth, route(async (req, res) => {
+  const row = await getMessageById(Number(req.params.id));
+  if (!row || row.deleted_at || !(await isAllowedRoom(req.username, row.room))) return res.status(404).json({ error: 'message not found' });
+  const channel = await getChannelByRoom(row.room);
+  const dmUsers = getDMUsers(row.room);
+  res.json({
+    id: row.id,
+    room: row.room,
+    type: channel ? 'channel' : (dmUsers ? 'dm' : 'group'),
+    serverId: channel ? channel.server_id : null,
+    other: dmUsers ? dmUsers.find(u => u !== req.username) || null : null
+  });
+}));
+
+// ---------------- POLLS ----------------
+const POLL_DURATIONS_HOURS = [0, 1, 4, 8, 24, 72, 168]; // 0 = never ends on its own
+
+app.post('/polls', requireAuth, route(async (req, res) => {
+  if (rateLimited('msg:' + req.username, 10, 5000)) return res.status(429).json({ error: 'You are sending messages too fast - slow down a little.' });
+  const room = String(req.body.room || '');
+  const question = cleanText(req.body.question, 300);
+  const options = (Array.isArray(req.body.options) ? req.body.options : []).map(o => cleanText(o, 55)).filter(Boolean);
+  const hours = Number(req.body.durationHours) || 0;
+  if (!question) return res.status(400).json({ error: 'the poll needs a question' });
+  if (options.length < 2 || options.length > 10) return res.status(400).json({ error: 'a poll needs 2 to 10 answers' });
+  if (new Set(options.map(o => o.toLowerCase())).size !== options.length) return res.status(400).json({ error: 'each answer must be different' });
+  if (!POLL_DURATIONS_HOURS.includes(hours)) return res.status(400).json({ error: 'unsupported poll length' });
+  if (!(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
+  const muted = await isMuted(req.username);
+  if (muted) return res.status(403).json({ error: 'you are muted until ' + muted.muted_until });
+
+  const dmUsers = getDMUsers(room);
+  const toUser = dmUsers ? dmUsers.find(u => u !== req.username) : null;
+  if (dmUsers && (!toUser || room !== makeDMRoom(req.username, toUser) || !(await getUser(toUser)))) {
+    return res.status(400).json({ error: 'invalid recipient' });
+  }
+  if (toUser) {
+    const block = await blockBetween(req.username, toUser);
+    if (block) return res.status(403).json({ error: dmBlockedError(block) });
+  } else {
+    const blocked = await channelPostBlock(req.username, room);
+    if (blocked) return res.status(403).json({ error: blocked });
+  }
+
+  const created = await one(
+    `INSERT INTO messages (room, "user", text, to_user, is_group, kind) VALUES ($1, $2, $3, $4, $5, 'poll') RETURNING *`,
+    [room, req.username, question, toUser, groupIdFromRoom(room) ? 1 : 0]
+  );
+  const poll = await one(
+    `INSERT INTO polls (message_id, question, allow_multiple, ends_at)
+     VALUES ($1, $2, $3, CASE WHEN $4::int > 0 THEN NOW() + make_interval(hours => $4::int) END) RETURNING id`,
+    [created.id, question, req.body.allowMultiple ? 1 : 0, hours]
+  );
+  await pool.query(
+    `INSERT INTO poll_options (poll_id, position, text) SELECT $1, o.pos - 1, o.text FROM unnest($2::text[]) WITH ORDINALITY AS o(text, pos)`,
+    [poll.id, options]
+  );
+  const msg = await normaliseMessage(created);
+  if (toUser) {
+    sendToUser(req.username, 'dmMessage', msg);
+    sendToUser(toUser, 'dmMessage', msg);
+  } else {
+    io.to(room).emit('message', msg);
+  }
+  res.status(201).json(msg);
+}));
+
+async function pollForRequest(req, res) {
+  const poll = await one(`SELECT p.*, m.room, m."user" AS author, m.to_user, m.deleted_at FROM polls p JOIN messages m ON m.id = p.message_id WHERE p.id = $1`, [Number(req.params.id)]);
+  if (!poll || poll.deleted_at || !(await isAllowedRoom(req.username, poll.room))) {
+    res.status(404).json({ error: 'poll not found' });
+    return null;
+  }
+  return poll;
+}
+async function broadcastPoll(poll) {
+  const msg = await normaliseMessage(await getMessageById(poll.message_id));
+  emitRoomOrDM(msg.room, msg.to, 'pollUpdated', { id: msg.id, room: msg.room, poll: msg.poll });
+  return msg.poll;
+}
+
+// Replace your votes on a poll ([] removes them).
+app.post('/polls/:id/vote', requireAuth, route(async (req, res) => {
+  const poll = await pollForRequest(req, res);
+  if (!poll) return;
+  if (poll.ends_at && new Date(poll.ends_at).getTime() <= Date.now()) return res.status(400).json({ error: 'this poll has ended' });
+  const wanted = [...new Set((Array.isArray(req.body.optionIds) ? req.body.optionIds : []).map(Number))];
+  if (!poll.allow_multiple && wanted.length > 1) return res.status(400).json({ error: 'you can only pick one answer in this poll' });
+  const own = new Set((await q(`SELECT id FROM poll_options WHERE poll_id = $1`, [poll.id])).map(o => o.id));
+  if (!wanted.every(id => own.has(id))) return res.status(400).json({ error: 'that answer is not in this poll' });
+  await pool.query(`DELETE FROM poll_votes WHERE poll_id = $1 AND username = $2`, [poll.id, req.username]);
+  if (wanted.length) {
+    await pool.query(
+      `INSERT INTO poll_votes (poll_id, option_id, username) SELECT $1, unnest($2::int[]), $3 ON CONFLICT DO NOTHING`,
+      [poll.id, wanted, req.username]
+    );
+  }
+  res.json({ poll: await broadcastPoll(poll) });
+}));
+
+// Close a poll now - its author, or anyone who can moderate the room.
+app.post('/polls/:id/end', requireAuth, route(async (req, res) => {
+  const poll = await pollForRequest(req, res);
+  if (!poll) return;
+  if (poll.author !== req.username && !(await canModerateRoom(req.username, poll.room))) return res.status(403).json({ error: 'only the poll\'s author or a moderator can end it' });
+  await pool.query(`UPDATE polls SET ends_at = NOW() WHERE id = $1 AND (ends_at IS NULL OR ends_at > NOW())`, [poll.id]);
+  res.json({ poll: await broadcastPoll(poll) });
+}));
+
 async function canPinIn(username, room) {
   if (!(await isAllowedRoom(username, room))) return false;
   if (await getChannelByRoom(room)) return canModerateRoom(username, room);
@@ -1752,12 +2029,12 @@ async function deliverPush(username, payload) {
 // allowed in this room and not currently online - lets someone find out
 // they were mentioned even with the app fully closed, without pushing
 // every channel message to every member (which would be spammy).
-async function pushMentions(room, text, fromUser) {
+const MAX_GROUP_MENTION_PUSHES = 100; // @everyone/@role in a big server: don't push to hundreds
+async function pushMentions(room, text, fromUser, mentions) {
   const names = new Set();
   const re = /@([a-zA-Z0-9_.-]{2,30})/g;
   let match;
-  while ((match = re.exec(text))) names.add(match[1]);
-  if (!names.size) return;
+  while ((match = re.exec(text))) if (match[1].toLowerCase() !== 'everyone') names.add(match[1]);
   const channel = await getChannelByRoom(room);
   const roomLabel = channel ? channel.name : room;
   for (const name of names) {
@@ -1769,6 +2046,28 @@ async function pushMentions(room, text, fromUser) {
     await sendPushToUser(name, {
       title: `${fromUser} mentioned you in #${roomLabel}`,
       body: text.slice(0, 140),
+      tag: 'mention:' + room,
+      url: '/'
+    });
+  }
+  if (!channel || !mentions || (!mentions.everyone && !mentions.roles)) return;
+  let group, label;
+  if (mentions.everyone) {
+    group = await serverMemberUsernames(channel.server_id);
+    label = '@everyone';
+  } else {
+    const roleIds = mentions.roles.split(',').map(Number);
+    group = (await q(`SELECT DISTINCT username FROM server_member_roles WHERE role_id = ANY($1)`, [roleIds])).map(r => r.username);
+    label = (await q(`SELECT name FROM server_roles WHERE id = ANY($1) ORDER BY position`, [roleIds])).map(r => '@' + r.name).join(', ');
+  }
+  // online people already got it live, and anyone named above already got
+  // a push; only the first MAX_GROUP_MENTION_PUSHES offline people get one
+  const offline = group.filter(u => u !== fromUser && !names.has(u) && !onlineUsers.has(u)).slice(0, MAX_GROUP_MENTION_PUSHES);
+  for (const name of offline) {
+    if (await blockBetween(name, fromUser)) continue;
+    await sendPushToUser(name, {
+      title: `${fromUser} mentioned ${label} in #${roomLabel}`,
+      body: text.replace(/<@&\d+>/g, '@role').slice(0, 140),
       tag: 'mention:' + room,
       url: '/'
     });
@@ -2137,6 +2436,7 @@ function cleanRoleInput(body) {
   if ('name' in body) out.name = cleanText(body.name || '', 32);
   if ('color' in body) out.color = body.color ? String(body.color) : '';
   if ('hoist' in body) out.hoist = body.hoist ? 1 : 0;
+  if ('mentionable' in body) out.mentionable = body.mentionable ? 1 : 0;
   return out;
 }
 function roleInputError(input) {
@@ -2154,8 +2454,8 @@ app.post('/servers/:id/roles', requireAuth, route(async (req, res) => {
   const count = await one(`SELECT count(*)::int AS n, COALESCE(max(position), -1) AS top FROM server_roles WHERE server_id = $1`, [serverId]);
   if (count.n >= MAX_ROLES_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_ROLES_PER_SERVER} roles` });
   const role = await one(
-    `INSERT INTO server_roles (server_id, name, color, hoist, position) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [serverId, input.name, input.color || '', input.hoist || 0, count.top + 1]
+    `INSERT INTO server_roles (server_id, name, color, hoist, mentionable, position) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, count.top + 1]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.status(201).json(roleFromRow(role));
@@ -2178,10 +2478,10 @@ app.post('/servers/:id/roles/:roleId/update', requireAuth, route(async (req, res
   const input = cleanRoleInput(req.body);
   const problem = roleInputError(input);
   if (problem) return res.status(400).json({ error: problem });
-  const next = { name: role.name, color: role.color, hoist: role.hoist, ...input };
+  const next = { name: role.name, color: role.color, hoist: role.hoist, mentionable: role.mentionable, ...input };
   const updated = await one(
-    `UPDATE server_roles SET name = $1, color = $2, hoist = $3 WHERE id = $4 RETURNING *`,
-    [next.name, next.color || '', next.hoist ? 1 : 0, roleId]
+    `UPDATE server_roles SET name = $1, color = $2, hoist = $3, mentionable = $4 WHERE id = $5 RETURNING *`,
+    [next.name, next.color || '', next.hoist ? 1 : 0, next.mentionable ? 1 : 0, roleId]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json(roleFromRow(updated));
@@ -2215,6 +2515,7 @@ app.post('/servers/:id/members/:username/roles', requireAuth, route(async (req, 
     );
   }
   await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+  sendToUser(target, 'myRolesChanged', { serverId });
   res.json({ message: 'ok', roleIds: wanted });
 }));
 
@@ -2655,10 +2956,11 @@ io.on('connection', (socket) => {
       return;
     }
 
-    const created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo);
+    const mentions = await mentionFlags(socket.username, room, text);
+    const created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
-    pushMentions(room, text, socket.username).catch(err => console.error('pushMentions failed:', err.message));
+    pushMentions(room, text, socket.username, mentions).catch(err => console.error('pushMentions failed:', err.message));
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });
   });
 
@@ -2713,7 +3015,12 @@ io.on('connection', (socket) => {
       return;
     }
     if (!text) return;
-    await pool.query(`UPDATE messages SET text = $1, edited_at = NOW() WHERE id = $2`, [text, id]);
+    // re-check mentions so highlights match the new text (edits never re-ping)
+    const mentions = getDMUsers(row.room) ? { everyone: 0, roles: '' } : await mentionFlags(socket.username, row.room, text);
+    await pool.query(
+      `UPDATE messages SET text = $1, edited_at = NOW(), mentions_everyone = $2, mention_role_ids = $3 WHERE id = $4`,
+      [text, mentions.everyone, mentions.roles, id]
+    );
     const msg = await normaliseMessage(await getMessageById(id));
     emitRoomOrDM(msg.room, msg.to, 'messageUpdated', msg);
     if (typeof ack === 'function') ack({ message: 'ok' });

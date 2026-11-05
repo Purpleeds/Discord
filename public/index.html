@@ -6,6 +6,15 @@
 <title>Google</title>
 
 <link rel="icon" type="image/png" href="/google.png">
+<!-- Installable app (PWA). Installing is also what lets iPhones get push
+     notifications: iOS only allows web push for home-screen apps. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#1e1f22">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Chat">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 
 <style>
 /* ---------------- theme tokens ----------------
@@ -79,7 +88,8 @@ body{
 }
 button{font-family:inherit;border:none;cursor:pointer;border-radius:4px;color:inherit;background:none;}
 button:disabled{opacity:.5;cursor:not-allowed;}
-input,textarea{font-family:inherit;border:none;outline:none;color:var(--text-bright);background:var(--bg-input);}
+input,textarea,select{font-family:inherit;border:none;outline:none;color:var(--text-bright);background:var(--bg-input);}
+select option{background:var(--bg-floating);color:var(--text-bright);}
 ::-webkit-scrollbar{width:8px;height:8px;}
 ::-webkit-scrollbar-track{background:transparent;}
 ::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border-radius:8px;}
@@ -810,6 +820,10 @@ input[type=color]::-webkit-color-swatch{border:2px dashed var(--border-strong);}
 .message.failed .msgText{color:var(--red);}
 .failNote{display:block;font-size:12px;color:var(--red);margin-top:2px;}
 @media (max-width:900px){
+  #membersBtn{display:none;} /* the member list itself is hidden on phones */
+  .headerSearch input,.headerSearch input:focus,.headerSearch input.hasValue{width:96px;}
+  #chatHeader{gap:4px;padding:0 8px;}
+  #roomTitle{min-width:0;flex:1 1 auto;}
   #chat.friendsMode #roomTitle{display:none;}
   #friendsTabs{padding-left:8px;margin-left:0;}
   .friendsScroll{padding:12px;}
@@ -841,6 +855,77 @@ input[type=color]::-webkit-color-swatch{border:2px dashed var(--border-strong);}
 .systemText .msgTime{margin-left:8px;}
 select.settingsInput{cursor:pointer;}
 html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;margin-right:8px;}
+
+/* ---------------- video + audio players ---------------- */
+.videoWrap{max-width:min(480px,100%);}
+.videoWrap video{display:block;width:100%;max-height:360px;border-radius:8px;background:#000;}
+.audioCard{max-width:min(420px,100%);background:var(--bg-secondary);border:1px solid var(--divider);border-radius:8px;padding:10px 12px;}
+.audioCard audio{display:block;width:100%;margin-top:8px;}
+.mediaMeta{display:flex;align-items:baseline;gap:8px;min-width:0;margin-top:4px;}
+.audioCard .mediaMeta{margin-top:0;}
+.mediaMeta .fileNameText{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* ---------------- profile: mutual servers / friends ---------------- */
+.pcMutualList{display:flex;flex-direction:column;gap:2px;margin-bottom:12px;}
+.pcMutual{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:4px 6px;border-radius:4px;font-size:14px;color:var(--text);}
+.pcMutual:hover{background:var(--hover);color:var(--text-bright);}
+.pcMutual .avatar.xs,.pcMutual .avatarWrap{flex:0 0 auto;}
+.pcMutual > .avatar.xs{width:24px;height:24px;font-size:10px;border-radius:8px;}
+.pcMore{font-size:12px;color:var(--text-muted);padding:2px 6px;}
+
+/* ---------------- polls ---------------- */
+.pollCard{max-width:min(440px,100%);background:var(--bg-secondary);border:1px solid var(--divider);border-radius:8px;padding:14px 16px;margin-top:4px;}
+.pollQuestion{font-weight:600;color:var(--text-bright);font-size:calc(var(--chat-font) + 1px);line-height:1.3;overflow-wrap:anywhere;}
+.pollHint{font-size:12px;color:var(--text-muted);margin:4px 0 10px 0;}
+.pollOption{position:relative;display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:9px 12px;margin-bottom:6px;
+  border-radius:6px;border:1px solid var(--divider);background:var(--bg-tertiary);color:var(--text);overflow:hidden;font-size:15px;}
+.pollOption:not(:disabled):hover{border-color:var(--text-muted);}
+.pollOption:disabled{cursor:default;}
+.pollBar{position:absolute;left:0;top:0;bottom:0;background:var(--mention);transition:width .3s ease;pointer-events:none;}
+.pollOption.winner .pollBar{background:rgba(35,165,90,.35);}
+.pollMark{position:relative;width:16px;height:16px;flex:0 0 16px;border-radius:50%;border:2px solid var(--text-muted);}
+.pollOption.picked .pollMark{border-color:var(--brand);background:var(--brand);box-shadow:inset 0 0 0 3px var(--bg-tertiary);}
+.pollText{position:relative;flex:1;min-width:0;overflow-wrap:anywhere;}
+.pollCount{position:relative;font-size:13px;color:var(--text-muted);white-space:nowrap;}
+.pollFoot{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:13px;color:var(--text-muted);margin-top:4px;}
+.pollAnswerRow{display:flex;align-items:center;gap:6px;margin-bottom:8px;}
+.pollAnswerRow .formInput{margin:0;}
+
+/* ---------------- quick switcher + message links ---------------- */
+.switcherLayer{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:flex-start;justify-content:center;z-index:120;padding:12vh 16px 16px 16px;}
+.switcherLayer.open{display:flex;}
+.switcherBox{width:min(560px,100%);background:var(--modal);border-radius:8px;box-shadow:var(--shadow-high);padding:20px;}
+#switcherInput{width:100%;height:52px;border-radius:6px;padding:0 14px;font-size:18px;background:var(--bg-input);}
+#switcherList{margin-top:12px;max-height:50vh;overflow-y:auto;display:flex;flex-direction:column;gap:2px;}
+.switcherRow{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:4px;text-align:left;color:var(--text);min-width:0;}
+.switcherRow.active{background:var(--active);color:var(--text-bright);}
+.switcherRow .avatar,.switcherRow .avatarWrap{flex:0 0 auto;}
+.switcherRow > .avatar{width:24px;height:24px;font-size:10px;border-radius:8px;}
+.switcherGlyph{width:24px;flex:0 0 24px;text-align:center;font-size:20px;color:var(--text-muted);}
+.switcherName{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.switcherSub{font-size:13px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.switcherEmpty{color:var(--text-muted);font-size:14px;padding:16px 4px;}
+.switcherTip{margin-top:14px;font-size:12px;color:var(--text-muted);line-height:1.8;}
+.switcherTip b{color:var(--text);}
+.msgLink.jumpLink{display:inline-block;background:var(--mention);color:var(--mention-text);border-radius:4px;padding:0 6px;text-decoration:none;}
+.msgLink.jumpLink:hover{text-decoration:none;filter:brightness(1.15);}
+
+/* ---------------- search everywhere + mentions inbox ---------------- */
+.searchScope{display:flex;gap:4px;padding:10px 16px 0 16px;}
+.searchScope button{flex:1;padding:6px 8px;border-radius:4px;font-size:13px;font-weight:500;color:var(--text-muted);background:var(--bg-tertiary);}
+.searchScope button:hover{color:var(--text);}
+.searchScope button.active{background:var(--brand);color:#fff;}
+.resultWhere{font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#inboxBtn{position:relative;}
+#inboxBtn .inboxDot{position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;background:var(--red);display:none;}
+#inboxBtn.hasNew .inboxDot{display:block;}
+#inboxPopout{width:440px;max-width:calc(100vw - 24px);max-height:70vh;display:flex;flex-direction:column;}
+#inboxPopout .popHead{padding:14px 16px;font-weight:600;color:var(--text-bright);border-bottom:1px solid var(--divider);}
+#inboxPopout .popBody{overflow-y:auto;padding:10px 12px;}
+
+/* ---------------- @everyone / @role mentions ---------------- */
+.mention.roleMention{--rc:var(--mention-text);color:var(--rc);background:color-mix(in srgb, var(--rc) 18%, transparent);cursor:default;}
+.mention.roleMention:hover{background:color-mix(in srgb, var(--rc) 30%, transparent);}
 
 </style>
 </head>
@@ -917,6 +1002,7 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
       <div id="roomTopic"></div>
       <div id="friendsTabs" role="tablist" aria-label="Friends"></div>
       <div class="headerSpacer"></div>
+      <button class="headerBtn" id="inboxBtn" title="Mentions" aria-label="Mentions inbox" onclick="toggleInbox(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M5.5 5h13L21 13v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5z"/></svg><span class="inboxDot"></span></button>
       <button class="headerBtn" id="pinsBtn" title="Pinned Messages" aria-label="Pinned Messages" onclick="togglePinsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15.6 2.3a1 1 0 0 1 1.4 0l4.7 4.7a1 1 0 0 1 0 1.4l-.6.6a1.5 1.5 0 0 1-1.6.3l-3.6 3.6.3 3.3a1.5 1.5 0 0 1-.4 1.2l-1 1a1 1 0 0 1-1.4 0l-3.3-3.3-4.6 4.6a1 1 0 1 1-1.4-1.4l4.6-4.6-3.3-3.3a1 1 0 0 1 0-1.4l1-1a1.5 1.5 0 0 1 1.2-.4l3.3.3 3.6-3.6a1.5 1.5 0 0 1 .3-1.6l.6-.6z"/></svg></button>
       <button class="headerBtn" id="membersBtn" title="Show Member List" aria-label="Show Member List" onclick="toggleMembers()"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="9" cy="8" r="3.6"/><path d="M2.5 19.5c0-3.4 2.9-6 6.5-6s6.5 2.6 6.5 6a.8.8 0 0 1-.8.8H3.3a.8.8 0 0 1-.8-.8z"/><circle cx="16.8" cy="9" r="2.8" opacity=".75"/><path d="M16.5 13.6c3 0 5.2 2 5.2 4.9a.7.7 0 0 1-.7.7h-3.9c0-2.2-.9-4.1-2.5-5.4.6-.1 1.2-.2 1.9-.2z" opacity=".75"/></svg></button>
       <div class="headerSearch">
@@ -939,7 +1025,7 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
         </div>
         <div id="attachPreview"></div>
         <div id="composer">
-          <button id="attachBtn" title="Upload a file" onclick="document.getElementById('fileInput').click()">+</button>
+          <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
           <button id="emojiBtn" title="Emoji" onclick="openEmojiPicker(event,'composer')">😀</button>
         </div>
@@ -956,6 +1042,10 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
   <div id="members"></div>
   <div id="searchPanel" class="sidePanel" aria-label="Search results">
     <div class="sidePanelHead"><span id="searchPanelTitle">Search</span><button class="panelBtn" aria-label="Close search" onclick="clearSearch()">✕</button></div>
+    <div class="searchScope" role="tablist" aria-label="Where to search">
+      <button data-scope="here" class="active" onclick="setSearchScope('here')">This conversation</button>
+      <button data-scope="all" onclick="setSearchScope('all')">Everywhere</button>
+    </div>
     <div class="sidePanelBody" id="searchResults"></div>
   </div>
 </div>
@@ -965,6 +1055,10 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
   <div class="popBody" id="pinsList"></div>
 </div>
 <div id="profilePopout" class="popout" role="dialog" aria-label="User profile"></div>
+<div id="inboxPopout" class="popout" role="dialog" aria-label="Mentions">
+  <div class="popHead">Mentions</div>
+  <div class="popBody" id="inboxList"></div>
+</div>
 
 <div id="settingsLayer" class="settingsLayer" role="dialog" aria-modal="true" aria-label="Settings">
   <div class="settingsSidebarRegion"><nav class="settingsNav" id="settingsNav"></nav></div>
@@ -982,6 +1076,13 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
 </div>
 
 <div id="overlay"><div class="modal" id="modal"></div></div>
+<div id="switcher" class="switcherLayer" onclick="if(event.target.id === 'switcher') closeSwitcher()">
+  <div class="switcherBox" role="dialog" aria-label="Quick Switcher">
+    <input id="switcherInput" placeholder="Where would you like to go?" autocomplete="off" aria-label="Search channels, people and servers">
+    <div id="switcherList" role="listbox"></div>
+    <div class="switcherTip">Tip: start with <b>#</b> for channels, <b>@</b> for people, <b>*</b> for servers. <span class="kbd">↑</span><span class="kbd">↓</span> to move, <span class="kbd">Enter</span> to go.</div>
+  </div>
+</div>
 <div id="emojiPicker"></div>
 <div id="contextMenu"></div>
 <div id="lightbox">
@@ -1338,6 +1439,7 @@ function connectSocket(){
     socket.emit('syncRooms');
     const first = servers.find(s => s.isDefault) || servers[0];
     if(first) switchServer(first.id, true);
+    handleLocationHash();
   });
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
@@ -1394,6 +1496,7 @@ function connectSocket(){
   });
   socket.on('groupsChanged', async () => { await loadGroups(); socket.emit('syncRooms'); renderSidebar(); });
   socket.on('friendsChanged', async () => { await loadFriends(); afterFriendsChanged(); });
+  socket.on('myRolesChanged', async () => { await loadServers(); renderSidebar(); });
   socket.on('serverMembersChanged', data => {
     if(data && memberCache.key === 'server:' + data.serverId) renderMembers(true);
     if(settingsState.mode === 'server' && settingsState.section === 'members' && data && settingsState.ctx.serverId === data.serverId) rerenderSettingsSection();
@@ -1428,6 +1531,7 @@ function connectSocket(){
   socket.on('messageUpdated', msg => { cacheFromPayload(msg); applyUpdatedMessage(msg); });
   socket.on('messageDeleted', msg => applyDeletedMessage(msg));
   socket.on('reactionUpdated', payload => applyReactions(payload));
+  socket.on('pollUpdated', payload => applyPollUpdate(payload));
 
   socket.on('typing', data => {
     if(!data || data.user === username || isBlocked(data.user)) return;
@@ -1473,7 +1577,7 @@ function handleIncoming(msg, kind){
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     return;
   }
-  if(msg.kind){
+  if(msg.kind === 'join'){
     // "X joined" - shows up and counts as unread, but never pings
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     else bumpUnreadQuietly(msg.room);
@@ -1518,7 +1622,7 @@ function maybeNotifyDesktop(msg, kind, title, room){
   try{
     let body;
     if(kind === 'file') body = displayNameFor(msg.user) + ' sent a file: ' + (msg.fileName || 'attachment');
-    else body = displayText(msg.text || '', msg.room).slice(0, 140) || (displayNameFor(msg.user) + ' sent a message');
+    else body = displayText(plainMentions(msg.text || ''), msg.room).slice(0, 140) || (displayNameFor(msg.user) + ' sent a message');
     const note = new Notification(title, { body });
     note.onclick = () => { window.focus(); note.close(); };
   }catch(e){}
@@ -2013,6 +2117,7 @@ async function loadHistory(room){
     renderTimeline();
     scrollToBottom();
     updateJumpBar();
+    if(pendingJump && pendingJump.room === room){ const id = pendingJump.id; pendingJump = null; goToMessage(id); }
     const lastMessage = messages[messages.length - 1];
     if(lastMessage && socket) socket.emit('markRead', { room, lastMessageId: lastMessage.id });
   }catch(err){ showError(err.message); }
@@ -2228,7 +2333,7 @@ function buildMessageEl(item, grouped){
   if(item.kind === 'message') wrap.dataset.messageId = data.id;
   else wrap.dataset.fileId = data.id;
   wrap._item = item; // lets up-arrow editing / pin toggles find the current data
-  if(data.user !== username && String(data.text || '').includes('@' + username)) wrap.classList.add('mentioned');
+  if(data.user !== username && mentionsMe(data)) wrap.classList.add('mentioned');
 
   const gutter = document.createElement('div');
   gutter.className = 'msgGutter';
@@ -2290,10 +2395,17 @@ function buildMessageEl(item, grouped){
     body.appendChild(head);
   }
 
-  if(item.kind === 'message'){
+  if(item.kind === 'message' && data.kind === 'poll' && data.poll){
+    body.appendChild(buildPollCard(data));
+    const reactions = document.createElement('div');
+    reactions.className = 'reactions';
+    body.appendChild(reactions);
+    paintReactions(reactions, data);
+  }else if(item.kind === 'message'){
     const text = document.createElement('div');
     text.className = 'msgText';
     text.innerHTML = renderMarkdown(data.text || '');
+    muteUnpingedMentions(text, data);
     censorRenderedElement(text, data.room);
     if(data.editedAt){
       const edited = document.createElement('span');
@@ -2346,6 +2458,7 @@ const ICONS = {
   edit:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="m13.5 6.5 4 4"/></svg>',
   pin:'<svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor"><path d="M15.6 2.3a1 1 0 0 1 1.4 0l4.7 4.7a1 1 0 0 1 0 1.4l-.6.6a1.5 1.5 0 0 1-1.6.3l-3.6 3.6.3 3.3a1.5 1.5 0 0 1-.4 1.2l-1 1a1 1 0 0 1-1.4 0l-3.3-3.3-4.6 4.6a1 1 0 1 1-1.4-1.4l4.6-4.6-3.3-3.3a1 1 0 0 1 0-1.4l1-1a1.5 1.5 0 0 1 1.2-.4l3.3.3 3.6-3.6a1.5 1.5 0 0 1 .3-1.6l.6-.6z"/></svg>',
   trash:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4h6v3"/></svg>',
+  link:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
   download:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>'
 };
 
@@ -2389,6 +2502,7 @@ function buildActions(item){
     if(data.user === username && !data.kind){
       bar.appendChild(toolbarButton(ICONS.edit, 'Edit', e => startEdit(liveData(e.currentTarget, data))));
     }
+    bar.appendChild(toolbarButton(ICONS.link, 'Copy Message Link', e => { copyText(messageLink(liveData(e.currentTarget, data).id)); }));
     if(canPinHere(data.room)){
       bar.appendChild(toolbarButton(ICONS.pin, data.pinned ? 'Unpin Message' : 'Pin Message', e => {
         const live = liveData(e.currentTarget, data);
@@ -2414,8 +2528,21 @@ function renderMarkdown(text){
   html = html.replace(/__([^_]+)__/g, '<u>$1</u>');
   html = html.replace(/~~([^~]+)~~/g, '<s>$1</s>');
   html = html.replace(/^&gt;\s?(.*)$/gm, '<span class="quoteLine">$1</span>');
-  html = html.replace(/@([a-zA-Z0-9_.-]{2,30})/g, '<span class="mention" onclick="openDM(\'$1\')">@$1</span>');
-  html = html.replace(/(https?:\/\/[^\s<]+[^\s<.,!?)])/g, url => '<a class="msgLink" href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>');
+  html = html.replace(/@([a-zA-Z0-9_.-]{2,30})/g, (m, name) => name.toLowerCase() === 'everyone'
+    ? '<span class="mention everyone">@everyone</span>'
+    : '<span class="mention" onclick="openDM(\'' + name + '\')">@' + name + '</span>');
+  // role mentions are stored as <@&id> (escaped above), shown as @Name in the role's colour
+  html = html.replace(/&lt;@&amp;(\d+)&gt;/g, (m, id) => {
+    const role = roleById(Number(id));
+    if(!role) return '<span class="mention">@deleted-role</span>';
+    const style = role.color ? ' style="--rc:' + role.color + '"' : '';
+    return '<span class="mention roleMention" data-role-id="' + role.id + '"' + style + '>@' + escapeHtml(role.name) + '</span>';
+  });
+  html = html.replace(/(https?:\/\/[^\s<]+[^\s<.,!?)])/g, url => {
+    const jump = url.startsWith(location.origin + '/#m/') && /#m\/(\d+)$/.exec(url);
+    if(jump) return '<a class="msgLink jumpLink" href="#m/' + jump[1] + '" title="Jump to message">↪ Jump to message</a>';
+    return '<a class="msgLink" href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+  });
   return html;
 }
 
@@ -2462,8 +2589,52 @@ function buildAttachment(data){
     return holder;
   }
 
+  const media = mediaKind(data);
+  if(media){
+    holder.appendChild(buildMediaPlayer(data, media, () => holder.replaceChildren(buildFileCard(data))));
+    return holder;
+  }
+
   holder.appendChild(buildFileCard(data));
   return holder;
+}
+
+const VIDEO_EXT = /\.(mp4|m4v|webm|ogv|mov)$/i;
+const AUDIO_EXT = /\.(mp3|wav|ogg|oga|m4a|aac|flac|opus|weba)$/i;
+function mediaKind(data){
+  const type = String(data.fileType || '');
+  const name = String(data.fileName || '');
+  if(type.startsWith('video/') || VIDEO_EXT.test(name)) return 'video';
+  if(type.startsWith('audio/') || AUDIO_EXT.test(name)) return 'audio';
+  return '';
+}
+
+// A real player for uploaded video/audio. If this browser can't play the
+// format (e.g. .mkv, or HEVC .mov in Chrome) it falls back to the normal
+// download card instead of showing a broken player.
+function buildMediaPlayer(data, kind, onFail){
+  const wrap = document.createElement('div');
+  wrap.className = kind === 'video' ? 'videoWrap' : 'audioCard';
+  const player = document.createElement(kind);
+  player.controls = true;
+  player.preload = 'metadata';
+  player.src = data.fileUrl;
+  player.onerror = onFail;
+  const meta = document.createElement('div');
+  meta.className = 'mediaMeta';
+  const name = document.createElement('a');
+  name.className = 'fileNameText';
+  name.href = data.fileUrl;
+  name.download = data.fileName || kind;
+  name.textContent = data.fileName || kind;
+  name.title = 'Download';
+  const size = document.createElement('span');
+  size.className = 'fileSizeText';
+  size.textContent = formatBytes(data.fileSize);
+  meta.append(kind === 'audio' ? '🎵 ' : '', name, size);
+  if(kind === 'audio'){ wrap.append(meta, player); }
+  else { wrap.append(player, meta); }
+  return wrap;
 }
 
 function buildFileCard(data){
@@ -2540,6 +2711,7 @@ function applyUpdatedMessage(msg){
   const text = el.querySelector('.msgText');
   if(text && !msg.deleted && editingId !== msg.id){
     text.innerHTML = renderMarkdown(msg.text || '');
+    muteUnpingedMentions(text, msg);
     censorRenderedElement(text, msg.room);
     if(msg.editedAt){
       const edited = document.createElement('span');
@@ -2731,6 +2903,7 @@ function confirmPendingSendId(tempId, realId){
 // element for the real thing in place - same DOM node, so the grey-to-
 // white color change transitions smoothly instead of just popping.
 function confirmPendingSendData(msg){
+  if(msg.kind) return false; // polls/system messages are never sent optimistically
   let foundTempId = null;
   for(const [tempId, entry] of pendingSends){
     if(entry.realId === msg.id){ foundTempId = tempId; break; }
@@ -2758,6 +2931,14 @@ function confirmPendingSendData(msg){
   if(oldActions) oldActions.replaceWith(buildActions(item));
   const reactionsHolder = el.querySelector('.reactions');
   if(reactionsHolder) paintReactions(reactionsHolder, msg);
+  // the optimistic copy couldn't know which @everyone/@role mentions the
+  // server would let ping - redraw the text with the real answer
+  const text = el.querySelector('.msgText');
+  if(text && (msg.mentionsEveryone || (msg.mentionRoleIds || []).length)){
+    text.innerHTML = renderMarkdown(msg.text || '');
+    muteUnpingedMentions(text, msg);
+    censorRenderedElement(text, msg.room);
+  }
   return true;
 }
 
@@ -3383,7 +3564,40 @@ function setLevel(key, level){
   renderRail();
   toast(level && level !== 'default' ? 'Notifications: ' + LEVEL_LABELS[level] : 'Notifications reset to default');
 }
-function mentionsMe(msg){ return String((msg && (msg.text || msg.caption)) || '').includes('@' + username); }
+function roleById(id){
+  for(const server of servers){
+    const role = (server.roles || []).find(r => r.id === id);
+    if(role) return role;
+  }
+  return null;
+}
+// Mentions me by name, or via @everyone / one of my roles - the last two
+// only count when the server allowed them to ping (it sets these flags).
+function mentionsMe(msg){
+  if(!msg) return false;
+  const text = String(msg.text || msg.caption || '');
+  if(new RegExp('(^|[^a-z0-9_.-])@' + username.replace(/[.\-]/g, '\\$&') + '($|[^a-z0-9_.-])', 'i').test(text)) return true;
+  if(msg.mentionsEveryone) return true;
+  const ids = msg.mentionRoleIds || [];
+  if(!ids.length) return false;
+  const found = channelByRoom(msg.room);
+  const mine = found ? (found.server.myRoleIds || []) : [];
+  return ids.some(id => mine.includes(id));
+}
+// "@everyone" / "@Role" that the server didn't let ping (e.g. typed by a
+// regular member) show as plain text, like Discord - no misleading chip.
+function muteUnpingedMentions(el, data){
+  el.querySelectorAll('.mention.everyone').forEach(span => { if(!data.mentionsEveryone) span.replaceWith(span.textContent); });
+  const pinged = data.mentionRoleIds || [];
+  el.querySelectorAll('.roleMention[data-role-id]').forEach(span => {
+    if(!pinged.includes(Number(span.dataset.roleId))) span.replaceWith(span.textContent);
+  });
+}
+
+// Notification text: role tokens read as @Name instead of <@&12>.
+function plainMentions(text){
+  return String(text || '').replace(/<@&(\d+)>/g, (m, id) => { const r = roleById(Number(id)); return '@' + (r ? r.name : 'role'); });
+}
 function myPresence(){ return (myProfile && myProfile.presence) || 'online'; }
 // Should this incoming message make noise / pop a notification?
 function shouldAlert(msg, room){
@@ -3416,7 +3630,44 @@ function playPing(force){
     });
   }catch(e){}
 }
+// Where a message lives, in words: "#general · Book Club", "@ann", "Squad".
+function roomDescription(room){
+  const found = channelByRoom(room);
+  if(found) return '#' + found.channel.name + ' · ' + found.server.name;
+  if(isDMRoom(room)){
+    const other = String(room).slice(3).split(':').find(u => u !== username) || '';
+    return '@' + displayNameFor(other);
+  }
+  const group = groupByRoom[room];
+  return group ? group.name : 'Group chat';
+}
+
+function markInboxUnread(on){ $('inboxBtn').classList.toggle('hasNew', !!on); }
+async function toggleInbox(event){
+  event.stopPropagation();
+  const pop = $('inboxPopout');
+  if(pop.classList.contains('open')){ pop.classList.remove('open'); return; }
+  closePopouts();
+  placePopout(pop, event.currentTarget, 'below');
+  pop.classList.add('open');
+  markInboxUnread(false);
+  const list = $('inboxList');
+  list.innerHTML = '<div class="panelEmpty">Loading…</div>';
+  try{
+    const response = await fetch('/mentions', { headers: bearer() });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not load mentions');
+    list.innerHTML = '';
+    if(!data.length){ list.innerHTML = '<div class="panelEmpty">Nobody has mentioned you yet. When someone @mentions you, it shows up here.</div>'; return; }
+    data.forEach(msg => {
+      cacheFromPayload(msg);
+      list.appendChild(buildMessageCard(msg, { where:roomDescription(msg.room), onOpen:() => { closePopouts(); openMessageLink(msg.id); } }));
+    });
+  }catch(err){ list.innerHTML = '<div class="panelEmpty">' + escapeHtml(err.message) + '</div>'; }
+}
+
 function alertForIncoming(msg, room){
+  if(msg && msg.user !== username && mentionsMe(msg) && !$('inboxPopout').classList.contains('open')) markInboxUnread(true);
   if(!shouldAlert(msg, room)) return;
   if(room !== currentRoom || document.hidden || !document.hasFocus()) playPing();
 }
@@ -3626,6 +3877,8 @@ function buildProfileCard(user, opts){
     inner.appendChild(holder);
   }
 
+  if(!opts.preview && user !== username) inner.appendChild(buildMutualSection(user));
+
   if(!opts.preview){
     const actions = document.createElement('div');
     actions.className = 'pcActions';
@@ -3717,22 +3970,61 @@ async function openProfilePopout(event, user, room, side){
   pop.appendChild(buildProfileCard(user, { room: room || currentRoom }));
   placePopout(pop, anchor, side || (anchor && anchor.id === 'userPanelInfo' ? 'above' : 'right'));
   pop.classList.add('open');
-  // refresh with the latest bio/status in the background
+  // refresh with the latest bio/status and what you have in common, in the background
   if(user !== username){
     try{
-      const response = await fetch('/profiles?users=' + encodeURIComponent(user), { headers: bearer() });
-      if(response.ok){
-        const data = await response.json();
-        if(data[user]){
-          cacheProfile(user, data[user]);
-          if(pop.classList.contains('open') && pop.dataset.user === user){
-            pop.innerHTML = '';
-            pop.appendChild(buildProfileCard(user, { room: room || currentRoom }));
-          }
-        }
+      const [profileRes, mutualRes] = await Promise.all([
+        fetch('/profiles?users=' + encodeURIComponent(user), { headers: bearer() }),
+        fetch('/users/' + encodeURIComponent(user) + '/mutual', { headers: bearer() })
+      ]);
+      if(profileRes.ok){
+        const data = await profileRes.json();
+        if(data[user]) cacheProfile(user, data[user]);
+      }
+      if(mutualRes.ok) mutualCache[user] = await mutualRes.json();
+      if(pop.classList.contains('open') && pop.dataset.user === user){
+        pop.innerHTML = '';
+        pop.appendChild(buildProfileCard(user, { room: room || currentRoom }));
+        placePopout(pop, anchor, side || 'right'); // it may have grown
       }
     }catch(e){}
   }
+}
+const mutualCache = {}; // username -> { servers:[{id,name,iconUrl}], friends:[username] }
+
+// "Mutual Servers" / "Mutual Friends" rows on someone else's profile card.
+function buildMutualSection(user){
+  const mutual = mutualCache[user];
+  const holder = document.createElement('div');
+  if(!mutual) return holder;
+  const addGroup = (label, items, build) => {
+    if(!items.length) return;
+    holder.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:label + ' — ' + items.length }));
+    const list = document.createElement('div');
+    list.className = 'pcMutualList';
+    items.slice(0, 8).forEach(item => list.appendChild(build(item)));
+    if(items.length > 8) list.appendChild(Object.assign(document.createElement('span'), { className:'pcMore', textContent:'+' + (items.length - 8) + ' more' }));
+    holder.appendChild(list);
+  };
+  addGroup('Mutual Servers', mutual.servers, srv => {
+    const row = document.createElement('button');
+    row.className = 'pcMutual';
+    const icon = serverIconEl(srv.name, srv.iconUrl);
+    icon.classList.add('xs');
+    row.appendChild(icon);
+    row.appendChild(document.createTextNode(srv.name));
+    row.onclick = () => { closePopouts(); if(serverById(srv.id)) switchServer(srv.id); };
+    return row;
+  });
+  addGroup('Mutual Friends', mutual.friends, friend => {
+    const row = document.createElement('button');
+    row.className = 'pcMutual';
+    row.appendChild(createAvatar(friend, 'xs'));
+    row.appendChild(document.createTextNode(displayNameFor(friend)));
+    row.onclick = e => openProfilePopout(e, friend);
+    return row;
+  });
+  return holder;
 }
 
 /* ============================ pins ============================ */
@@ -3752,6 +4044,12 @@ function buildMessageCard(msg, opts){
   card.appendChild(createAvatar(msg.user, 'sm'));
   const main = document.createElement('div');
   main.className = 'resultMain';
+  if(opts.where){
+    const where = document.createElement('div');
+    where.className = 'resultWhere';
+    where.textContent = opts.where;
+    main.appendChild(where);
+  }
   const head = document.createElement('div');
   head.className = 'resultHead';
   head.innerHTML = '<b></b><span></span>';
@@ -3780,7 +4078,7 @@ function buildMessageCard(msg, opts){
     }
     card.appendChild(actions);
   }else{
-    card.onclick = () => goToMessage(msg.id);
+    card.onclick = opts.onOpen || (() => goToMessage(msg.id));
   }
   return card;
 }
@@ -3855,28 +4153,41 @@ async function renderPins(){
 
 /* ============================ search ============================ */
 let searchQuery = '';
+let searchScope = 'here'; // 'here' | 'all'
+function setSearchScope(scope){
+  searchScope = scope;
+  document.querySelectorAll('.searchScope button').forEach(b => b.classList.toggle('active', b.dataset.scope === scope));
+  if(searchQuery) runSearch(searchQuery);
+}
 async function runSearch(query){
   query = String(query || '').trim();
-  if(!query || !currentRoom) return;
+  if(!query || (!currentRoom && searchScope === 'here')) return;
   searchQuery = query;
   const room = currentRoom;
+  const scope = searchScope;
   $('searchPanel').classList.add('open');
   $('members').classList.add('hidden');
   $('searchPanelTitle').textContent = 'Searching…';
   const holder = $('searchResults');
   holder.innerHTML = '';
   try{
-    const response = await fetch('/search?room=' + encodeURIComponent(room) + '&q=' + encodeURIComponent(query), { headers: bearer() });
+    const where = scope === 'all' ? 'scope=all' : 'room=' + encodeURIComponent(room);
+    const response = await fetch('/search?' + where + '&q=' + encodeURIComponent(query), { headers: bearer() });
     const data = await response.json();
     if(!response.ok) throw new Error(data.error || 'search failed');
-    if(room !== currentRoom || query !== searchQuery) return;
+    if(room !== currentRoom || query !== searchQuery || scope !== searchScope) return;
     $('searchPanelTitle').textContent = data.total.toLocaleString() + (data.total === 1 ? ' Result' : ' Results');
     if(!data.results.length){
       holder.innerHTML = '<div class="panelEmpty"><span class="big">⌕</span>No results. Try different words, or <b>from:username</b> to find someone\'s messages.</div>';
       return;
     }
     const term = query.replace(/(^|\s)from:\S+/i, ' ').trim();
-    data.results.forEach(msg => { cacheFromPayload(msg); holder.appendChild(buildMessageCard(msg, { highlight:term })); });
+    data.results.forEach(msg => {
+      cacheFromPayload(msg);
+      holder.appendChild(buildMessageCard(msg, scope === 'all'
+        ? { highlight:term, where:roomDescription(msg.room), onOpen:() => openMessageLink(msg.id) }
+        : { highlight:term }));
+    });
     if(data.total > data.results.length){
       const more = document.createElement('div');
       more.className = 'panelEmpty';
@@ -4308,6 +4619,319 @@ function addToBlockedRun(el){
   el.classList.add('blockedMsg');
   blockedRun.els.push(el);
   blockedRun.paint();
+}
+
+/* ============================ polls ============================ */
+const POLL_LENGTHS = [[1, '1 hour'], [4, '4 hours'], [8, '8 hours'], [24, '24 hours'], [72, '3 days'], [168, '1 week'], [0, 'No end']];
+
+function openAttachMenu(event){
+  showMenu(event, [
+    { label:'Upload a File', action:() => $('fileInput').click() },
+    { label:'Create Poll', action:openCreatePoll }
+  ]);
+}
+
+function openCreatePoll(){
+  if(!currentRoom){ toast('Open a channel or conversation first.'); return; }
+  openModal(
+    '<div class="modalHead"><h2>Create a poll</h2><p>Ask a question with up to 10 answers.</p></div>' +
+    '<div class="modalBody"><label class="formLabel" for="pollQuestion">Question</label>' +
+    '<input class="formInput" id="pollQuestion" placeholder="What should we play tonight?" maxlength="300">' +
+    '<label class="formLabel">Answers</label><div id="pollAnswers"></div>' +
+    '<button class="btn grey" id="pollAddAnswer" style="padding:6px 12px;margin:2px 0 16px 0">+ Add answer</button>' +
+    '<div class="rowFlex" style="gap:24px"><div><label class="formLabel" for="pollLength">Ends after</label><select class="formInput" id="pollLength" style="width:auto;margin:0"></select></div>' +
+    '<label class="rememberRow" style="margin:18px 0 0 0"><input type="checkbox" id="pollMultiple"> Allow more than one answer</label></div>' +
+    '<div class="modalMsg" id="modalMsg"></div></div>' +
+    '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="pollPost">Post Poll</button></div>'
+  );
+  const answers = $('pollAnswers');
+  function addAnswer(value){
+    if(answers.children.length >= 10) return;
+    const row = document.createElement('div');
+    row.className = 'pollAnswerRow';
+    const input = document.createElement('input');
+    input.className = 'formInput';
+    input.maxLength = 55;
+    input.placeholder = 'Answer ' + (answers.children.length + 1);
+    input.value = value || '';
+    const remove = document.createElement('button');
+    remove.className = 'panelBtn';
+    remove.textContent = '✕';
+    remove.title = 'Remove answer';
+    remove.setAttribute('aria-label', 'Remove answer');
+    remove.onclick = () => { if(answers.children.length > 2){ row.remove(); refresh(); } };
+    row.append(input, remove);
+    answers.appendChild(row);
+    refresh();
+    return input;
+  }
+  function refresh(){
+    $('pollAddAnswer').style.display = answers.children.length >= 10 ? 'none' : '';
+    [...answers.children].forEach((row, i) => { row.querySelector('input').placeholder = 'Answer ' + (i + 1); });
+  }
+  addAnswer(); addAnswer();
+  $('pollAddAnswer').onclick = () => { const input = addAnswer(); if(input) input.focus(); };
+  POLL_LENGTHS.forEach(([hours, label]) => {
+    const opt = document.createElement('option');
+    opt.value = String(hours);
+    opt.textContent = label;
+    $('pollLength').appendChild(opt);
+  });
+  $('pollLength').value = '24';
+  $('pollQuestion').focus();
+  $('pollPost').onclick = async () => {
+    const question = $('pollQuestion').value.trim();
+    const options = [...answers.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
+    if(!question){ modalMessage('Type a question.', true); return; }
+    if(options.length < 2){ modalMessage('Add at least two answers.', true); return; }
+    $('pollPost').disabled = true;
+    try{
+      const response = await fetch('/polls', { method:'POST', headers:authHeaders(), body:JSON.stringify({
+        room: currentRoom, question, options, allowMultiple: $('pollMultiple').checked, durationHours: Number($('pollLength').value)
+      }) });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'could not post the poll');
+      closeModal();
+    }catch(err){ modalMessage(err.message, true); $('pollPost').disabled = false; }
+  };
+}
+
+function pollTimeLeft(endsAt){
+  const ms = parseTime(endsAt) - Date.now();
+  if(ms <= 0) return '';
+  const mins = Math.ceil(ms / 60000);
+  if(mins < 60) return mins + 'm left';
+  const hours = Math.round(mins / 60);
+  return hours < 48 ? hours + 'h left' : Math.round(hours / 24) + 'd left';
+}
+
+function buildPollCard(data){
+  const poll = data.poll;
+  const card = document.createElement('div');
+  card.className = 'pollCard';
+  const ended = poll.ended || (poll.endsAt && parseTime(poll.endsAt) <= Date.now());
+  const mine = poll.options.filter(o => o.voters.includes(username)).map(o => o.id);
+  const q = document.createElement('div');
+  q.className = 'pollQuestion';
+  q.textContent = displayText(poll.question, data.room);
+  card.appendChild(q);
+  const hint = document.createElement('div');
+  hint.className = 'pollHint';
+  hint.textContent = ended ? 'Poll ended' : (poll.allowMultiple ? 'Select one or more answers' : 'Select one answer');
+  card.appendChild(hint);
+  const top = Math.max(0, ...poll.options.map(o => o.voters.length));
+  poll.options.forEach(option => {
+    const picked = mine.includes(option.id);
+    const count = option.voters.length;
+    const pct = poll.totalVoters ? Math.round(count / poll.totalVoters * 100) : 0;
+    const row = document.createElement('button');
+    row.className = 'pollOption' + (picked ? ' picked' : '') + (ended && count && count === top ? ' winner' : '');
+    row.disabled = ended || !!data.pending;
+    row.title = count ? option.voters.map(displayNameFor).join(', ') : 'No votes yet';
+    row.innerHTML = '<span class="pollBar"></span><span class="pollMark"></span><span class="pollText"></span><span class="pollCount"></span>';
+    row.querySelector('.pollBar').style.width = pct + '%';
+    row.querySelector('.pollText').textContent = displayText(option.text, data.room);
+    row.querySelector('.pollCount').textContent = count + ' · ' + pct + '%';
+    row.onclick = () => {
+      let next;
+      if(poll.allowMultiple) next = picked ? mine.filter(id => id !== option.id) : mine.concat(option.id);
+      else next = picked ? [] : [option.id];
+      votePoll(poll.id, next);
+    };
+    card.appendChild(row);
+  });
+  const foot = document.createElement('div');
+  foot.className = 'pollFoot';
+  const left = !ended && poll.endsAt ? ' · ' + pollTimeLeft(poll.endsAt) : '';
+  foot.appendChild(document.createTextNode(poll.totalVoters + (poll.totalVoters === 1 ? ' vote' : ' votes') + left));
+  if(!ended && (data.user === username || canModerateHere(data.room))){
+    const end = document.createElement('button');
+    end.className = 'linkBtn';
+    end.textContent = 'End Poll';
+    end.onclick = () => { if(confirm('End this poll now? Nobody will be able to vote after this.')) endPoll(poll.id); };
+    foot.appendChild(end);
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+async function votePoll(pollId, optionIds){
+  try{
+    const response = await fetch('/polls/' + pollId + '/vote', { method:'POST', headers:authHeaders(), body:JSON.stringify({ optionIds }) });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not vote');
+  }catch(err){ toast(err.message); }
+}
+async function endPoll(pollId){
+  try{
+    const response = await fetch('/polls/' + pollId + '/end', { method:'POST', headers:authHeaders(), body:'{}' });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not end the poll');
+  }catch(err){ toast(err.message); }
+}
+
+// Live votes (and endings) from anyone: swap the card in place.
+function applyPollUpdate(payload){
+  if(!payload || !payload.poll) return;
+  const item = timelineItems.find(i => i.kind === 'message' && i.data.id === payload.id);
+  if(item) item.data = Object.assign({}, item.data, { poll: payload.poll });
+  const el = document.querySelector('.message[data-message-id="' + payload.id + '"]');
+  const old = el && el.querySelector('.pollCard');
+  if(old) old.replaceWith(buildPollCard(Object.assign({}, el._item ? el._item.data : {}, { poll: payload.poll, room: payload.room })));
+  if(el && el._item) el._item.data = Object.assign({}, el._item.data, { poll: payload.poll });
+}
+
+// Polls with an end time flip to "ended" by themselves; repaint once a minute.
+setInterval(() => {
+  document.querySelectorAll('.message .pollCard').forEach(card => {
+    const el = card.closest('.message');
+    if(el && el._item && el._item.data.poll) card.replaceWith(buildPollCard(el._item.data));
+  });
+}, 60 * 1000);
+
+/* ============================ message links ============================ */
+// Links look like https://<site>/#m/<id>. Opening one (clicked in chat or
+// pasted into the address bar) finds the conversation, opens it, loads
+// older history if needed and highlights the message.
+function messageLink(id){ return location.origin + '/#m/' + id; }
+let pendingJump = null; // { room, id } - jump once that room's history loads
+
+async function openMessageLink(id){
+  id = Number(id);
+  if(!id || !token) return;
+  try{
+    const response = await fetch('/messages/' + id + '/locate', { headers: bearer() });
+    if(!response.ok){ toast('That message was deleted, or you can\'t see it.'); return; }
+    const where = await response.json();
+    if(where.room === currentRoom){ goToMessage(id); return; }
+    pendingJump = { room: where.room, id };
+    if(where.type === 'dm') openDM(where.other);
+    else if(where.type === 'group'){
+      if(!groupByRoom[where.room]) await loadGroups();
+      openGroup(where.room);
+    }else{
+      if(!channelByRoom(where.room)) await loadServers();
+      openChannel(where.room);
+    }
+  }catch(e){ toast('Could not open that message.'); }
+}
+
+function handleLocationHash(){
+  const match = /^#m\/(\d+)$/.exec(location.hash);
+  if(!match) return;
+  history.replaceState(null, '', location.pathname + location.search); // so the same link works again
+  openMessageLink(match[1]);
+}
+window.addEventListener('hashchange', handleLocationHash);
+
+/* ============================ quick switcher (Ctrl+K) ============================ */
+// Jump to any channel, DM, group chat or server by typing part of its
+// name. Start with # for channels only, @ for people, * for servers.
+let switcherIndex = 0;
+let switcherResults = [];
+
+function switcherEntries(){
+  const out = [];
+  servers.forEach(server => {
+    out.push({ kind:'server', label:server.name, sub:'Server', key:'server:' + server.id, go:() => switchServer(server.id) });
+    (server.channels || []).forEach(ch => out.push({
+      kind:'channel', label:ch.name, sub:server.name, room:ch.room, key:ch.room, go:() => openChannel(ch.room)
+    }));
+  });
+  groups.forEach(group => out.push({ kind:'group', label:group.name, sub:'Group chat', room:group.room, key:group.room, go:() => openGroup(group.room) }));
+  directoryUsers.filter(p => p.username !== username && !isBlocked(p.username)).forEach(p => out.push({
+    kind:'person', label:displayNameFor(p.username), sub:'@' + p.username, user:p.username, room:roomNameForDM(username, p.username),
+    key:'dm:' + p.username, go:() => openDM(p.username)
+  }));
+  return out;
+}
+
+function rankSwitcher(query){
+  let q = query.trim().toLowerCase();
+  let only = '';
+  if(q.startsWith('#')){ only = 'channel'; q = q.slice(1); }
+  else if(q.startsWith('@')){ only = 'person'; q = q.slice(1); }
+  else if(q.startsWith('*')){ only = 'server'; q = q.slice(1); }
+  const scored = [];
+  switcherEntries().forEach(entry => {
+    if(only && entry.kind !== only) return;
+    if(entry.room === currentRoom) return; // you're already there
+    const names = [entry.label.toLowerCase(), (entry.user || '').toLowerCase()];
+    let score;
+    if(!q) score = unread[entry.room] ? 0 : 3;
+    else if(names.some(n => n === q)) score = 0;
+    else if(names.some(n => n.startsWith(q))) score = 1;
+    else if(names.some(n => n.includes(q))) score = 2;
+    else return;
+    if(unread[entry.room]) score -= 0.5;
+    scored.push({ entry, score });
+  });
+  scored.sort((a, b) => a.score - b.score || a.entry.label.localeCompare(b.entry.label));
+  return scored.slice(0, 12).map(s => s.entry);
+}
+
+function openSwitcher(){
+  if(!token || settingsOpen()) return;
+  closePopouts();
+  hideContextMenu();
+  $('switcher').classList.add('open');
+  const input = $('switcherInput');
+  input.value = '';
+  renderSwitcher();
+  input.focus();
+}
+function closeSwitcher(){ $('switcher').classList.remove('open'); }
+function switcherOpen(){ return $('switcher').classList.contains('open'); }
+
+function switcherIcon(entry){
+  if(entry.kind === 'person') return createAvatar(entry.user, 'xs');
+  if(entry.kind === 'server'){ const s = serverById(Number(entry.key.slice(7))); return serverIconEl(entry.label, s && s.iconUrl); }
+  const icon = document.createElement('span');
+  icon.className = 'switcherGlyph';
+  icon.textContent = entry.kind === 'channel' ? '#' : '@';
+  return icon;
+}
+
+function renderSwitcher(){
+  switcherResults = rankSwitcher($('switcherInput').value);
+  switcherIndex = 0;
+  const list = $('switcherList');
+  list.innerHTML = '';
+  if(!switcherResults.length){
+    list.innerHTML = '<div class="switcherEmpty">No matches. Try # for channels, @ for people, * for servers.</div>';
+    return;
+  }
+  switcherResults.forEach((entry, i) => {
+    const row = document.createElement('button');
+    row.className = 'switcherRow' + (i === 0 ? ' active' : '');
+    row.setAttribute('role', 'option');
+    row.appendChild(switcherIcon(entry));
+    const name = document.createElement('span');
+    name.className = 'switcherName';
+    name.textContent = entry.label;
+    row.appendChild(name);
+    const sub = document.createElement('span');
+    sub.className = 'switcherSub';
+    sub.textContent = entry.sub;
+    row.appendChild(sub);
+    if(unread[entry.room]) row.appendChild(makeBadge(unread[entry.room]));
+    row.onmouseenter = () => moveSwitcher(i - switcherIndex);
+    row.onclick = () => chooseSwitcher(i);
+    list.appendChild(row);
+  });
+}
+function moveSwitcher(delta){
+  if(!switcherResults.length) return;
+  switcherIndex = (switcherIndex + delta + switcherResults.length) % switcherResults.length;
+  [...$('switcherList').children].forEach((row, i) => row.classList.toggle('active', i === switcherIndex));
+  const active = $('switcherList').children[switcherIndex];
+  if(active && active.scrollIntoView) active.scrollIntoView({ block:'nearest' });
+}
+function chooseSwitcher(i){
+  const entry = switcherResults[i];
+  if(!entry) return;
+  closeSwitcher();
+  entry.go();
 }
 
 /* ============================ older history + jump to present ============================ */
@@ -4911,6 +5535,7 @@ async function renderNotificationsSection(c){
     section('Desktop', switchRow('notifyToggle', 'Desktop notifications', 'While this site is open in a tab you\'re not looking at (even minimised). They always say which channel or DM they\'re from.', desktopNotificationsEnabled)) +
     section('Push', switchRow('pushToggle', 'Push notifications', 'Even with the browser fully closed — for direct messages and @mentions, delivered by your browser\'s push service.', pushNotificationsEnabled) +
       (pushNotificationsEnabled ? '<button class="btn grey" id="pushTestBtn" style="margin-top:12px">Send test notification</button>' : '')) +
+    section('Install the App', installAppHtml()) +
     section('Sounds', switchRow('soundToggle', 'Message sound', 'A short chime when a message arrives in a channel you\'re not looking at.', notifPrefs.sound) +
       '<div class="rangeRow" style="margin-top:12px"><span class="switchDesc" style="margin:0;min-width:60px">Volume</span><input type="range" min="5" max="100" id="soundVolume"><button class="btn grey" id="soundTest" style="padding:6px 12px">Test</button></div>') +
     section('Per-Channel Settings',
@@ -4953,6 +5578,7 @@ function renderKeybindsSection(c){
     ['Edit your last message', ['↑'], 'when the message box is empty'],
     ['Pick an @mention', ['Tab'], 'or Enter, while the list is open'],
     ['Move through @mentions', ['↑', '↓']],
+    ['Quick Switcher: jump to any channel, DM or server', ['Ctrl', 'K']],
     ['Search this conversation', ['Ctrl', 'F']],
     ['Close menus, settings or cancel a reply', ['Esc']],
     ['Paste an image or file to upload it', ['Ctrl', 'V']]
@@ -5299,6 +5925,7 @@ function renderServerRoles(c, sid){
       '<div><label class="formLabel">Role name</label><input class="settingsInput" data-f="name" maxlength="32" style="max-width:320px"></div>' +
       '<div><div class="fieldLabel" style="margin-bottom:6px">Role colour</div><div class="colorRow" data-f="colors"></div></div>' +
       switchRow('roleHoist' + role.id, 'Display role members separately', 'Online members with this role get their own section in the member list.', role.hoist, false) +
+      switchRow('roleMention' + role.id, 'Allow anyone to @mention this role', 'Admins can always mention every role. Everyone with the role gets notified.', role.mentionable, false) +
       '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete">Delete Role</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
     list.appendChild(editor);
     let color = role.color || '';
@@ -5306,7 +5933,11 @@ function renderServerRoles(c, sid){
     paintColorChoices(editor.querySelector('[data-f=colors]'), ROLE_PRESETS, color, picked => { color = picked; }, '#99aab5');
     edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
     editor.querySelector('[data-a=save]').onclick = async () => {
-      const body = { name: editor.querySelector('[data-f=name]').value.trim(), color, hoist: editor.querySelector('#roleHoist' + role.id).checked };
+      const body = {
+        name: editor.querySelector('[data-f=name]').value.trim(), color,
+        hoist: editor.querySelector('#roleHoist' + role.id).checked,
+        mentionable: editor.querySelector('#roleMention' + role.id).checked
+      };
       try{
         const response = await fetch('/servers/' + sid + '/roles/' + role.id + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
         const data = await response.json();
@@ -5539,6 +6170,34 @@ function urlBase64ToUint8Array(base64String){
   return output;
 }
 
+// Chrome/Edge/Android offer their own install prompt; keep it for our button.
+let installPrompt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; });
+window.addEventListener('appinstalled', () => { installPrompt = null; toast('Chat installed'); });
+function isInstalledApp(){ return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
+function installAppHtml(){
+  let body;
+  if(isInstalledApp()) body = '<div class="switchDesc">You\'re using the installed app.</div>';
+  else if(isAppleMobileBrowser()) body = '<div class="switchDesc">On iPhone or iPad: tap <b>Share</b> → <b>Add to Home Screen</b>, then open Chat from your Home Screen. That\'s also needed for push notifications on iPhone.</div>';
+  else if(installPrompt) body = '<div class="switchDesc" style="margin-bottom:10px">Get Chat in its own window, with an icon on your desktop or home screen.</div><button class="btn" onclick="installApp()">Install App</button>';
+  else body = '<div class="switchDesc">Get Chat in its own window: use your browser\'s menu → <b>Install</b> (or <b>Add to Home Screen</b> on a phone). Not every browser supports this.</div>';
+  return body;
+}
+async function installApp(){
+  if(!installPrompt) return;
+  installPrompt.prompt();
+  await installPrompt.userChoice.catch(() => {});
+  installPrompt = null;
+  rerenderSettingsSection();
+}
+
+// Safari (or any browser) on iPhone/iPad, NOT running as an installed app.
+function isAppleMobileBrowser(){
+  const ua = navigator.userAgent || '';
+  const appleMobile = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return appleMobile && !isInstalledApp();
+}
+
 async function setPushNotifications(enabled, toggleEl){
   if(!enabled){
     try{
@@ -5555,7 +6214,10 @@ async function setPushNotifications(enabled, toggleEl){
     return;
   }
   if(!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined'){
-    toast('Your browser does not support push notifications');
+    // iPhones/iPads only allow web push for sites added to the Home Screen
+    toast(isAppleMobileBrowser()
+      ? 'On iPhone/iPad, first tap Share → Add to Home Screen, then open Chat from your Home Screen and turn this on there'
+      : 'Your browser does not support push notifications');
     if(toggleEl) toggleEl.checked = false;
     return;
   }
@@ -5831,10 +6493,20 @@ let mentionActiveIndex = 0;
 
 function mentionCandidates(query){
   const q = query.toLowerCase();
-  return currentMembersList
+  const people = currentMembersList
     .filter(m => m.username !== username)
     .filter(m => m.username.toLowerCase().startsWith(q) || (m.displayName || '').toLowerCase().startsWith(q))
-    .slice(0, 8);
+    .slice(0, 8)
+    .map(m => Object.assign({ type:'user' }, m));
+  const found = view === 'server' ? channelByRoom(currentRoom) : null;
+  if(!found) return people;
+  const admin = found.server.isServerAdmin;
+  const extra = [];
+  if(admin && 'everyone'.startsWith(q)) extra.push({ type:'everyone' });
+  (found.server.roles || []).forEach(role => {
+    if((admin || role.mentionable) && role.name.toLowerCase().startsWith(q)) extra.push({ type:'role', role });
+  });
+  return people.concat(extra).slice(0, 10);
 }
 
 function updateMentionState(){
@@ -5858,6 +6530,19 @@ function renderMentionAutocomplete(candidates){
   candidates.forEach((m, i) => {
     const row = document.createElement('div');
     row.className = 'mentionItem' + (i === mentionActiveIndex ? ' active' : '');
+    if(m.type !== 'user'){
+      const label = document.createElement('span');
+      label.className = 'mentionName';
+      label.textContent = m.type === 'everyone' ? '@everyone' : '@' + m.role.name;
+      if(m.type === 'role' && m.role.color) label.style.color = m.role.color;
+      const hint = document.createElement('span');
+      hint.className = 'mentionUsername';
+      hint.textContent = m.type === 'everyone' ? 'Notify everyone in this server' : 'Notify everyone with this role';
+      row.append(label, hint);
+      row.onmousedown = e => { e.preventDefault(); selectMention(m); };
+      box.appendChild(row);
+      return;
+    }
     row.appendChild(createAvatar(m.username, 'sm'));
     const name = document.createElement('span');
     name.className = 'mentionName';
@@ -5869,7 +6554,7 @@ function renderMentionAutocomplete(candidates){
       uname.textContent = '@' + m.username;
       row.appendChild(uname);
     }
-    row.onmousedown = e => { e.preventDefault(); selectMention(m.username); };
+    row.onmousedown = e => { e.preventDefault(); selectMention(m); };
     box.appendChild(row);
   });
   box._candidates = candidates;
@@ -5892,13 +6577,15 @@ function moveMentionSelection(delta){
   renderMentionAutocomplete(candidates);
 }
 
-function selectMention(uname){
+function selectMention(candidate){
   if(!mentionState) return;
   const el = $('messageInput');
   const value = el.value;
   const before = value.slice(0, mentionState.start);
   const after = value.slice(mentionState.end);
-  const inserted = '@' + uname + ' ';
+  const inserted = candidate.type === 'everyone' ? '@everyone '
+    : candidate.type === 'role' ? '<@&' + candidate.role.id + '> '
+    : '@' + candidate.username + ' ';
   el.value = before + inserted + after;
   const cursor = before.length + inserted.length;
   closeMentionAutocomplete();
@@ -5915,7 +6602,7 @@ input.addEventListener('keydown', e => {
     const candidates = box._candidates || [];
     if(candidates.length && (e.key === 'Tab' || e.key === 'Enter')){
       e.preventDefault();
-      selectMention(candidates[mentionActiveIndex].username);
+      selectMention(candidates[mentionActiveIndex]);
       return;
     }
     if(e.key === 'ArrowDown'){ e.preventDefault(); moveMentionSelection(1); return; }
@@ -5989,7 +6676,7 @@ document.addEventListener('click', e => {
   hideEmojiPicker();
   if(!e.target.closest || !e.target.closest('.popout')) closePopouts();
 });
-['pinsPopout','profilePopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
+['pinsPopout','profilePopout','inboxPopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
 window.addEventListener('resize', () => { hideContextMenu(); hideEmojiPicker(); });
 window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); });
 window.addEventListener('blur', () => { isFocused = false; });
@@ -5999,6 +6686,18 @@ $('overlay').addEventListener('click', e => { if(e.target.id === 'overlay') clos
 $('lightbox').addEventListener('click', e => { if(e.target.id === 'lightbox') closeLightbox(); });
 
 document.addEventListener('keydown', e => {
+  if((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k' && token){
+    e.preventDefault();
+    if(switcherOpen()) closeSwitcher(); else openSwitcher();
+    return;
+  }
+  if(switcherOpen()){
+    if(e.key === 'Escape'){ e.preventDefault(); closeSwitcher(); }
+    else if(e.key === 'ArrowDown'){ e.preventDefault(); moveSwitcher(1); }
+    else if(e.key === 'ArrowUp'){ e.preventDefault(); moveSwitcher(-1); }
+    else if(e.key === 'Enter'){ e.preventDefault(); chooseSwitcher(switcherIndex); }
+    return;
+  }
   if(e.key === 'Escape'){
     if($('lightbox').classList.contains('open')) closeLightbox();
     else if($('overlay').classList.contains('open')) closeModal();
@@ -6013,8 +6712,13 @@ document.addEventListener('keydown', e => {
   }
 });
 
+$('switcherInput').addEventListener('input', renderSwitcher);
 $('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); login(); } });
 $('username').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('password').focus(); } });
+
+// The service worker is needed for the app to be installable (and for
+// push); registering it again when it already is costs nothing.
+if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 // signed in on this device before? pick up where you left off
 resumeSession();

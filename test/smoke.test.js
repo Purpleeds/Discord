@@ -186,3 +186,45 @@ test('server customisation: roles, channel rules and welcome messages', async ()
 
   assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
 });
+
+test('batch 1: polls, message links, search everywhere, mentions, mutuals', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Batch1 ' + tag })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  const room = s.channels[0].room;
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  await emit(sockets.a, 'joinRoom', room);
+  await emit(sockets.b, 'joinRoom', room);
+
+  // polls: single choice, live results, ending
+  const poll = (await api(tokens.a, '/polls', { room, question: 'Best?', options: ['x', 'y'], durationHours: 24 })).data;
+  const [x, y] = poll.poll.options.map(o => o.id);
+  assert.equal((await api(tokens.b, `/polls/${poll.poll.id}/vote`, { optionIds: [x, y] })).status, 400);
+  assert.equal((await api(tokens.b, `/polls/${poll.poll.id}/vote`, { optionIds: [x] })).data.poll.totalVoters, 1);
+  assert.equal((await api(tokens.c, `/polls/${poll.poll.id}/vote`, { optionIds: [y] })).status, 404, 'outsiders cannot vote');
+  assert.equal((await api(tokens.b, `/polls/${poll.poll.id}/end`, {})).status, 403);
+  assert.equal((await api(tokens.a, `/polls/${poll.poll.id}/end`, {})).data.poll.ended, true);
+
+  // message links resolve only for people who can see the message
+  const word = 'quokka' + tag;
+  const sent = await emit(sockets.a, 'message', { room, text: word + ' @everyone' });
+  assert.equal((await api(tokens.b, `/messages/${sent.id}/locate`)).data.room, room);
+  assert.equal((await api(tokens.c, `/messages/${sent.id}/locate`)).status, 404);
+
+  // search everywhere never leaks other people's servers
+  assert.equal((await api(tokens.b, '/search?scope=all&q=' + word)).data.total, 1);
+  assert.equal((await api(tokens.c, '/search?scope=all&q=' + word)).data.total, 0);
+
+  // @everyone pings only from owner/admins; it reaches the inbox
+  const history = (await api(tokens.b, '/messages?room=' + encodeURIComponent(room))).data;
+  assert.equal(history.find(m => m.id === sent.id).mentionsEveryone, true);
+  const fromMember = await emit(sockets.b, 'message', { room, text: 'hi @everyone' });
+  const again = (await api(tokens.a, '/messages?room=' + encodeURIComponent(room))).data;
+  assert.equal(again.find(m => m.id === fromMember.id).mentionsEveryone, false);
+  assert.ok((await api(tokens.b, '/mentions')).data.some(m => m.id === sent.id));
+
+  // mutual servers (the original server is left out)
+  const mutual = (await api(tokens.a, `/users/${names.b}/mutual`)).data;
+  assert.deepEqual(mutual.servers.map(m => m.id), [sid]);
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});

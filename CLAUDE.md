@@ -38,6 +38,11 @@ off there (with anything learned) when they ship.
 - History queries (`getMessagesForRoom`, `getMessagesBefore`) list their
   columns explicitly - a new `messages` column must be added there too,
   or it silently disappears on every reload (live events use `SELECT *`).
+- `@everyone` / `@role` pings are decided on the server (`mentionFlags()`)
+  and stored on the message (`mentions_everyone`, `mention_role_ids`); the
+  client trusts those flags, never the raw text.
+- Anything that reads across many rooms (search everywhere, the mentions
+  inbox) must go through `readableRoomsClause()` so it can't leak rooms.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

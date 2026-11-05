@@ -10,27 +10,35 @@ things stand.
 security or permissions, or many parts of the app), `xhigh` / `max` (a
 large, new system - also split it over several sessions).
 
-## Batch 1 - quick wins
+## Batch 1 - quick wins (done)
 
-- [ ] **1. Installable app (PWA)** - `low`
+- [x] **1. Installable app (PWA)** - `low` - *done Nov 2026*
   Web app manifest + icons so phones/computers can "install" the site.
   Also makes push notifications work on iPhone (iOS only allows web push
   for sites added to the home screen). Notifications must still say they
   come from this chat app (see CLAUDE.md).
-- [ ] **2. Video and audio players in chat** - `low`
-  Uploaded video/audio currently shows as a plain file card.
-- [ ] **3. Polls** - `medium`
-  Question + options, one or multiple choice, live results, optional end time.
-- [ ] **4. Message links + Quick Switcher (Ctrl+K)** - `medium`
-  "Copy Message Link" on any message, links jump to it (loading older
-  history if needed). Ctrl+K to jump to any channel, DM, group or server.
-- [ ] **5. Search everywhere + mentions inbox** - `medium`
-  Search across every channel/DM you can access (respect access checks),
-  and an inbox listing recent messages that mention you.
-- [ ] **6. `@everyone` and `@role` mentions** - `medium`
-  `@everyone` limited to owner/admins. Watch push-notification fan-out
-  (don't spam a big server) and the per-channel notification levels.
-- [ ] **7. Mutual servers and friends on profile cards** - `low`
+  *Shipped as "Chat" with its own chat-bubble icon (`public/icons/`,
+  `public/manifest.webmanifest`), NOT as "Google" like the tab title -
+  an installed app must not impersonate another product. Settings >
+  Notifications has an Install button / iPhone instructions.*
+- [x] **2. Video and audio players in chat** - `low` - *done Nov 2026*
+  *Formats the browser can't play fall back to the download card.*
+- [x] **3. Polls** - `medium` - *done Nov 2026*
+  *A poll is a message with kind 'poll' (text = question) plus the polls /
+  poll_options / poll_votes tables. Created from the composer's + menu.
+  Votes broadcast as 'pollUpdated'. Works in channels, groups and DMs.*
+- [x] **4. Message links + Quick Switcher (Ctrl+K)** - `medium` - *done Nov 2026*
+  *Links are `/#m/<id>`; `GET /messages/:id/locate` returns 404 for
+  anything you can't see. Switcher supports # @ * prefixes.*
+- [x] **5. Search everywhere + mentions inbox** - `medium` - *done Nov 2026*
+  *Both use `readableRoomsClause()` in server.js - reuse it for anything
+  that reads across rooms. Inbox skips blocked users.*
+- [x] **6. `@everyone` and `@role` mentions** - `medium` - *done Nov 2026*
+  *Role mentions are stored as `<@&id>`. Whether a mention pings is
+  decided by the server at send time (`mentionFlags()`) and stored on the
+  message; non-pinging ones render as plain text. Group mention pushes
+  are capped at 100 offline people (`MAX_GROUP_MENTION_PUSHES`).*
+- [x] **7. Mutual servers and friends on profile cards** - `low` - *done Nov 2026*
 
 ## Batch 2 - bigger features
 
@@ -75,7 +83,7 @@ large, new system - also split it over several sessions).
 
 ## Already built (Nov 2026)
 
-DMs, group chats, servers with invites, text channels with topics,
+Batch 1 above, plus: DMs, group chats, servers with invites, text channels with topics,
 announcement channels, slowmode, channel reordering, editing/deleting,
 replies, pins, reactions, emoji picker, Markdown, file sharing (deleted
 after 6h), @mentions, per-conversation search, custom role colours,

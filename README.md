@@ -2,8 +2,9 @@
 
 A self-hosted, Discord-style chat app: servers and channels, DMs, group
 chats, voice and video calls, voice channels and screen sharing, friends
-and blocking, reactions, replies, file sharing, push notifications and a
-full settings screen.
+and blocking, reactions, replies, file sharing, link previews, webhooks,
+slash commands, reaction roles, push notifications and a full settings
+screen.
 
 - **Backend:** Node.js, Express, Socket.IO and Postgres (`server.js`)
 - **Frontend:** one file of plain HTML/CSS/JS (`public/index.html`), plus
@@ -31,6 +32,7 @@ tables itself on startup, so an empty database is all it needs.
 | `PGSSL` | no | Set to `false` for a local Postgres without SSL. |
 | `DATA_DIR` | no | Where shared files are stored (default: this folder). |
 | `RATE_LIMITS` | no | Set to `off` to disable rate limits (for tests only). |
+| `LINK_PREVIEW_TEST_HOSTS` | no | Tests only (ignored unless `RATE_LIMITS=off`): exact `host:port` pairs link previews may fetch even though they're private. |
 | `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
 | `TURN_USERNAME` / `TURN_CREDENTIAL` | no | Login for that TURN relay. |
 
@@ -46,6 +48,28 @@ needs a TURN relay (a paid or self-hosted service such as coturn or
 Cloudflare/Twilio TURN) set with the three variables above. Calls live in
 the server's memory, so a restart or redeploy ends them (people's apps
 rejoin automatically when the server comes back).
+
+### Webhooks
+
+Server admins make webhooks in Server Settings → Integrations. A webhook
+URL looks like `https://<your site>/api/webhooks/<id>/<token>` and accepts
+Discord's webhook JSON (`content`, `username`, `embeds`; add `?wait=true`
+to get the message back), so tools that post to Discord work by swapping
+the host:
+
+```bash
+curl -H "Content-Type: application/json" -d '{"content":"Build passed"}' https://<your site>/api/webhooks/<id>/<token>
+```
+
+The token is shown once; only its SHA-256 is stored. "New Link" resets it.
+
+### Link previews
+
+Links in messages get a preview card. The server fetches the page (so the
+linked site doesn't see who's reading) with SSRF protection: public
+addresses only (checked after DNS, connection pinned to the checked IP),
+default ports, at most 3 redirects (each re-checked), 6 seconds and 512 KB
+per page. See `fetchLinkPreview()` in server.js.
 
 ## Deploying
 
@@ -67,7 +91,8 @@ server icons, friends) is in Postgres.
 The smoke test starts its own copy of the server against a database you
 point it at and checks the main features end to end (accounts, messages,
 DMs, friends, blocking, upload safety, servers, private channels,
-threads, events and calls). Use a throwaway database: it
+threads, events, calls, webhooks, slash commands, reaction roles and
+link-preview SSRF protection). Use a throwaway database: it
 creates test accounts.
 
 ```bash

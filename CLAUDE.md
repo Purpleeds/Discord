@@ -3,6 +3,10 @@
 Self-hosted Discord-style chat app. See README.md for setup, env vars and
 deployment (Render web service from `main`, Postgres on Neon).
 
+**What to build next is in ROADMAP.md** - read it before starting new
+features, work through it in order unless asked otherwise, and tick items
+off there (with anything learned) when they ship.
+
 ## Layout
 - `server.js`: the whole backend (Express routes, Socket.IO handlers, schema).
 - `public/index.html`: the whole frontend (CSS, markup and JS in one file).

@@ -27,6 +27,13 @@ deployment (Render web service from `main`, Postgres on Neon).
 - Blocks live in the `blocks` table and are enforced on the server for DMs,
   DM uploads/typing, friend requests and mention pushes; the client only
   hides blocked users' channel messages.
+- Server roles (`server_roles`) are cosmetic: name colour and member-list
+  grouping. Permissions come only from `server_members.role`
+  (owner/admin/member). Slowmode and announcement channels are enforced
+  on the server in `channelPostBlock()`; owner/admins are exempt.
+- History queries (`getMessagesForRoom`, `getMessagesBefore`) list their
+  columns explicitly - a new `messages` column must be added there too,
+  or it silently disappears on every reload (live events use `SELECT *`).
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

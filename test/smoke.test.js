@@ -148,3 +148,41 @@ test('uploaded web pages are downloaded, never run on the app origin', async () 
   assert.equal(text.headers.get('content-disposition'), null);
   assert.equal(text.headers.get('x-content-type-options'), 'nosniff');
 });
+
+test('server customisation: roles, channel rules and welcome messages', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Smoke ' + tag })).data.id;
+  const server = async () => (await api(tokens.a, '/servers')).data.find(s => s.id === sid);
+  let s = await server();
+  const [general, random] = s.channels;
+  assert.equal((await api(tokens.a, `/servers/${sid}/update`, { description: 'hi', bannerColor: '#e91e63', systemChannelId: general.id })).status, 200);
+
+  // joining posts one welcome message in the chosen channel, and it shows
+  // up in history with its kind (a reload must not turn it into plain text)
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  const history = (await api(tokens.a, '/messages?room=' + encodeURIComponent(general.room))).data;
+  assert.deepEqual(history.map(m => [m.kind, m.user]), [['join', names.b]]);
+
+  // roles: only managers create/assign; members see them on the list
+  assert.equal((await api(tokens.b, `/servers/${sid}/roles`, { name: 'x' })).status, 403);
+  const role = (await api(tokens.a, `/servers/${sid}/roles`, { name: 'Mods', color: '#3ba55c', hoist: true })).data;
+  assert.equal((await api(tokens.a, `/servers/${sid}/members/${names.b}/roles`, { roleIds: [role.id] })).status, 200);
+  const members = (await api(tokens.b, `/servers/${sid}/members`)).data;
+  assert.deepEqual(members.find(m => m.username === names.b).roleIds, [role.id]);
+
+  // announcement channel + slowmode apply to members, not the owner
+  await api(tokens.a, `/servers/${sid}/channels/${random.id}/update`, { adminsOnly: true });
+  await api(tokens.a, `/servers/${sid}/channels/${general.id}/update`, { slowmode: 30 });
+  for (const room of [general.room, random.room]) {
+    await emit(sockets.a, 'joinRoom', room);
+    await emit(sockets.b, 'joinRoom', room);
+  }
+  assert.match((await emit(sockets.b, 'message', { room: random.room, text: 'hi' })).error, /Only admins/);
+  assert.ok((await emit(sockets.a, 'message', { room: random.room, text: 'news' })).id);
+  assert.ok((await emit(sockets.b, 'message', { room: general.room, text: 'one' })).id);
+  assert.match((await emit(sockets.b, 'message', { room: general.room, text: 'two' })).error, /Slowmode/);
+  assert.ok((await emit(sockets.a, 'message', { room: general.room, text: 'owner 1' })).id);
+  assert.ok((await emit(sockets.a, 'message', { room: general.room, text: 'owner 2' })).id);
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});

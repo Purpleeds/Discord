@@ -818,6 +818,30 @@ input[type=color]::-webkit-color-swatch{border:2px dashed var(--border-strong);}
   .addFriendForm .btn{flex:1;}
 }
 
+/* ---------------- server customisation ---------------- */
+#sidebarHeader.hasBanner{
+  height:120px;flex-basis:120px;align-items:flex-end;padding-bottom:12px;color:#fff;
+  background-size:cover;background-position:center;text-shadow:0 1px 3px rgba(0,0,0,.55);
+}
+#sidebarHeader.hasBanner:hover{filter:brightness(1.06);}
+.bannerPreview{
+  width:100%;max-width:340px;height:120px;border-radius:8px;display:flex;align-items:flex-end;padding:12px 16px;
+  font-weight:600;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.55);background-size:cover;background-position:center;
+}
+.channel .hash svg,.chIcon svg{display:block;}
+.chIcon{font-size:20px;color:var(--text-muted);width:20px;display:flex;justify-content:center;}
+.roleDot{width:14px;height:14px;border-radius:50%;flex:0 0 14px;}
+.moveBtns{display:flex;gap:4px;}
+.manageRow .moveBtns .btn{padding:6px 9px;}
+.moveBtns .btn:disabled{opacity:.35;cursor:default;}
+.message.systemMessage{padding-top:4px;padding-bottom:4px;}
+.systemMessage .msgGutter{color:var(--green);padding-top:3px;}
+.systemText{color:var(--text-muted);font-size:var(--chat-font);line-height:1.4;}
+.systemText .msgAuthor{margin:0 1px;}
+.systemText .msgTime{margin-left:8px;}
+select.settingsInput{cursor:pointer;}
+html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;margin-right:8px;}
+
 </style>
 </head>
 
@@ -905,7 +929,7 @@ input[type=color]::-webkit-color-swatch{border:2px dashed var(--border-strong);}
     <div id="friendsView"></div>
     <div id="jumpBar" class="jumpBar"><span>You're viewing older messages</span><button onclick="jumpToPresent()">Jump to Present</button></div>
     <div id="typingIndicator"></div>
-    <div id="blockedBar" class="blockedBar"><span>You can't send messages to a user you have blocked.</span><button class="btn grey" onclick="unblockUser(activeDMUser)">Unblock</button></div>
+    <div id="blockedBar" class="blockedBar"><span id="composerNoticeText">You can't send messages to a user you have blocked.</span><button class="btn grey" id="composerNoticeBtn" onclick="unblockUser(activeDMUser)">Unblock</button></div>
     <div id="composerArea">
       <div id="mentionAutocomplete" class="mentionAutocomplete"></div>
       <div id="composerBox">
@@ -1034,6 +1058,7 @@ let emojiContext = null;
 let membersVisible = true;
 let dragDepth = 0;
 let serverRoles = {};           // serverId -> { username: 'owner'|'admin'|'member' }
+let memberRoleIds = {};         // serverId -> { username: [custom role ids] }
 
 const GROUP_WINDOW_MS = 7 * 60 * 1000;
 const AVATAR_PALETTE = ['#5865F2','#3BA55C','#F23F43','#FAA61A','#EB459E','#57F287','#9b59b6','#e67e22','#1abc9c','#7289DA'];
@@ -1359,12 +1384,20 @@ function connectSocket(){
       if(first) switchServer(first.id, true);
     }else if(currentRoom){
       const found = channelByRoom(currentRoom);
-      if(found && view === 'server') setHeader('#', found.channel.name, found.channel.topic || '');
+      if(found && view === 'server'){
+        setHeader('#', found.channel.name, found.channel.topic || '');
+        setComposerPlaceholder(channelPlaceholder(found));
+        updateBlockedBar();
+      }
       loadHistory(currentRoom);
     }
   });
   socket.on('groupsChanged', async () => { await loadGroups(); socket.emit('syncRooms'); renderSidebar(); });
   socket.on('friendsChanged', async () => { await loadFriends(); afterFriendsChanged(); });
+  socket.on('serverMembersChanged', data => {
+    if(data && memberCache.key === 'server:' + data.serverId) renderMembers(true);
+    if(settingsState.mode === 'server' && settingsState.section === 'members' && data && settingsState.ctx.serverId === data.serverId) rerenderSettingsSection();
+  });
   socket.on('adminNotice', data => toast(data && data.message ? data.message : 'Admin notice'));
 
   socket.on('globalCensorChanged', data => {
@@ -1440,6 +1473,12 @@ function handleIncoming(msg, kind){
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     return;
   }
+  if(msg.kind){
+    // "X joined" - shows up and counts as unread, but never pings
+    if(msg.room === currentRoom) appendItem({ kind, data:msg });
+    else bumpUnreadQuietly(msg.room);
+    return;
+  }
   maybeNotifyDesktop(msg, kind, '#' + roomLabel(msg.room) + ' - ' + displayNameFor(msg.user));
   alertForIncoming(msg, msg.room);
   if(msg.room === currentRoom){
@@ -1483,6 +1522,13 @@ function maybeNotifyDesktop(msg, kind, title, room){
     const note = new Notification(title, { body });
     note.onclick = () => { window.focus(); note.close(); };
   }catch(e){}
+}
+
+function bumpUnreadQuietly(room){
+  if(levelFor(room) === 'none') return;
+  unread[room] = (unread[room] || 0) + 1;
+  renderSidebar();
+  renderRail();
 }
 
 function bumpUnread(room, msg){
@@ -1699,6 +1745,7 @@ function renderSidebar(){
   if(view === 'dm'){
     $('sidebarTitle').textContent = 'Direct Messages';
     $('sidebarChev').textContent = '';
+    paintSidebarBanner(null);
 
     const friendsRow = document.createElement('div');
     friendsRow.className = 'dmRow' + (friendsOpen ? ' active' : '');
@@ -1797,6 +1844,7 @@ function renderSidebar(){
   if(!server) return;
   $('sidebarTitle').textContent = server.name;
   $('sidebarChev').textContent = '⌄';
+  paintSidebarBanner(server);
 
   const title = document.createElement('div');
   title.className = 'sectionTitle';
@@ -1814,8 +1862,8 @@ function renderSidebar(){
     const count = unread[channel.room] || 0;
     const item = document.createElement('div');
     item.className = 'channel' + (currentRoom === channel.room && view === 'server' ? ' active' : '') + (count ? ' unread' : '') + (levelFor(channel.room) === 'none' ? ' muted' : '');
-    item.title = channel.topic || '';
-    item.innerHTML = '<span class="hash">#</span>';
+    item.title = channel.topic || (channel.adminsOnly ? 'Announcement channel' : '');
+    item.innerHTML = '<span class="hash">' + (channel.adminsOnly ? ICON_ANNOUNCE_SVG : '#') + '</span>';
     const nameEl = document.createElement('span');
     nameEl.className = 'channelName';
     nameEl.textContent = channel.name;
@@ -1868,7 +1916,8 @@ function openChannel(room, silent){
   const name = found ? found.channel.name : room;
   if(found) currentServerId = found.server.id;
   setHeader('#', name, found && found.channel.topic ? found.channel.topic : '');
-  setComposerPlaceholder('Message #' + name);
+  if(found && found.channel.adminsOnly) $('headerIcon').innerHTML = ICON_ANNOUNCE_SVG.replace('width="18" height="18"', 'width="22" height="22"');
+  setComposerPlaceholder(found ? channelPlaceholder(found) : 'Message #' + name);
   enterRoom(room);
   if(!silent) $('sidebar').classList.remove('open');
 }
@@ -1977,8 +2026,10 @@ function renderChannelIntro(){
   let text = '';
   if(view === 'server'){
     const name = roomLabel(currentRoom);
+    const found = channelByRoom(currentRoom);
     title = 'Welcome to #' + name + '!';
     text = 'This is the start of the #' + name + ' channel.';
+    if(found && found.server.description) text += ' ' + found.server.description;
   }else if(currentGroupRoom){
     icon = '@';
     const group = groupByRoom[currentGroupRoom];
@@ -1998,6 +2049,7 @@ function shouldGroup(item, prev){
   if(!prev) return false;
   if(appearance.compact) return false; // compact mode puts a name on every line, like Discord's
   if(prev.data.user !== item.data.user) return false;
+  if(item.data.kind || prev.data.kind) return false; // system messages stand alone
   if(item.kind === 'message' && item.data.replyTo) return false;
   const gap = parseTime(item.data.createdAt) - parseTime(prev.data.createdAt);
   return gap >= 0 && gap < GROUP_WINDOW_MS;
@@ -2120,8 +2172,57 @@ function censorRenderedElement(el, room){
   nodes.forEach(n => { n.nodeValue = censorText(n.nodeValue); });
 }
 
+// Discord-style rotating welcome lines; picked by message id so a given
+// join always reads the same for everyone.
+const JOIN_LINES = [
+  ['', ' just joined the server.'],
+  ['Welcome, ', '. Say hi!'],
+  ['', ' hopped into the server.'],
+  ['Everyone welcome ', '!'],
+  ['Glad you\'re here, ', '.'],
+  ['', ' just showed up.']
+];
+function buildJoinMessageEl(item){
+  const data = item.data;
+  const wrap = document.createElement('div');
+  wrap.className = 'message first systemMessage';
+  wrap.dataset.messageId = data.id;
+  wrap._item = item;
+  const gutter = document.createElement('div');
+  gutter.className = 'msgGutter';
+  gutter.innerHTML = '<svg class="joinArrow" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M3 11h13.6l-4.3-4.3 1.4-1.4L20.4 12l-6.7 6.7-1.4-1.4 4.3-4.3H3z"/></svg>';
+  wrap.appendChild(gutter);
+  const body = document.createElement('div');
+  body.className = 'msgBody';
+  const line = document.createElement('div');
+  line.className = 'systemText';
+  const [before, after] = JOIN_LINES[Math.abs(Number(data.id) || 0) % JOIN_LINES.length];
+  const name = document.createElement('span');
+  name.className = 'msgAuthor authorName';
+  name.dataset.user = data.user;
+  name.textContent = data.displayName || displayNameFor(data.user);
+  paintNameColor(name, data.user, data.room);
+  name.onclick = e => openProfilePopout(e, data.user, data.room);
+  name.oncontextmenu = e => showUserMenu(e, data.user, data.room);
+  line.append(before, name, after);
+  const time = document.createElement('span');
+  time.className = 'msgTime';
+  time.textContent = formatStamp(data.createdAt);
+  time.title = parseTime(data.createdAt).toLocaleString();
+  line.appendChild(time);
+  body.appendChild(line);
+  const reactions = document.createElement('div');
+  reactions.className = 'reactions';
+  body.appendChild(reactions);
+  paintReactions(reactions, data);
+  wrap.appendChild(body);
+  wrap.appendChild(buildActions(item));
+  return wrap;
+}
+
 function buildMessageEl(item, grouped){
   const data = item.data;
+  if(item.kind === 'message' && data.kind === 'join') return buildJoinMessageEl(item);
   const wrap = document.createElement('div');
   wrap.className = 'message' + (grouped ? ' grouped' : ' first') + (data.pending ? ' pending' : '');
   if(item.kind === 'message') wrap.dataset.messageId = data.id;
@@ -2173,6 +2274,7 @@ function buildMessageEl(item, grouped){
     author.className = 'msgAuthor authorName' + (isAdminUser(data.user) ? ' adminName' : '');
     author.dataset.user = data.user;
     author.textContent = data.displayName || displayNameFor(data.user);
+    paintNameColor(author, data.user, data.room);
     author.onclick = e => openProfilePopout(e, data.user, data.room);
     author.oncontextmenu = e => showUserMenu(e, data.user, data.room);
     head.appendChild(author);
@@ -2284,7 +2386,7 @@ function buildActions(item){
   if(item.kind === 'message'){
     bar.appendChild(toolbarButton(ICONS.react, 'Add Reaction', e => openEmojiPicker(e, 'reaction', liveData(e.currentTarget, data).id)));
     bar.appendChild(toolbarButton(ICONS.reply, 'Reply', e => startReply(liveData(e.currentTarget, data))));
-    if(data.user === username){
+    if(data.user === username && !data.kind){
       bar.appendChild(toolbarButton(ICONS.edit, 'Edit', e => startEdit(liveData(e.currentTarget, data))));
     }
     if(canPinHere(data.room)){
@@ -2841,16 +2943,42 @@ async function renderMembers(refetch){
       if(key.startsWith('server:')){
         const sid = Number(key.slice(7));
         serverRoles[sid] = {};
-        members.forEach(m => { serverRoles[sid][m.username] = m.role; });
+        memberRoleIds[sid] = {};
+        members.forEach(m => { serverRoles[sid][m.username] = m.role; memberRoleIds[sid][m.username] = m.roleIds || []; });
         refreshVisibleBadges();
+        refreshNameColors();
       }
     }catch(e){ return; }
   }
   if(memberCache.key !== key) return; // switched rooms while loading
   const members = memberCache.members;
   const isOnline = m => onlineUserList.includes(m.username);
-  paintMemberGroups(holder, members.filter(isOnline), members.filter(m => !isOnline(m)), memberCache.owner);
+  paintMemberGroups(holder, members.filter(isOnline), members.filter(m => !isOnline(m)), memberCache.owner, key.startsWith('server:') ? Number(key.slice(7)) : null);
   currentMembersList = members.map(m => ({ username:m.username, displayName:displayNameFor(m.username) }));
+}
+
+// Custom roles (name + colour) a member has in a server, highest first
+// (lowest position). Empty until that server's member list has loaded.
+function customRolesFor(user, serverId){
+  const server = serverById(serverId);
+  if(!server || !server.roles || !server.roles.length) return [];
+  const ids = (memberRoleIds[serverId] || {})[user] || [];
+  return server.roles.filter(r => ids.includes(r.id));
+}
+// A member's name colour = their highest role that has a colour, like Discord.
+function roleColorFor(user, room){
+  const found = room ? channelByRoom(room) : null;
+  if(!found) return '';
+  const top = customRolesFor(user, found.server.id).find(r => r.color);
+  return top ? top.color : '';
+}
+function paintNameColor(el, user, room){
+  el.dataset.colorUser = user;
+  el.dataset.colorRoom = room || '';
+  el.style.color = roleColorFor(user, room);
+}
+function refreshNameColors(){
+  document.querySelectorAll('[data-color-user]').forEach(el => { el.style.color = roleColorFor(el.dataset.colorUser, el.dataset.colorRoom); });
 }
 
 // A user's badge for a given room: global admin beats server owner beats
@@ -2888,22 +3016,28 @@ function refreshVisibleBadges(){
   });
 }
 
-function paintMemberGroups(holder, online, offline, owner){
+function paintMemberGroups(holder, online, offline, owner, serverId){
   holder.innerHTML = '';
-  if(online.length){
+  const group = (label, list, isOffline) => {
+    if(!list.length) return;
     const title = document.createElement('div');
     title.className = 'memberGroupTitle';
-    title.textContent = 'Online — ' + online.length;
+    title.textContent = label + ' — ' + list.length;
     holder.appendChild(title);
-    online.forEach(m => holder.appendChild(memberRow(m, owner)));
-  }
-  if(offline.length){
-    const title = document.createElement('div');
-    title.className = 'memberGroupTitle';
-    title.textContent = 'Offline — ' + offline.length;
-    holder.appendChild(title);
-    offline.forEach(m => holder.appendChild(memberRow(m, owner, true)));
-  }
+    list.forEach(m => holder.appendChild(memberRow(m, owner, isOffline)));
+  };
+  // Roles set to "display separately" get their own section for online
+  // members, in role order; each person appears under their highest one.
+  const server = serverId ? serverById(serverId) : null;
+  const hoisted = server && server.roles ? server.roles.filter(r => r.hoist) : [];
+  let rest = online;
+  hoisted.forEach(role => {
+    const inRole = rest.filter(m => (m.roleIds || []).includes(role.id));
+    rest = rest.filter(m => !inRole.includes(m));
+    group(role.name, inRole);
+  });
+  group('Online', rest);
+  group('Offline', offline, true);
 }
 
 function memberRow(member, owner, offline, room){
@@ -2918,6 +3052,7 @@ function memberRow(member, owner, offline, room){
   name.className = 'memberName authorName' + (owner && member.username === owner ? ' owner' : '');
   name.dataset.user = member.username;
   name.textContent = displayNameFor(member.username) || member.displayName;
+  if(!offline) paintNameColor(name, member.username, room || currentRoom);
   line.appendChild(name);
 
   const badgeInfo = isAdminUser(member.username)
@@ -3410,6 +3545,7 @@ function rolesFor(user, room){
     const roles = serverRoles[found.server.id] || {};
     if(found.server.owner === user) out.push({ label:'Server Owner', color:'#5865f2' });
     else if(roles[user] === 'admin') out.push({ label:'Server Admin', color:'#3ba55c' });
+    customRolesFor(user, found.server.id).forEach(r => out.push({ label:r.name, color:r.color || '#99aab5' }));
   }
   return out;
 }
@@ -3866,11 +4002,44 @@ function afterFriendsChanged(){
   }
 }
 
-// In a DM with someone you blocked, swap the composer for an unblock prompt.
+// Swap the composer for a notice where you can't post: a DM with someone
+// you blocked (with an Unblock button), or an announcement channel when
+// you're not an admin. The server enforces both; this just explains it.
 function updateBlockedBar(){
   const blocked = !friendsOpen && !!activeDMUser && isBlocked(activeDMUser);
-  $('blockedBar').classList.toggle('show', blocked);
-  if(currentRoom) setComposerEnabled(!blocked);
+  const found = !friendsOpen && view === 'server' && currentRoom ? channelByRoom(currentRoom) : null;
+  const readOnly = !!(found && found.channel.adminsOnly && !found.server.isServerAdmin);
+  $('composerNoticeText').textContent = blocked
+    ? 'You can\'t send messages to a user you have blocked.'
+    : 'This is an announcement channel - only admins can post here.';
+  $('composerNoticeBtn').style.display = blocked ? '' : 'none';
+  $('blockedBar').classList.toggle('show', blocked || readOnly);
+  if(currentRoom) setComposerEnabled(!(blocked || readOnly));
+}
+
+const ICON_ANNOUNCE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18 3.5a1 1 0 0 1 1.5.86v13.28A1 1 0 0 1 18 18.5L13 15.5H7l1.3 4.1a1 1 0 0 1-.95 1.3H6a1 1 0 0 1-.95-.68L3.4 15.2A3.5 3.5 0 0 1 4.5 8.5H13zM21 8a3 3 0 0 1 0 6z"/></svg>';
+function channelPlaceholder(found){
+  const ch = found.channel;
+  const slow = ch.slowmode && !found.server.isServerAdmin ? ' (slowmode: ' + slowmodeLabel(ch.slowmode) + ')' : '';
+  return 'Message #' + ch.name + slow;
+}
+function slowmodeLabel(seconds){
+  if(!seconds) return 'Off';
+  if(seconds < 60) return seconds + 's';
+  if(seconds < 3600) return (seconds / 60) + 'm';
+  return (seconds / 3600) + 'h';
+}
+
+// The banner (image and/or colour) fills the top of the channel list,
+// behind the server name - or nothing, for servers without one / DMs.
+function paintSidebarBanner(server){
+  const header = $('sidebarHeader');
+  const has = !!(server && (server.bannerUrl || server.bannerColor));
+  header.classList.toggle('hasBanner', has);
+  header.style.backgroundColor = has ? (server.bannerColor || 'var(--bg-tertiary)') : '';
+  header.style.backgroundImage = has && server.bannerUrl
+    ? 'linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,0) 60%), url("' + server.bannerUrl + '")'
+    : (has ? 'linear-gradient(to top, rgba(0,0,0,.35), rgba(0,0,0,0) 70%)' : '');
 }
 
 function openFriends(){
@@ -4811,6 +4980,7 @@ function openServerSettings(serverId, sectionKey){
     { title:server.name, items:[
       { key:'overview', label:'Overview', render:c => renderServerOverview(c, sid) },
       { key:'channels', label:'Channels', render:c => renderServerChannels(c, sid) },
+      { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
@@ -4838,63 +5008,171 @@ function serverIconEl(name, url){
   return icon;
 }
 
+// Preset swatches + a free colour picker. `fallback` is what the "no
+// colour" swatch looks like; onPick('') means "no colour".
+function paintColorChoices(holder, presets, current, onPick, fallback){
+  holder.innerHTML = '';
+  presets.forEach(color => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'colorDot' + (current === color ? ' active' : '');
+    b.style.background = color || fallback;
+    b.title = color || 'No colour';
+    b.setAttribute('aria-label', b.title);
+    b.onclick = () => { onPick(color); paintColorChoices(holder, presets, color, onPick, fallback); };
+    holder.appendChild(b);
+  });
+  const custom = document.createElement('input');
+  custom.type = 'color';
+  custom.title = 'Pick any colour';
+  custom.setAttribute('aria-label', 'Pick any colour');
+  custom.value = /^#[0-9a-f]{6}$/i.test(current) ? current : '#5865f2';
+  custom.oninput = () => { onPick(custom.value); holder.querySelectorAll('.colorDot').forEach(d => d.classList.remove('active')); };
+  holder.appendChild(custom);
+}
+
+function pickImageFile(onDone, onError){
+  const picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = 'image/*';
+  picker.onchange = async () => {
+    const file = picker.files && picker.files[0];
+    if(!file) return;
+    try{ onDone(await uploadImageForProfile(file)); }
+    catch(err){ onError(err.message); }
+  };
+  picker.click();
+}
+
 function renderServerOverview(c, sid){
   const server = serverById(sid);
   if(!server){ c.innerHTML = '<div class="panelEmpty">This server no longer exists.</div>'; return; }
-  const original = { name:server.name, iconUrl:server.iconUrl || '' };
+  const original = {
+    name:server.name, iconUrl:server.iconUrl || '', description:server.description || '',
+    bannerColor:server.bannerColor || '', bannerUrl:server.bannerUrl || '', systemChannelId:server.systemChannelId || 0
+  };
   let draft = Object.assign({}, original);
+  const canEdit = server.canManage;
   c.innerHTML =
     '<h2 class="settingsTitle">Server Overview</h2>' +
     section('', '<div class="iconPicker"><div id="ovIcon"></div><div><div class="switchDesc" style="margin:0 0 10px 0">We recommend a square image at least 512×512.</div>' +
       '<button class="btn" id="ovUpload">Upload Image</button> <button class="btn grey" id="ovRemove">Remove</button><div class="inlineMsg" id="ovMsg"></div></div></div>') +
     section('Server Name', '<input class="settingsInput" id="ovName" maxlength="60" style="max-width:420px">') +
+    section('Description', '<textarea class="settingsInput" id="ovDesc" maxlength="300" style="max-width:560px;min-height:80px" placeholder="What\'s this server about? Shown at the top of every channel."></textarea><div class="switchDesc" id="ovDescCount"></div>') +
+    section('Banner',
+      '<div class="bannerPreview" id="ovBannerPreview"><span id="ovBannerName"></span></div>' +
+      '<div class="switchDesc" style="margin:10px 0">Shown behind the server name at the top of the channel list. A wide image works best (at least 960×540).</div>' +
+      '<div class="rowFlex" style="gap:8px;margin-bottom:12px"><button class="btn" id="ovBannerUpload">Upload Banner</button><button class="btn grey" id="ovBannerRemove">Remove Image</button></div>' +
+      '<div class="fieldLabel" style="margin-bottom:6px">Banner colour</div><div class="colorRow" id="ovBannerColors"></div>') +
+    (server.isDefault ? '' : section('Welcome Messages',
+      '<label class="formLabel" for="ovSystem">Send a message when someone joins</label>' +
+      '<select class="settingsInput" id="ovSystem" style="max-width:320px"></select>' +
+      '<div class="switchDesc">Posts a "welcome" message in this channel when someone joins with an invite.</div>')) +
     section('Details',
       '<div class="fieldRow"><div><div class="fieldLabel">Owner</div><div class="fieldValue" id="ovOwner"></div></div></div>' +
-      '<div class="fieldRow"><div><div class="fieldLabel">Channels</div><div class="fieldValue">' + (server.channels || []).length + '</div></div></div>');
+      '<div class="fieldRow"><div><div class="fieldLabel">Channels</div><div class="fieldValue">' + (server.channels || []).length + '</div></div></div>' +
+      '<div class="fieldRow"><div><div class="fieldLabel">Roles</div><div class="fieldValue">' + (server.roles || []).length + '</div></div></div>');
   $('ovOwner').textContent = server.owner === 'system' ? 'Everyone (the original chat)' : displayNameFor(server.owner);
-  const canEdit = server.canManage;
+
   function paintIcon(){ const h = $('ovIcon'); h.innerHTML = ''; h.appendChild(serverIconEl(draft.name, draft.iconUrl)); }
+  function paintBanner(){
+    const box = $('ovBannerPreview');
+    box.style.backgroundColor = draft.bannerColor || 'var(--bg-tertiary)';
+    box.style.backgroundImage = draft.bannerUrl ? 'linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,0) 60%), url("' + draft.bannerUrl + '")' : '';
+    $('ovBannerName').textContent = draft.name || server.name;
+    $('ovBannerRemove').disabled = !canEdit || !draft.bannerUrl;
+  }
+  function paintCount(){ $('ovDescCount').textContent = (300 - draft.description.length) + ' characters left'; }
+  const keys = Object.keys(original);
   function changed(){
-    paintIcon();
-    if(draft.name !== original.name || draft.iconUrl !== original.iconUrl) markDirty({ save, reset }); else clearDirty();
+    paintIcon(); paintBanner(); paintCount();
+    if(keys.some(k => draft[k] !== original[k])) markDirty({ save, reset }); else clearDirty();
   }
   async function save(){
     if(!draft.name.trim()){ inlineMessage($('ovMsg'), 'The server needs a name.', true); return false; }
     try{
       const payload = { name:draft.name.trim() };
-      if(draft.iconUrl !== original.iconUrl) payload.iconUrl = draft.iconUrl;
+      ['iconUrl', 'description', 'bannerColor', 'bannerUrl', 'systemChannelId'].forEach(k => { if(draft[k] !== original[k]) payload[k] = draft[k]; });
       const response = await fetch('/servers/' + sid + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(payload) });
       const data = await response.json();
       if(!response.ok) throw new Error(data.error || 'could not save');
       await refreshServers();
-      const fresh = serverById(sid);
-      original.name = fresh ? fresh.name : draft.name;
-      original.iconUrl = fresh ? (fresh.iconUrl || '') : draft.iconUrl;
+      const fresh = serverById(sid) || server;
+      Object.assign(original, {
+        name:fresh.name, iconUrl:fresh.iconUrl || '', description:fresh.description || '',
+        bannerColor:fresh.bannerColor || '', bannerUrl:fresh.bannerUrl || '', systemChannelId:fresh.systemChannelId || 0
+      });
       draft = Object.assign({}, original);
       toast('Server updated');
       return true;
     }catch(err){ inlineMessage($('ovMsg'), err.message, true); return false; }
   }
-  function reset(){ draft = Object.assign({}, original); $('ovName').value = draft.name; paintIcon(); }
+  function reset(){
+    draft = Object.assign({}, original);
+    $('ovName').value = draft.name;
+    $('ovDesc').value = draft.description;
+    if($('ovSystem')) $('ovSystem').value = String(draft.systemChannelId || 0);
+    paintColorChoices($('ovBannerColors'), BANNER_PRESETS, draft.bannerColor, pickColor, 'var(--bg-tertiary)');
+    paintIcon(); paintBanner(); paintCount();
+  }
+  function pickColor(color){ draft.bannerColor = color; changed(); }
+
   $('ovName').value = draft.name;
-  $('ovName').disabled = !canEdit;
   $('ovName').oninput = e => { draft.name = e.target.value; changed(); };
-  $('ovUpload').disabled = $('ovRemove').disabled = !canEdit;
+  $('ovDesc').value = draft.description;
+  $('ovDesc').oninput = e => { draft.description = e.target.value; changed(); };
+  if($('ovSystem')){
+    const select = $('ovSystem');
+    select.innerHTML = '<option value="0">Don\'t send welcome messages</option>';
+    (server.channels || []).forEach(ch => {
+      const opt = document.createElement('option');
+      opt.value = String(ch.id);
+      opt.textContent = '#' + ch.name;
+      select.appendChild(opt);
+    });
+    select.value = String(draft.systemChannelId || 0);
+    select.onchange = () => { draft.systemChannelId = Number(select.value) || 0; changed(); };
+    select.disabled = !canEdit;
+  }
+  paintColorChoices($('ovBannerColors'), BANNER_PRESETS, draft.bannerColor, pickColor, 'var(--bg-tertiary)');
+  $('ovName').disabled = $('ovDesc').disabled = !canEdit;
+  $('ovUpload').disabled = $('ovRemove').disabled = $('ovBannerUpload').disabled = !canEdit;
+  if(!canEdit) $('ovBannerColors').querySelectorAll('button,input').forEach(el => { el.disabled = true; });
   $('ovRemove').onclick = () => { draft.iconUrl = ''; changed(); };
-  $('ovUpload').onclick = () => {
-    const picker = document.createElement('input');
-    picker.type = 'file';
-    picker.accept = 'image/*';
-    picker.onchange = async () => {
-      const file = picker.files && picker.files[0];
-      if(!file) return;
-      inlineMessage($('ovMsg'), 'Uploading…');
-      try{ draft.iconUrl = await uploadImageForProfile(file); inlineMessage($('ovMsg'), ''); changed(); }
-      catch(err){ inlineMessage($('ovMsg'), err.message, true); }
-    };
-    picker.click();
-  };
-  paintIcon();
+  $('ovUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickImageFile(url => { draft.iconUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
+  $('ovBannerRemove').onclick = () => { draft.bannerUrl = ''; changed(); };
+  $('ovBannerUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickImageFile(url => { draft.bannerUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
+  paintIcon(); paintBanner(); paintCount();
+}
+
+const SLOWMODE_CHOICES = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600];
+
+// ↑/↓ buttons for reorderable settings lists (channels, roles).
+function moveButtons(index, count, move){
+  const holder = document.createElement('div');
+  holder.className = 'moveBtns';
+  [['↑', 'Move up', index - 1], ['↓', 'Move down', index + 1]].forEach(([label, title, to]) => {
+    const b = document.createElement('button');
+    b.className = 'btn grey';
+    b.textContent = label;
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.disabled = to < 0 || to >= count;
+    b.onclick = () => move(to);
+    holder.appendChild(b);
+  });
+  return holder;
+}
+async function saveOrder(url, ids, from, to){
+  const order = ids.slice();
+  order.splice(to, 0, order.splice(from, 1)[0]);
+  try{
+    const response = await fetch(url, { method:'POST', headers:authHeaders(), body:JSON.stringify({ order }) });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not reorder');
+    await refreshServers();
+    rerenderSettingsSection();
+  }catch(err){ toast(err.message); }
 }
 
 function renderServerChannels(c, sid){
@@ -4905,16 +5183,19 @@ function renderServerChannels(c, sid){
     (server.canManage ? section('Create Channel', '<div class="rowFlex"><input class="settingsInput" id="newChName" placeholder="new-channel" maxlength="32" style="flex:1;min-width:200px"><button class="btn" id="newChBtn">Create Channel</button></div><div class="inlineMsg" id="newChMsg"></div>') : '') +
     section('Text Channels', '<div id="chList"></div>');
   const list = $('chList');
-  (server.channels || []).forEach(channel => {
+  const channels = server.channels || [];
+  channels.forEach((channel, index) => {
     const row = document.createElement('div');
     row.className = 'manageRow';
-    row.innerHTML = '<span style="font-size:20px;color:var(--text-muted)">#</span><div class="grow"><div class="rowTitle"></div><div class="rowSub"></div></div>';
+    row.innerHTML = '<span class="chIcon">' + (channel.adminsOnly ? ICON_ANNOUNCE_SVG : '#') + '</span><div class="grow"><div class="rowTitle"></div><div class="rowSub"></div></div>';
     row.querySelector('.rowTitle').textContent = channel.name;
-    row.querySelector('.rowSub').textContent = channel.topic || 'No topic';
+    const extras = [channel.adminsOnly ? 'Announcements' : '', channel.slowmode ? 'Slowmode ' + slowmodeLabel(channel.slowmode) : ''].filter(Boolean);
+    row.querySelector('.rowSub').textContent = [channel.topic || 'No topic'].concat(extras).join(' · ');
     const editor = document.createElement('div');
     editor.className = 'channelEditor';
     editor.style.display = 'none';
     if(server.canManage){
+      row.appendChild(moveButtons(index, channels.length, to => saveOrder('/servers/' + sid + '/channels/reorder', channels.map(c => c.id), index, to)));
       const edit = document.createElement('button');
       edit.className = 'btn grey';
       edit.textContent = 'Edit';
@@ -4924,18 +5205,33 @@ function renderServerChannels(c, sid){
       editor.innerHTML =
         '<div><label class="formLabel">Channel name</label><input class="settingsInput" data-f="name" maxlength="32"' + (isOriginal ? ' disabled title="The original channels keep their names"' : '') + '></div>' +
         '<div><label class="formLabel">Topic</label><textarea class="settingsInput" data-f="topic" maxlength="1024" style="min-height:60px" placeholder="Let everyone know how to use this channel"></textarea></div>' +
+        '<div><label class="formLabel">Slowmode</label><select class="settingsInput" data-f="slowmode" style="max-width:220px"></select>' +
+          '<div class="switchDesc">Members have to wait this long between messages. Admins aren\'t affected.</div></div>' +
+        switchRow('chAnn' + channel.id, 'Announcement channel', 'Only the owner and admins can post here. Everyone can still read and react.', channel.adminsOnly, false) +
         '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete"' + (isOriginal ? ' disabled title="The original channels can\'t be deleted"' : '') + '>Delete Channel</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
       editor.querySelector('[data-f=name]').value = channel.name;
       editor.querySelector('[data-f=topic]').value = channel.topic || '';
+      const slowSelect = editor.querySelector('[data-f=slowmode]');
+      SLOWMODE_CHOICES.forEach(sec => {
+        const opt = document.createElement('option');
+        opt.value = String(sec);
+        opt.textContent = sec ? slowmodeLabel(sec) : 'Off';
+        slowSelect.appendChild(opt);
+      });
+      slowSelect.value = String(channel.slowmode || 0);
       editor.querySelector('[data-a=save]').onclick = async () => {
-        const body = { topic: editor.querySelector('[data-f=topic]').value };
+        const body = {
+          topic: editor.querySelector('[data-f=topic]').value,
+          slowmode: Number(slowSelect.value) || 0,
+          adminsOnly: editor.querySelector('#chAnn' + channel.id).checked
+        };
         if(!isOriginal) body.name = editor.querySelector('[data-f=name]').value;
         try{
           const response = await fetch('/servers/' + sid + '/channels/' + channel.id + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
           const data = await response.json();
           if(!response.ok) throw new Error(data.error || 'could not save');
           await refreshServers();
-          if(currentRoom === channel.room){ const f = channelByRoom(channel.room); if(f) setHeader('#', f.channel.name, f.channel.topic); }
+          if(currentRoom === channel.room){ const f = channelByRoom(channel.room); if(f){ setHeader('#', f.channel.name, f.channel.topic); setComposerPlaceholder(channelPlaceholder(f)); updateBlockedBar(); } }
           toast('Channel saved');
           rerenderSettingsSection();
         }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
@@ -4960,6 +5256,105 @@ function renderServerChannels(c, sid){
       rerenderSettingsSection();
     }catch(err){ inlineMessage($('newChMsg'), err.message, true); }
   };
+}
+
+const ROLE_PRESETS = ['', '#1abc9c', '#2ecc71', '#3498db', '#9b59b6', '#e91e63', '#f1c40f', '#e67e22', '#e74c3c', '#95a5a6'];
+
+function renderServerRoles(c, sid){
+  const server = serverById(sid);
+  if(!server){ c.innerHTML = ''; return; }
+  const roles = server.roles || [];
+  c.innerHTML = '<h2 class="settingsTitle">Roles</h2>' +
+    '<div class="settingsSub">Roles give members a coloured name and can list them in their own section of the member list. ' +
+    'They\'re just for show: what people can do is still set by Owner and Admin (under Members).</div>' +
+    (server.canManage ? '<div class="rowFlex" style="margin-bottom:20px"><button class="btn" id="newRoleBtn">Create Role</button><span class="inlineMsg" id="newRoleMsg" style="margin:0"></span></div>' : '') +
+    section('Roles — ' + roles.length, '<div id="roleList"></div>');
+  const list = $('roleList');
+  if(!roles.length) list.innerHTML = '<div class="panelEmpty">No roles yet.' + (server.canManage ? ' Create one to give members a coloured name.' : '') + '</div>';
+  roles.forEach((role, index) => {
+    const row = document.createElement('div');
+    row.className = 'manageRow';
+    const dot = document.createElement('span');
+    dot.className = 'roleDot';
+    dot.style.background = role.color || '#99aab5';
+    row.appendChild(dot);
+    const info = document.createElement('div');
+    info.className = 'grow';
+    info.innerHTML = '<div class="rowTitle"></div><div class="rowSub"></div>';
+    info.querySelector('.rowTitle').textContent = role.name;
+    info.querySelector('.rowTitle').style.color = role.color || '';
+    info.querySelector('.rowSub').textContent = role.hoist ? 'Shown separately in the member list' : 'Shown with everyone else';
+    row.appendChild(info);
+    list.appendChild(row);
+    if(!server.canManage) return;
+    row.appendChild(moveButtons(index, roles.length, to => saveOrder('/servers/' + sid + '/roles/reorder', roles.map(r => r.id), index, to)));
+    const edit = document.createElement('button');
+    edit.className = 'btn grey';
+    edit.textContent = 'Edit';
+    row.appendChild(edit);
+    const editor = document.createElement('div');
+    editor.className = 'channelEditor';
+    editor.style.display = 'none';
+    editor.innerHTML =
+      '<div><label class="formLabel">Role name</label><input class="settingsInput" data-f="name" maxlength="32" style="max-width:320px"></div>' +
+      '<div><div class="fieldLabel" style="margin-bottom:6px">Role colour</div><div class="colorRow" data-f="colors"></div></div>' +
+      switchRow('roleHoist' + role.id, 'Display role members separately', 'Online members with this role get their own section in the member list.', role.hoist, false) +
+      '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete">Delete Role</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
+    list.appendChild(editor);
+    let color = role.color || '';
+    editor.querySelector('[data-f=name]').value = role.name;
+    paintColorChoices(editor.querySelector('[data-f=colors]'), ROLE_PRESETS, color, picked => { color = picked; }, '#99aab5');
+    edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+    editor.querySelector('[data-a=save]').onclick = async () => {
+      const body = { name: editor.querySelector('[data-f=name]').value.trim(), color, hoist: editor.querySelector('#roleHoist' + role.id).checked };
+      try{
+        const response = await fetch('/servers/' + sid + '/roles/' + role.id + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
+        const data = await response.json();
+        if(!response.ok) throw new Error(data.error || 'could not save');
+        await refreshServers();
+        toast('Role saved');
+        rerenderSettingsSection();
+      }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
+    };
+    editor.querySelector('[data-a=delete]').onclick = async () => {
+      if(!confirm('Delete the "' + role.name + '" role? Everyone who has it will lose it.')) return;
+      try{
+        const response = await fetch('/servers/' + sid + '/roles/' + role.id + '/delete', { method:'POST', headers:authHeaders(), body:'{}' });
+        const data = await response.json();
+        if(!response.ok) throw new Error(data.error || 'could not delete');
+        await refreshServers();
+        renderMembers(true);
+        toast('Role deleted');
+        rerenderSettingsSection();
+      }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
+    };
+  });
+  if($('newRoleBtn')) $('newRoleBtn').onclick = async () => {
+    try{
+      const response = await fetch('/servers/' + sid + '/roles', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name:'new role' }) });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'could not create role');
+      await refreshServers();
+      rerenderSettingsSection();
+      // open the new role's editor straight away so it can be named
+      const editors = document.querySelectorAll('#roleList .channelEditor');
+      const last = editors[editors.length - 1];
+      if(last){ last.style.display = 'grid'; const input = last.querySelector('[data-f=name]'); input.focus(); input.select(); }
+    }catch(err){ inlineMessage($('newRoleMsg'), err.message, true); }
+  };
+}
+
+// Toggle one custom role on a member, from the Members page's Roles menu.
+async function toggleMemberRole(sid, member, roleId){
+  const current = member.roleIds || [];
+  const next = current.includes(roleId) ? current.filter(id => id !== roleId) : current.concat(roleId);
+  try{
+    const response = await fetch('/servers/' + sid + '/members/' + encodeURIComponent(member.username) + '/roles', { method:'POST', headers:authHeaders(), body:JSON.stringify({ roleIds:next }) });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not change roles');
+    member.roleIds = data.roleIds;
+    rerenderSettingsSection();
+  }catch(err){ toast(err.message); }
 }
 
 async function renderServerMembers(c, sid){
@@ -4991,7 +5386,31 @@ async function renderServerMembers(c, sid){
       info.innerHTML = '<div class="rowTitle"></div><div class="rowSub"></div>';
       info.querySelector('.rowTitle').textContent = m.displayName || m.username;
       info.querySelector('.rowSub').textContent = '@' + m.username;
+      const roleIds = m.roleIds || [];
+      const theirRoles = (server.roles || []).filter(r => roleIds.includes(r.id));
+      if(theirRoles.length){
+        const chips = document.createElement('div');
+        chips.className = 'pcRoles';
+        chips.style.margin = '4px 0 0 0';
+        theirRoles.forEach(r => {
+          const pill = document.createElement('span');
+          pill.className = 'pcRole';
+          pill.innerHTML = '<i style="background:' + (r.color || '#99aab5') + '"></i>';
+          pill.appendChild(document.createTextNode(r.name));
+          chips.appendChild(pill);
+        });
+        info.appendChild(chips);
+      }
       row.appendChild(info);
+      if(server.canManage && (server.roles || []).length){
+        const rolesBtn = document.createElement('button');
+        rolesBtn.className = 'btn grey';
+        rolesBtn.textContent = 'Roles';
+        rolesBtn.onclick = e => showMenu(e, [{ header:'Roles for ' + (m.displayName || m.username) }].concat(
+          server.roles.map(r => ({ label:(roleIds.includes(r.id) ? '✓ ' : '\u2003') + r.name, action:() => toggleMemberRole(sid, m, r.id) }))
+        ));
+        row.appendChild(rolesBtn);
+      }
       const pill = document.createElement('span');
       pill.className = 'rolePill ' + m.role;
       pill.textContent = m.role;
@@ -5506,7 +5925,7 @@ input.addEventListener('keydown', e => {
   // Up arrow in an empty box edits your most recent message (like Discord)
   if(e.key === 'ArrowUp' && !input.value && !editingId){
     const mine = [...document.querySelectorAll('#messagesInner .message')].reverse()
-      .find(m => m._item && m._item.kind === 'message' && m._item.data.user === username && !m._item.data.pending);
+      .find(m => m._item && m._item.kind === 'message' && m._item.data.user === username && !m._item.data.pending && !m._item.data.kind);
     if(mine){ e.preventDefault(); startEdit(mine._item.data); return; }
   }
   if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }

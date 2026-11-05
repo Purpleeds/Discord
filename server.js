@@ -82,10 +82,19 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 
+// Neon's connection strings say sslmode=require. pg currently treats that as
+// verify-full (it checks Neon's certificate), but warns on every boot that
+// pg 9 will switch to libpq's weaker meaning (encrypt without checking who
+// you're talking to). Asking for verify-full explicitly keeps today's
+// behaviour after that upgrade, and silences the warning. An sslmode in the
+// URL overrides the `ssl` option below.
+const DATABASE_URL = process.env.DATABASE_URL.replace(/([?&]sslmode=)(?:prefer|require|verify-ca)(?=&|$)/, '$1verify-full');
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  // Render's managed Postgres requires SSL; local/self-hosted Postgres
-  // usually doesn't offer it. This accepts either without extra config.
+  connectionString: DATABASE_URL,
+  // For URLs without an sslmode: Render's managed Postgres requires SSL;
+  // local/self-hosted Postgres usually doesn't offer it. This accepts
+  // either without extra config.
   ssl: process.env.PGSSL === 'false' ? false : { rejectUnauthorized: false },
   // A sleeping Neon database takes a few seconds to wake; don't hang
   // forever if it never answers.

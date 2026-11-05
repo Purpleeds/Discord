@@ -33,8 +33,12 @@ tables itself on startup, so an empty database is all it needs.
 
 ## Deploying
 
-Render auto-deploys the `main` branch (build `npm install`, start
-`npm start`, health check `/healthz`). The database lives on Neon. See
+Render auto-deploys the `main` branch to the **Discords** web service
+(build `npm install`, start `npm start`, health check `/healthz`). The
+database is the Neon project `long-dew-25979383`; both are in Singapore,
+so keep them in the same region if either is ever recreated (every query
+crosses between them). Node is pinned to 22 via `engines` in
+package.json. See
 [RENDER_POSTGRES_SETUP.md](RENDER_POSTGRES_SETUP.md) for moving the
 database or setting it up from scratch.
 

@@ -1039,7 +1039,7 @@ const GROUP_WINDOW_MS = 7 * 60 * 1000;
 const AVATAR_PALETTE = ['#5865F2','#3BA55C','#F23F43','#FAA61A','#EB459E','#57F287','#9b59b6','#e67e22','#1abc9c','#7289DA'];
 const REACTION_EMOJIS = ['👍','👎','😂','❤️','🔥','👀','🎉','😮','😢','😡','✅','❌','🙏','💯','🤔','👏','🚀','😍','🥳','💀'];
 const COMPOSER_EMOJIS = ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','😋','😛','🤪','🤨','🧐','🤓','😎','🥳','😏','😒','😞','😔','😟','😕','🙁','😣','😖','😫','😩','🥺','😢','😭','😤','😠','😡','🤬','🤯','😳','🥵','🥶','😱','😨','😰','😥','🤗','🤔','🤭','🤫','🤥','😶','😐','😑','😬','🙄','😯','😦','😧','😮','😲','🥱','😴','🤤','😪','😵','🤐','🥴','🤢','🤮','🤧','😷','🤒','🤕','🤑','🤠','😈','👿','👹','👺','🤡','💩','👻','💀','☠️','👽','👾','🤖','🎃','😺','👋','🤚','✋','🖖','👌','🤏','✌️','🤞','🤟','🤘','🤙','👈','👉','👆','👇','☝️','👍','👎','✊','👊','🤛','🤜','👏','🙌','👐','🤲','🤝','🙏','💪','🦾','❤️','🧡','💛','💚','💙','💜','🖤','🤍','💔','❣️','💕','💞','💓','💗','💖','💘','💝','🔥','✨','⭐','🌟','💫','⚡','☄️','💥','🎉','🎊','🎈','🎁','🏆','🥇','🎮','🕹️','💻','📱','⌨️','🖥️','🎧','🎵','🎶','📷','🍕','🍔','🍟','🌭','🍿','🍩','🍪','🎂','☕','🍺','🚀','✈️','🚗','⚽','🏀','🎯','🎲','♥️','✅','❌','⚠️','❓','❗','💯','🔔','🔕','📌','📎','🔒','🔑'];
-const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|bmp)(\?[^\s]*)?$/i;
+const IMAGE_EXT = /\.(png|jpe?g|jfif|pjpeg|pjp|gif|webp|avif|apng|bmp|svg|ico|cur|tiff?|heic|heif)(\?[^\s]*)?$/i;
 
 const messagesEl = () => document.getElementById('messages');
 const innerEl = () => document.getElementById('messagesInner');
@@ -2329,14 +2329,16 @@ function appendLinkedImages(body, text){
   });
 }
 
-function buildImageWrap(url, name){
+// onFail runs if this browser can't draw the image (e.g. a HEIC photo in
+// Chrome); without one the preview just disappears.
+function buildImageWrap(url, name, onFail){
   const wrap = document.createElement('div');
   wrap.className = 'imgWrap';
   const img = document.createElement('img');
   img.src = url;
   img.alt = name || 'image';
   img.loading = 'lazy';
-  img.onerror = () => { wrap.remove(); };
+  img.onerror = () => { if(onFail) onFail(); else wrap.remove(); };
   wrap.appendChild(img);
   wrap.onclick = () => openLightbox(url, name || 'image');
   return wrap;
@@ -2348,7 +2350,8 @@ function buildAttachment(data){
   const isImage = (data.fileType || '').startsWith('image/') || IMAGE_EXT.test(data.fileName || '');
 
   if(isImage){
-    holder.appendChild(buildImageWrap(data.fileUrl, data.fileName));
+    // an image the browser can't show still gets a normal download card
+    holder.appendChild(buildImageWrap(data.fileUrl, data.fileName, () => holder.replaceChildren(buildFileCard(data))));
     const meta = document.createElement('div');
     meta.className = 'fileSizeText';
     meta.style.marginTop = '4px';
@@ -2357,6 +2360,11 @@ function buildAttachment(data){
     return holder;
   }
 
+  holder.appendChild(buildFileCard(data));
+  return holder;
+}
+
+function buildFileCard(data){
   const card = document.createElement('div');
   card.className = 'fileCard';
   const icon = document.createElement('div');
@@ -2382,8 +2390,7 @@ function buildAttachment(data){
   card.appendChild(icon);
   card.appendChild(meta);
   card.appendChild(download);
-  holder.appendChild(card);
-  return holder;
+  return card;
 }
 
 function fileEmoji(type, name){

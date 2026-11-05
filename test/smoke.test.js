@@ -138,6 +138,12 @@ test('uploaded web pages are downloaded, never run on the app origin', async () 
   const page = await upload('evil.HTML', 'text/html', '<script>alert(1)</script>');
   assert.match(page.headers.get('content-disposition') || '', /attachment/);
   assert.match(page.headers.get('content-security-policy') || '', /sandbox/);
+  // SVGs still open as pictures, but with scripts sandboxed off
+  const svg = await upload('logo.svg', 'image/svg+xml', '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+  assert.equal(svg.headers.get('content-disposition'), null);
+  assert.match(svg.headers.get('content-type'), /image\/svg\+xml/);
+  assert.match(svg.headers.get('content-security-policy') || '', /sandbox/);
+  assert.doesNotMatch(svg.headers.get('content-security-policy'), /allow-scripts|script-src/);
   const text = await upload('notes.txt', 'text/plain', 'just text');
   assert.equal(text.headers.get('content-disposition'), null);
   assert.equal(text.headers.get('x-content-type-options'), 'nosniff');

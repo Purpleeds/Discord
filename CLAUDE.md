@@ -22,7 +22,8 @@ deployment (Render web service from `main`, Postgres on Neon).
   that disguise the app as something else.
 - Uploaded files are served from the app's own origin, so anything a
   browser could run as a page must stay download-only (see
-  `ACTIVE_UPLOAD_EXT` in server.js).
+  `ACTIVE_UPLOAD_EXT` in server.js). SVGs are the exception: they open
+  as images, but always with the no-scripts sandbox `SVG_UPLOAD_CSP`.
 - Blocks live in the `blocks` table and are enforced on the server for DMs,
   DM uploads/typing, friend requests and mention pushes; the client only
   hides blocked users' channel messages.

@@ -123,16 +123,23 @@ app.use(express.static(PUBLIC_DIR));
 
 // Uploaded files are served from this same origin, where the login token
 // lives in localStorage - so a file that a browser would run as a page
-// (HTML, SVG, XML...) would be able to read it and take over the account
-// of anyone who opened it. Those types are always downloaded instead of
-// opened, and sandboxed even if something does open them.
-const ACTIVE_UPLOAD_EXT = new Set(['.html', '.htm', '.xhtml', '.xht', '.shtml', '.svg', '.svgz', '.xml', '.xsl', '.xslt', '.js', '.mjs']);
+// (HTML, XML, scripts...) would be able to read it and take over the
+// account of anyone who opened it. Those types are always downloaded
+// instead of opened, and sandboxed even if something does open them.
+const ACTIVE_UPLOAD_EXT = new Set(['.html', '.htm', '.xhtml', '.xht', '.shtml', '.svgz', '.xml', '.xsl', '.xslt', '.js', '.mjs']);
+// SVGs are images people expect to see, so they still open in the browser,
+// but under a sandbox with no scripts allowed: the picture (and its inline
+// styles and embedded images) renders, any code inside it never runs.
+const SVG_UPLOAD_CSP = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
 app.use('/uploads', express.static(UPLOAD_DIR, {
   index: false,
   fallthrough: false,
   maxAge: `${FILE_EXPIRY_HOURS}h`,
   setHeaders(res, filePath) {
-    if (ACTIVE_UPLOAD_EXT.has(path.extname(filePath).toLowerCase())) {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === '.svg') {
+      res.setHeader('Content-Security-Policy', SVG_UPLOAD_CSP);
+    } else if (ACTIVE_UPLOAD_EXT.has(ext)) {
       res.setHeader('Content-Disposition', 'attachment');
       res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
     }

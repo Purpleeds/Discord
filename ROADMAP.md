@@ -40,17 +40,28 @@ large, new system - also split it over several sessions).
   are capped at 100 offline people (`MAX_GROUP_MENTION_PUSHES`).*
 - [x] **7. Mutual servers and friends on profile cards** - `low` - *done Nov 2026*
 
-## Batch 2 - bigger features
+## Batch 2 - bigger features (done)
 
-- [ ] **8. Channel categories + private channels (real permissions)** - `high`
+- [x] **8. Channel categories + private channels (real permissions)** - `high` - *done Nov 2026*
   Collapsible categories, and channels only certain roles can see/post in.
   This turns roles from cosmetic into permissions: EVERY server-side access
   check (history, search, pins, uploads, sockets, typing, push) must
   respect it - update the CLAUDE.md note about roles being cosmetic.
-- [ ] **9. Threads, then forum channels** - `high`
-- [ ] **10. Scheduled events** - `medium`
-  Events with RSVP ("interested") and a reminder notification. Render's free
-  server sleeps, so reminders can't rely on a timer alone.
+  *Private channels = owner/admins + chosen roles/members (`channel_access`).
+  All access goes through `canViewChannel()`; `resyncRooms()` pulls
+  sockets out of rooms when access is lost (this also fixed an older leak:
+  kicked members kept receiving the server's messages until they reloaded).*
+- [x] **9. Threads, then forum channels** - `high` - *done Nov 2026*
+  *`threads` table; each thread is a `thread:<id>` room under a channel.
+  Threads ignore the parent's slowmode/announcement rules (discussion under
+  announcements is allowed). Forum channels (`server_channels.kind =
+  'forum'`) only take posts. Sidebar shows open/unread/recent threads.*
+- [x] **10. Scheduled events** - `medium` - *done Nov 2026*
+  *Admins schedule; members click Interested. Reminder at start time
+  (in-app + push + a message in the event's channel). No polling loop:
+  `scheduleEventReminders()` sets a timer for the next start (re-checked
+  hourly). If the free Render server is asleep at start time, the reminder
+  goes out when it wakes - up to 1 hour late, after that it's skipped.*
 
 ## Batch 3 - voice and video (its own project)
 
@@ -83,7 +94,7 @@ large, new system - also split it over several sessions).
 
 ## Already built (Nov 2026)
 
-Batch 1 above, plus: DMs, group chats, servers with invites, text channels with topics,
+Batches 1 and 2 above, plus: DMs, group chats, servers with invites, text channels with topics,
 announcement channels, slowmode, channel reordering, editing/deleting,
 replies, pins, reactions, emoji picker, Markdown, file sharing (deleted
 after 6h), @mentions, per-conversation search, custom role colours,

@@ -228,3 +228,46 @@ test('batch 1: polls, message links, search everywhere, mentions, mutuals', asyn
 
   assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
 });
+
+test('batch 2: private channels, threads, forums, events', async () => {
+  const sid = (await api(tokens.a, '/servers', { name: 'Batch2 ' + tag })).data.id;
+  let s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  await api(tokens.c, '/servers/join', { code: s.inviteCode });
+  const role = (await api(tokens.a, `/servers/${sid}/roles`, { name: 'Inner' })).data;
+  await api(tokens.a, `/servers/${sid}/members/${names.b}/roles`, { roleIds: [role.id] });
+
+  // private channel: visible to the role, invisible (in every way) to others
+  const cat = (await api(tokens.a, `/servers/${sid}/categories`, { name: 'Private stuff' })).data;
+  const priv = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'inner-circle', categoryId: cat.id, isPrivate: true })).data;
+  await api(tokens.a, `/servers/${sid}/channels/${priv.id}/access`, { isPrivate: true, roleIds: [role.id] });
+  const sees = async k => (await api(tokens[k], '/servers')).data.find(x => x.id === sid).channels.some(c => c.id === priv.id);
+  assert.equal(await sees('b'), true);
+  assert.equal(await sees('c'), false);
+  await emit(sockets.a, 'joinRoom', priv.room);
+  const secret = await emit(sockets.a, 'message', { room: priv.room, text: 'inner ' + tag });
+  assert.equal((await api(tokens.c, '/messages?room=' + encodeURIComponent(priv.room))).status, 403);
+  assert.equal((await api(tokens.c, '/search?scope=all&q=inner ' + tag)).data.total, 0);
+  assert.equal((await api(tokens.c, `/messages/${secret.id}/locate`)).status, 404);
+
+  // threads inherit the parent channel's privacy
+  const thread = (await api(tokens.b, '/threads', { messageId: secret.id, name: 'Side chat' })).data;
+  assert.ok(thread.id);
+  assert.equal((await api(tokens.c, '/threads/' + thread.id)).status, 404);
+  assert.ok((await emit(sockets.b, 'message', { room: thread.room, text: 'in the thread' })).id);
+  assert.equal((await api(tokens.a, '/threads/' + thread.id)).data.messageCount, 1);
+
+  // forum channels take posts, not plain messages
+  const forum = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'help', kind: 'forum' })).data;
+  await emit(sockets.c, 'joinRoom', forum.room);
+  assert.match((await emit(sockets.c, 'message', { room: forum.room, text: 'hi' })).error, /forum/);
+  const post = (await api(tokens.c, '/threads', { parentRoom: forum.room, name: 'Help me', text: 'please' })).data;
+  assert.equal((await api(tokens.a, '/threads?parent=' + encodeURIComponent(forum.room))).data[0].id, post.id);
+
+  // events: admins create, members RSVP
+  assert.equal((await api(tokens.c, `/servers/${sid}/events`, { name: 'x', startsAt: new Date(Date.now() + 864e5).toISOString() })).status, 403);
+  const ev = (await api(tokens.a, `/servers/${sid}/events`, { name: 'Party', startsAt: new Date(Date.now() + 864e5).toISOString() })).data;
+  assert.equal((await api(tokens.c, `/events/${ev.id}/rsvp`, { interested: true })).data.interestedCount, 2);
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});

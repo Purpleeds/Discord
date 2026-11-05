@@ -31,10 +31,19 @@ off there (with anything learned) when they ship.
 - Blocks live in the `blocks` table and are enforced on the server for DMs,
   DM uploads/typing, friend requests and mention pushes; the client only
   hides blocked users' channel messages.
-- Server roles (`server_roles`) are cosmetic: name colour and member-list
-  grouping. Permissions come only from `server_members.role`
-  (owner/admin/member). Slowmode and announcement channels are enforced
-  on the server in `channelPostBlock()`; owner/admins are exempt.
+- Server roles (`server_roles`) give name colours, member-list grouping,
+  and can unlock private channels (`channel_access`). Owner/admin powers
+  come only from `server_members.role`. Slowmode, announcement and forum
+  posting rules are enforced on the server in `channelPostBlock()`.
+- **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
+  `canViewChannel()` (private channels), with `readableChannelRooms()` /
+  `allRoomsFor()` as the bulk version. Never check server membership
+  alone for a channel. Threads (`thread:<id>` rooms) inherit their parent
+  channel's access; use `channelForRoom()` to get a thread's channel.
+- After ANY change that can take access away (kick, leave, role or admin
+  change, channel privacy, deleting things), call `resyncRooms(usernames)`
+  so the server removes their live sockets from rooms - never rely on the
+  browser to do it.
 - History queries (`getMessagesForRoom`, `getMessagesBefore`) list their
   columns explicitly - a new `messages` column must be added there too,
   or it silently disappears on every reload (live events use `SELECT *`).

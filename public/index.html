@@ -821,6 +821,8 @@ input[type=color]::-webkit-color-swatch{border:2px dashed var(--border-strong);}
 .failNote{display:block;font-size:12px;color:var(--red);margin-top:2px;}
 @media (max-width:900px){
   #membersBtn{display:none;} /* the member list itself is hidden on phones */
+  #chat.threadMode #pinsBtn,#chat.threadMode #threadsBtn{display:none;} /* room for the title + back link */
+  #chat.threadMode #roomTopic{flex:0 0 auto;}
   .headerSearch input,.headerSearch input:focus,.headerSearch input.hasValue{width:96px;}
   #chatHeader{gap:4px;padding:0 8px;}
   #roomTitle{min-width:0;flex:1 1 auto;}
@@ -927,6 +929,78 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
 .mention.roleMention{--rc:var(--mention-text);color:var(--rc);background:color-mix(in srgb, var(--rc) 18%, transparent);cursor:default;}
 .mention.roleMention:hover{background:color-mix(in srgb, var(--rc) 30%, transparent);}
 
+/* ---------------- categories + private channels ---------------- */
+.categoryTitle{cursor:pointer;user-select:none;}
+.categoryTitle span::before{content:'';display:inline-block;width:0;height:0;margin:0 5px 2px 0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:5px solid currentColor;transition:transform .12s ease;vertical-align:middle;}
+.categoryTitle.collapsed span::before{transform:rotate(-90deg);}
+.categoryTitle:hover span{color:var(--text);}
+.accessBox{display:grid;gap:10px;background:var(--bg-secondary);border-radius:6px;padding:10px 12px;}
+.accessChips{display:flex;flex-wrap:wrap;gap:6px;}
+.accessChip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:14px;font-size:13px;background:var(--bg-tertiary);color:var(--text);border:1px solid var(--divider);}
+.accessChip.on{border-color:var(--brand);background:color-mix(in srgb, var(--brand) 20%, transparent);color:var(--text-bright);}
+.accessChip i{width:10px;height:10px;border-radius:50%;display:inline-block;}
+.accessPeople{max-height:180px;overflow-y:auto;display:grid;gap:2px;}
+.accessPeople label{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text);padding:3px 4px;border-radius:4px;cursor:pointer;}
+.accessPeople label:hover{background:var(--hover);}
+.accessPeople input{width:auto;}
+.catRow .grow input{max-width:260px;}
+
+/* ---------------- threads + forums ---------------- */
+#forumView{display:none;flex:1;flex-direction:column;min-height:0;overflow-y:auto;}
+#chat.forumMode #forumView{display:flex;}
+#chat.forumMode #messages,#chat.forumMode #typingIndicator,#chat.forumMode #composerArea,
+#chat.forumMode #jumpBar,#chat.forumMode #blockedBar,#chat.forumMode .headerSearch,#chat.forumMode #pinsBtn{display:none !important;}
+#chat.friendsMode #threadsBtn{display:none !important;}
+.forumHead{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 20px 8px 20px;}
+.forumHead h2{color:var(--text-bright);font-size:22px;margin-bottom:4px;}
+.forumHead p{color:var(--text-muted);font-size:14px;line-height:1.4;}
+.forumList{display:flex;flex-direction:column;gap:8px;padding:12px 20px 24px 20px;}
+.forumCard{display:flex;flex-direction:column;gap:6px;text-align:left;padding:14px 16px;border-radius:8px;background:var(--bg-secondary);border:1px solid var(--divider);color:var(--text);}
+.forumCard:hover{border-color:var(--border-strong);background:var(--hover);}
+.forumCard.unread .forumTitle{color:var(--text-bright);}
+.forumTitle{font-weight:600;font-size:16px;color:var(--text);overflow-wrap:anywhere;}
+.forumPreview{font-size:14px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.forumPreview b{color:var(--text);font-weight:500;}
+.forumMeta{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted);}
+.threadChip{display:inline-flex;align-items:center;gap:8px;margin-top:6px;padding:6px 10px;border-radius:6px;background:var(--bg-secondary);border:1px solid var(--divider);color:var(--text);font-size:13px;max-width:100%;}
+.threadChip:hover{border-color:var(--border-strong);}
+.threadChip b{color:var(--text-bright);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.threadChip span{color:var(--link);white-space:nowrap;}
+.threadRow{padding-left:22px;font-size:14px;}
+.threadBranch{width:12px;height:14px;border-left:2px solid var(--divider);border-bottom:2px solid var(--divider);border-bottom-left-radius:6px;margin-top:-10px;flex:0 0 12px;}
+.threadBack{font-size:14px;}
+#roomTopic .threadBack{color:var(--text-muted);}
+#roomTopic .threadBack:hover{color:var(--text);}
+#threadsPopout{width:420px;max-width:calc(100vw - 24px);max-height:70vh;display:flex;flex-direction:column;}
+#threadsPopout .popHead{padding:14px 16px;font-weight:600;color:var(--text-bright);border-bottom:1px solid var(--divider);}
+#threadsPopout .popBody{overflow-y:auto;padding:8px;}
+.threadListRow{display:flex;align-items:flex-start;gap:10px;width:100%;text-align:left;padding:10px;border-radius:6px;color:var(--text-muted);}
+.threadListRow:hover{background:var(--hover);}
+.threadListMain{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.threadListMain b{color:var(--text-bright);font-weight:600;}
+.threadListMain span{font-size:12px;}
+
+/* ---------------- scheduled events ---------------- */
+.eventsRow{margin-bottom:4px;}
+.eventsRow.live{color:var(--green);}
+.eventsRow.live .hash{color:var(--green);}
+.eventCard{display:flex;gap:14px;padding:14px;border-radius:8px;background:var(--bg-secondary);border:1px solid var(--divider);margin-bottom:10px;}
+.eventCard.live{border-color:var(--green);}
+.eventDate{flex:0 0 52px;height:56px;border-radius:8px;background:var(--bg-tertiary);display:flex;flex-direction:column;align-items:center;justify-content:center;}
+.eventDate span{font-size:11px;font-weight:700;color:var(--red);}
+.eventDate b{font-size:22px;color:var(--text-bright);line-height:1.1;}
+.eventMain{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;}
+.eventWhen{font-size:12px;font-weight:600;color:var(--text-muted);}
+.eventCard.live .eventWhen{color:var(--green);}
+.eventName{font-size:17px;font-weight:600;color:var(--text-bright);overflow-wrap:anywhere;}
+.eventWhere{font-size:13px;color:var(--text-muted);}
+.eventDesc{font-size:14px;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere;}
+.eventDesc:empty,.eventWhere:empty{display:none;}
+.eventActions{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;}
+.eventActions .btn{padding:6px 12px;font-size:13px;}
+.eventMessage .msgGutter{color:var(--brand);}
+.eventMessage .systemText b{color:var(--text-bright);}
+
 </style>
 </head>
 
@@ -1002,6 +1076,7 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
       <div id="roomTopic"></div>
       <div id="friendsTabs" role="tablist" aria-label="Friends"></div>
       <div class="headerSpacer"></div>
+      <button class="headerBtn" id="threadsBtn" title="Threads" aria-label="Threads in this channel" onclick="toggleThreadsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14v9H11l-4 3v-3H5z"/><path d="M9 9h6"/></svg></button>
       <button class="headerBtn" id="inboxBtn" title="Mentions" aria-label="Mentions inbox" onclick="toggleInbox(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M5.5 5h13L21 13v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5z"/></svg><span class="inboxDot"></span></button>
       <button class="headerBtn" id="pinsBtn" title="Pinned Messages" aria-label="Pinned Messages" onclick="togglePinsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15.6 2.3a1 1 0 0 1 1.4 0l4.7 4.7a1 1 0 0 1 0 1.4l-.6.6a1.5 1.5 0 0 1-1.6.3l-3.6 3.6.3 3.3a1.5 1.5 0 0 1-.4 1.2l-1 1a1 1 0 0 1-1.4 0l-3.3-3.3-4.6 4.6a1 1 0 1 1-1.4-1.4l4.6-4.6-3.3-3.3a1 1 0 0 1 0-1.4l1-1a1.5 1.5 0 0 1 1.2-.4l3.3.3 3.6-3.6a1.5 1.5 0 0 1 .3-1.6l.6-.6z"/></svg></button>
       <button class="headerBtn" id="membersBtn" title="Show Member List" aria-label="Show Member List" onclick="toggleMembers()"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="9" cy="8" r="3.6"/><path d="M2.5 19.5c0-3.4 2.9-6 6.5-6s6.5 2.6 6.5 6a.8.8 0 0 1-.8.8H3.3a.8.8 0 0 1-.8-.8z"/><circle cx="16.8" cy="9" r="2.8" opacity=".75"/><path d="M16.5 13.6c3 0 5.2 2 5.2 4.9a.7.7 0 0 1-.7.7h-3.9c0-2.2-.9-4.1-2.5-5.4.6-.1 1.2-.2 1.9-.2z" opacity=".75"/></svg></button>
@@ -1013,6 +1088,7 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
     </div>
     <div id="messages"><div id="messagesInner"></div></div>
     <div id="friendsView"></div>
+    <div id="forumView"></div>
     <div id="jumpBar" class="jumpBar"><span>You're viewing older messages</span><button onclick="jumpToPresent()">Jump to Present</button></div>
     <div id="typingIndicator"></div>
     <div id="blockedBar" class="blockedBar"><span id="composerNoticeText">You can't send messages to a user you have blocked.</span><button class="btn grey" id="composerNoticeBtn" onclick="unblockUser(activeDMUser)">Unblock</button></div>
@@ -1055,6 +1131,10 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
   <div class="popBody" id="pinsList"></div>
 </div>
 <div id="profilePopout" class="popout" role="dialog" aria-label="User profile"></div>
+<div id="threadsPopout" class="popout" role="dialog" aria-label="Threads">
+  <div class="popHead">Threads</div>
+  <div class="popBody" id="threadsList"></div>
+</div>
 <div id="inboxPopout" class="popout" role="dialog" aria-label="Mentions">
   <div class="popHead">Mentions</div>
   <div class="popBody" id="inboxList"></div>
@@ -1487,7 +1567,8 @@ function connectSocket(){
     }else if(currentRoom){
       const found = channelByRoom(currentRoom);
       if(found && view === 'server'){
-        setHeader('#', found.channel.name, found.channel.topic || '');
+        if(found.thread) paintThreadHeader(found.thread, found);
+        else setHeader('#', found.channel.name, found.channel.topic || '');
         setComposerPlaceholder(channelPlaceholder(found));
         updateBlockedBar();
       }
@@ -1532,6 +1613,49 @@ function connectSocket(){
   socket.on('messageDeleted', msg => applyDeletedMessage(msg));
   socket.on('reactionUpdated', payload => applyReactions(payload));
   socket.on('pollUpdated', payload => applyPollUpdate(payload));
+  socket.on('threadsChanged', async data => {
+    if(!data) return;
+    if(data.deleted) delete threadIndex[data.threadId];
+    await loadThreadsFor(data.parentRoom);
+    if(forumRoom === data.parentRoom) renderForum(data.parentRoom);
+    // refresh "N messages · 2m ago" chips under the messages that started them
+    document.querySelectorAll('#messagesInner .message').forEach(el => {
+      const d = el._item && el._item.data;
+      const t = d && d.thread && threadIndex[d.thread.id];
+      if(!t) return;
+      d.thread = Object.assign({}, d.thread, t);
+      const chip = el.querySelector('.threadChip');
+      if(chip) chip.replaceWith(buildThreadChip(d));
+    });
+    renderSidebar();
+    renderRail();
+  });
+  socket.on('eventsChanged', async data => {
+    if(!data) return;
+    await loadEvents(data.serverId);
+    if(currentServerId === data.serverId) renderSidebar();
+    // refresh the open Events list - but not while someone is filling in the form
+    const listOpen = eventsModalServer === data.serverId && $('overlay').classList.contains('open') && $('evBody') && !$('evName');
+    if(listOpen) renderEventsList();
+  });
+  socket.on('eventReminder', data => {
+    if(!data) return;
+    toast('📅 ' + data.name + ' is starting now in ' + data.serverName);
+    playPing();
+    // an honest notification: says which server and that it's an event
+    if(desktopNotificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())){
+      try{ new Notification('Event starting in ' + data.serverName, { body: data.name }); }catch(e){}
+    }
+  });
+  socket.on('threadDeleted', data => {
+    if(data && data.room === currentRoom){
+      const t = threadIndex[threadIdOf(data.room)];
+      toast('This thread was deleted.');
+      const parent = t ? t.parentRoom : null;
+      delete threadIndex[threadIdOf(data.room)];
+      if(parent) openChannel(parent); else { const s = currentServer(); if(s) switchServer(s.id); }
+    }
+  });
 
   socket.on('typing', data => {
     if(!data || data.user === username || isBlocked(data.user)) return;
@@ -1568,6 +1692,8 @@ function cacheFromPayload(msg){
 
 function handleIncoming(msg, kind){
   cacheFromPayload(msg);
+  if(isThreadRoom(msg.room) && !threadIndex[threadIdOf(msg.room)]) ensureThread(threadIdOf(msg.room)).then(() => { renderSidebar(); renderRail(); });
+  else if(isThreadRoom(msg.room)){ const t = threadIndex[threadIdOf(msg.room)]; t.lastMessageAt = msg.createdAt; }
   // This may be the server's own echo of something we already showed
   // optimistically when we sent it - if so, just upgrade that element in
   // place (grey -> full color) instead of appending a duplicate.
@@ -1577,7 +1703,7 @@ function handleIncoming(msg, kind){
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     return;
   }
-  if(msg.kind === 'join'){
+  if(msg.kind === 'join' || msg.kind === 'event'){
     // "X joined" - shows up and counts as unread, but never pings
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     else bumpUnreadQuietly(msg.room);
@@ -1752,6 +1878,12 @@ function createAvatar(user, size, options){
 function serverById(id){ return servers.find(s => s.id === id) || null; }
 function currentServer(){ return serverById(currentServerId); }
 function channelByRoom(room){
+  const tid = threadIdOf(room);
+  if(tid){
+    const thread = threadIndex[tid];
+    const parent = thread ? channelByRoom(thread.parentRoom) : null;
+    return parent ? { server:parent.server, channel:parent.channel, thread } : null;
+  }
   for(const s of servers){
     const found = (s.channels || []).find(c => c.room === room);
     if(found) return { server:s, channel:found };
@@ -1760,10 +1892,16 @@ function channelByRoom(room){
 }
 function roomLabel(room){
   const found = channelByRoom(room);
+  if(found && found.thread) return found.channel.name + ' › ' + found.thread.name;
   return found ? found.channel.name : room;
 }
 function serverUnreadCount(server){
-  return (server.channels || []).reduce((sum, c) => sum + (unread[c.room] || 0), 0);
+  const channelRooms = new Set((server.channels || []).map(c => c.room));
+  const threadUnread = Object.keys(unread).filter(room => {
+    const t = threadIndex[threadIdOf(room)];
+    return t && channelRooms.has(t.parentRoom);
+  }).reduce((sum, room) => sum + unread[room], 0);
+  return (server.channels || []).reduce((sum, c) => sum + (unread[c.room] || 0), 0) + threadUnread;
 }
 function dmUnreadCount(){
   return Object.keys(unread).reduce((sum, room) => sum + ((isDMRoom(room) || isGroupRoom(room)) ? unread[room] : 0), 0);
@@ -1827,6 +1965,7 @@ function switchServer(serverId, silent){
   currentGroupRoom = '';
   renderRail();
   renderSidebar();
+  if(!eventsByServer[serverId]) loadEvents(serverId).then(() => { if(currentServerId === serverId) renderSidebar(); });
   const channels = server.channels || [];
   const keep = channels.find(c => c.room === currentRoom);
   const target = keep || channels[0];
@@ -1950,32 +2089,69 @@ function renderSidebar(){
   $('sidebarChev').textContent = '⌄';
   paintSidebarBanner(server);
 
-  const title = document.createElement('div');
-  title.className = 'sectionTitle';
-  title.innerHTML = '<span>Text Channels</span>';
-  if(server.canManage){
-    const add = document.createElement('button');
-    add.textContent = '+';
-    add.title = 'Create channel';
-    add.onclick = e => { e.stopPropagation(); openCreateChannel(); };
-    title.appendChild(add);
-  }
-  body.appendChild(title);
+  body.appendChild(sidebarEventsRow(server));
 
-  (server.channels || []).forEach(channel => {
-    const count = unread[channel.room] || 0;
-    const item = document.createElement('div');
-    item.className = 'channel' + (currentRoom === channel.room && view === 'server' ? ' active' : '') + (count ? ' unread' : '') + (levelFor(channel.room) === 'none' ? ' muted' : '');
-    item.title = channel.topic || (channel.adminsOnly ? 'Announcement channel' : '');
-    item.innerHTML = '<span class="hash">' + (channel.adminsOnly ? ICON_ANNOUNCE_SVG : '#') + '</span>';
-    const nameEl = document.createElement('span');
-    nameEl.className = 'channelName';
-    nameEl.textContent = channel.name;
-    item.appendChild(nameEl);
-    item.appendChild(makeBadge(count));
-    item.onclick = () => openChannel(channel.room);
-    item.oncontextmenu = e => showChannelMenu(e, server, channel);
-    body.appendChild(item);
+  // Uncategorised channels first (under "Text Channels"), then each
+  // category in order. A collapsed category still shows the channel you're
+  // in and any with unread messages, like Discord.
+  const channels = server.channels || [];
+  const sections = [{ id:null, name:'Text Channels', list:channels.filter(c => !c.categoryId || !(server.categories || []).some(cat => cat.id === c.categoryId)) }]
+    .concat((server.categories || []).map(cat => ({ id:cat.id, name:cat.name, list:channels.filter(c => c.categoryId === cat.id) })));
+  sections.forEach(group => {
+    if(group.id && !group.list.length && !server.canManage) return; // nothing you can see in it
+    if(!group.id && !group.list.length && (server.categories || []).length) return;
+    const collapsed = group.id && collapsedCategories.has(group.id);
+    const title = document.createElement('div');
+    title.className = 'sectionTitle' + (group.id ? ' categoryTitle' : '') + (collapsed ? ' collapsed' : '');
+    title.innerHTML = '<span></span>';
+    title.querySelector('span').textContent = group.name;
+    if(group.id){
+      title.setAttribute('role', 'button');
+      title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      title.onclick = () => toggleCategory(group.id);
+    }
+    if(server.canManage){
+      const add = document.createElement('button');
+      add.textContent = '+';
+      add.title = 'Create channel' + (group.id ? ' in ' + group.name : '');
+      add.onclick = e => { e.stopPropagation(); openCreateChannel(group.id); };
+      title.appendChild(add);
+    }
+    body.appendChild(title);
+    group.list.forEach(channel => {
+      const count = unread[channel.room] || 0;
+      const active = currentRoom === channel.room && view === 'server';
+      if(collapsed && !active && !count) return;
+      const item = document.createElement('div');
+      item.className = 'channel' + (active ? ' active' : '') + (count ? ' unread' : '') + (levelFor(channel.room) === 'none' ? ' muted' : '');
+      item.title = channel.topic || (channel.adminsOnly ? 'Announcement channel' : (channel.isPrivate ? 'Private channel' : ''));
+      item.innerHTML = '<span class="hash">' + channelIconHtml(channel) + '</span>';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'channelName';
+      nameEl.textContent = channel.name;
+      item.appendChild(nameEl);
+      item.appendChild(makeBadge(count));
+      item.onclick = () => openChannel(channel.room);
+      item.oncontextmenu = e => showChannelMenu(e, server, channel);
+      body.appendChild(item);
+      // threads worth showing: the open one, unread ones, and ones active in the last day
+      if(channel.kind !== 'forum') threadsOf(channel.room)
+        .filter(t => t.room === currentRoom || unread[t.room] || Date.now() - parseTime(t.lastMessageAt) < 24 * 3600 * 1000)
+        .slice(0, 6)
+        .forEach(t => {
+          const row = document.createElement('div');
+          row.className = 'channel threadRow' + (t.room === currentRoom ? ' active' : '') + (unread[t.room] ? ' unread' : '');
+          row.innerHTML = '<span class="threadBranch"></span>';
+          const nm = document.createElement('span');
+          nm.className = 'channelName';
+          nm.textContent = t.name;
+          row.appendChild(nm);
+          row.appendChild(makeBadge(unread[t.room]));
+          row.onclick = () => openThread(t.id);
+          row.oncontextmenu = e => showMenu(e, threadMenuItems(t));
+          body.appendChild(row);
+        });
+    });
   });
 
   if(server.isDefault){
@@ -1984,6 +2160,23 @@ function renderSidebar(){
     note.textContent = 'This is the original chat — everyone is a member of #general.';
     body.appendChild(note);
   }
+}
+
+const ICON_LOCK_HASH_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M9.6 3l-.7 4H5.5l-.3 2h3.4l-1 6H4.2L3.9 17h3.4l-.7 4h2l.7-4h3.3l.5-2H9.6l1-6h4.1l.4-2h-4.2l.7-4z"/><path fill="currentColor" d="M16.5 13.5v-1a2.5 2.5 0 0 1 5 0v1h.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm1.3 0h2.4v-1a1.2 1.2 0 0 0-2.4 0z"/></svg>';
+function channelIconHtml(channel){
+  if(channel.kind === 'forum') return ICON_FORUM_SVG;
+  if(channel.adminsOnly) return ICON_ANNOUNCE_SVG;
+  if(channel.isPrivate) return ICON_LOCK_HASH_SVG;
+  return '#';
+}
+
+// Collapsed categories are remembered per device, like Discord.
+let collapsedCategories = new Set();
+try{ collapsedCategories = new Set(JSON.parse(localStorage.getItem('collapsedCategories') || '[]')); }catch(e){}
+function toggleCategory(id){
+  if(collapsedCategories.has(id)) collapsedCategories.delete(id); else collapsedCategories.add(id);
+  try{ localStorage.setItem('collapsedCategories', JSON.stringify([...collapsedCategories])); }catch(e){}
+  renderSidebar();
 }
 
 function makeBadge(count){
@@ -2012,6 +2205,7 @@ function toggleMembers(){
 /* ============================ rooms ============================ */
 function openChannel(room, silent){
   if(!socket || !socket.connected) return;
+  if(isThreadRoom(room)){ openThread(threadIdOf(room)); return; }
   view = 'server';
   currentRoom = room;
   activeDMUser = '';
@@ -2020,7 +2214,7 @@ function openChannel(room, silent){
   const name = found ? found.channel.name : room;
   if(found) currentServerId = found.server.id;
   setHeader('#', name, found && found.channel.topic ? found.channel.topic : '');
-  if(found && found.channel.adminsOnly) $('headerIcon').innerHTML = ICON_ANNOUNCE_SVG.replace('width="18" height="18"', 'width="22" height="22"');
+  if(found && channelIconHtml(found.channel) !== '#') $('headerIcon').innerHTML = channelIconHtml(found.channel).replace('width="18" height="18"', 'width="22" height="22"');
   setComposerPlaceholder(found ? channelPlaceholder(found) : 'Message #' + name);
   enterRoom(room);
   if(!silent) $('sidebar').classList.remove('open');
@@ -2052,6 +2246,7 @@ function openDM(user){
 }
 
 function setHeader(icon, title, topic){
+  $('chat').classList.remove('threadMode'); // paintThreadHeader() puts it back for threads
   $('headerIcon').textContent = icon;
   $('roomTitle').textContent = title;
   $('roomTopic').textContent = topic || '';
@@ -2065,6 +2260,7 @@ function setComposerEnabled(on){
 
 function enterRoom(room){
   closeFriends();
+  closeForum();
   unread[room] = 0;
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
@@ -2080,10 +2276,14 @@ function enterRoom(room){
   typingUsers.clear();
   renderTyping();
   updateBlockedBar();
+  const found = channelByRoom(room);
+  if(found && !found.thread && found.channel.kind === 'forum'){ renderForum(room); return; }
   socket.emit('joinRoom', room, result => {
     if(result && result.error){ showError(result.error); return; }
     loadHistory(room);
   });
+  // so the sidebar can list this channel's active threads
+  if(found && !found.thread) loadThreadsFor(room).then(() => renderSidebar());
 }
 
 function resetTimeline(){
@@ -2129,7 +2329,12 @@ function renderChannelIntro(){
   let icon = '#';
   let title = '';
   let text = '';
-  if(view === 'server'){
+  const inThread = channelByRoom(currentRoom);
+  if(view === 'server' && inThread && inThread.thread){
+    icon = '🧵';
+    title = inThread.thread.name;
+    text = 'This thread was started in #' + inThread.channel.name + ' by ' + displayNameFor(inThread.thread.createdBy) + '.';
+  }else if(view === 'server'){
     const name = roomLabel(currentRoom);
     const found = channelByRoom(currentRoom);
     title = 'Welcome to #' + name + '!';
@@ -2328,6 +2533,7 @@ function buildJoinMessageEl(item){
 function buildMessageEl(item, grouped){
   const data = item.data;
   if(item.kind === 'message' && data.kind === 'join') return buildJoinMessageEl(item);
+  if(item.kind === 'message' && data.kind === 'event') return buildEventMessageEl(item);
   const wrap = document.createElement('div');
   wrap.className = 'message' + (grouped ? ' grouped' : ' first') + (data.pending ? ' pending' : '');
   if(item.kind === 'message') wrap.dataset.messageId = data.id;
@@ -2431,6 +2637,7 @@ function buildMessageEl(item, grouped){
     body.appendChild(buildAttachment(data));
   }
 
+  if(item.kind === 'message' && data.thread) body.appendChild(buildThreadChip(data));
   wrap.appendChild(body);
   wrap.appendChild(buildActions(item));
   return wrap;
@@ -2501,6 +2708,10 @@ function buildActions(item){
     bar.appendChild(toolbarButton(ICONS.reply, 'Reply', e => startReply(liveData(e.currentTarget, data))));
     if(data.user === username && !data.kind){
       bar.appendChild(toolbarButton(ICONS.edit, 'Edit', e => startEdit(liveData(e.currentTarget, data))));
+    }
+    const home = channelByRoom(data.room);
+    if(home && !home.thread && home.channel.kind !== 'forum' && !data.kind && !data.thread){
+      bar.appendChild(toolbarButton(ICON_THREAD_SVG, 'Create Thread', e => openCreateThread(liveData(e.currentTarget, data))));
     }
     bar.appendChild(toolbarButton(ICONS.link, 'Copy Message Link', e => { copyText(messageLink(liveData(e.currentTarget, data).id)); }));
     if(canPinHere(data.room)){
@@ -2721,6 +2932,10 @@ function applyUpdatedMessage(msg){
     }
     if(msg.pinned) text.appendChild(pinMarker());
   }
+  // a thread may have been started from (or removed from) this message
+  const chip = el.querySelector('.threadChip');
+  if(chip) chip.remove();
+  if(msg.thread){ const b = el.querySelector('.msgBody'); if(b) b.appendChild(buildThreadChip(msg)); }
   // pin/unpin label on the hover toolbar depends on the new state
   const oldBar = el.querySelector('.msgActions');
   if(oldBar && el._item) oldBar.replaceWith(buildActions(el._item));
@@ -3103,7 +3318,7 @@ async function renderMembers(refetch){
     return;
   }
 
-  let key = '', url = '', owner = '';
+  let key = '', url = '', owner = '', scope = null;
   if(currentGroupRoom){
     const group = groupByRoom[currentGroupRoom];
     if(!group){ holder.innerHTML = ''; return; }
@@ -3112,15 +3327,17 @@ async function renderMembers(refetch){
     const server = currentServer();
     if(view !== 'server' || !server){ holder.innerHTML = ''; memberCache.key = ''; return; }
     key = 'server:' + server.id; url = '/servers/' + server.id + '/members'; owner = server.owner;
+    const found = channelByRoom(currentRoom);
+    if(found && found.channel.isPrivate){ scope = found.channel.id; url += '?channel=' + scope; }
   }
 
-  if(refetch || memberCache.key !== key){
+  if(refetch || memberCache.key !== key || (memberCache.scope || null) !== scope){
     try{
       const response = await fetch(url, { headers: bearer() });
       if(!response.ok) return;
       const members = await response.json();
       members.forEach(m => cacheProfile(m.username, Object.assign({}, profiles[m.username] || {}, m)));
-      memberCache = { key, members, owner };
+      memberCache = { key, members, owner, scope };
       if(key.startsWith('server:')){
         const sid = Number(key.slice(7));
         serverRoles[sid] = {};
@@ -3633,6 +3850,7 @@ function playPing(force){
 // Where a message lives, in words: "#general · Book Club", "@ann", "Squad".
 function roomDescription(room){
   const found = channelByRoom(room);
+  if(found && found.thread) return found.thread.name + ' · #' + found.channel.name + ' · ' + found.server.name;
   if(found) return '#' + found.channel.name + ' · ' + found.server.name;
   if(isDMRoom(room)){
     const other = String(room).slice(3).split(':').find(u => u !== username) || '';
@@ -4319,17 +4537,19 @@ function afterFriendsChanged(){
 function updateBlockedBar(){
   const blocked = !friendsOpen && !!activeDMUser && isBlocked(activeDMUser);
   const found = !friendsOpen && view === 'server' && currentRoom ? channelByRoom(currentRoom) : null;
-  const readOnly = !!(found && found.channel.adminsOnly && !found.server.isServerAdmin);
+  const readOnly = !!(found && !found.thread && found.channel.adminsOnly && !found.server.isServerAdmin);
   $('composerNoticeText').textContent = blocked
     ? 'You can\'t send messages to a user you have blocked.'
     : 'This is an announcement channel - only admins can post here.';
   $('composerNoticeBtn').style.display = blocked ? '' : 'none';
+  $('threadsBtn').style.display = found ? '' : 'none'; // threads live in server channels
   $('blockedBar').classList.toggle('show', blocked || readOnly);
   if(currentRoom) setComposerEnabled(!(blocked || readOnly));
 }
 
 const ICON_ANNOUNCE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18 3.5a1 1 0 0 1 1.5.86v13.28A1 1 0 0 1 18 18.5L13 15.5H7l1.3 4.1a1 1 0 0 1-.95 1.3H6a1 1 0 0 1-.95-.68L3.4 15.2A3.5 3.5 0 0 1 4.5 8.5H13zM21 8a3 3 0 0 1 0 6z"/></svg>';
 function channelPlaceholder(found){
+  if(found.thread) return 'Message ' + shortName(found.thread.name);
   const ch = found.channel;
   const slow = ch.slowmode && !found.server.isServerAdmin ? ' (slowmode: ' + slowmodeLabel(ch.slowmode) + ')' : '';
   return 'Message #' + ch.name + slow;
@@ -4354,6 +4574,7 @@ function paintSidebarBanner(server){
 }
 
 function openFriends(){
+  closeForum();
   view = 'dm';
   friendsOpen = true;
   currentRoom = '';
@@ -4805,6 +5026,7 @@ async function openMessageLink(id){
     const where = await response.json();
     if(where.room === currentRoom){ goToMessage(id); return; }
     pendingJump = { room: where.room, id };
+    if(where.type === 'thread'){ rememberThread(where.thread); openThread(where.thread.id); return; }
     if(where.type === 'dm') openDM(where.other);
     else if(where.type === 'group'){
       if(!groupByRoom[where.room]) await loadGroups();
@@ -4837,6 +5059,10 @@ function switcherEntries(){
     (server.channels || []).forEach(ch => out.push({
       kind:'channel', label:ch.name, sub:server.name, room:ch.room, key:ch.room, go:() => openChannel(ch.room)
     }));
+  });
+  Object.values(threadIndex).forEach(t => {
+    const parent = channelByRoom(t.parentRoom);
+    if(parent) out.push({ kind:'channel', label:t.name, sub:'Thread in #' + parent.channel.name, room:t.room, key:t.room, go:() => openThread(t.id) });
   });
   groups.forEach(group => out.push({ kind:'group', label:group.name, sub:'Group chat', room:group.room, key:group.room, go:() => openGroup(group.room) }));
   directoryUsers.filter(p => p.username !== username && !isBlocked(p.username)).forEach(p => out.push({
@@ -4932,6 +5158,449 @@ function chooseSwitcher(i){
   if(!entry) return;
   closeSwitcher();
   entry.go();
+}
+
+/* ============================ threads + forums ============================ */
+// A thread is its own room ('thread:<id>') under a channel; a forum
+// channel shows its threads ("posts") as cards instead of a chat.
+const threadIndex = {}; // id -> { id, room, parentRoom, name, messageCount, lastMessageAt, createdBy, starterMessageId, firstMessage? }
+const ICON_THREAD_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14v9H11l-4 3v-3H5z"/><path d="M9 9h6"/></svg>';
+const ICON_FORUM_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 4h12v8H8l-3 3v-3H3z"/><path d="M15 8h6v8h-2v3l-3-3h-5v-2"/></svg>';
+
+function shortName(text){ text = String(text || ''); return text.length > 32 ? text.slice(0, 30) + '…' : text; }
+function isThreadRoom(room){ return /^thread:\d+$/.test(String(room || '')); }
+function threadIdOf(room){ return isThreadRoom(room) ? Number(String(room).slice(7)) : null; }
+function rememberThread(t){ if(t && t.id) threadIndex[t.id] = Object.assign(threadIndex[t.id] || {}, t); return t; }
+
+async function ensureThread(id){
+  if(threadIndex[id]) return threadIndex[id];
+  try{
+    const response = await fetch('/threads/' + id, { headers: bearer() });
+    if(!response.ok) return null;
+    return rememberThread(await response.json());
+  }catch(e){ return null; }
+}
+async function loadThreadsFor(parentRoom){
+  try{
+    const response = await fetch('/threads?parent=' + encodeURIComponent(parentRoom), { headers: bearer() });
+    if(!response.ok) return [];
+    const list = await response.json();
+    // forget deleted ones for this channel
+    Object.values(threadIndex).forEach(t => { if(t.parentRoom === parentRoom && !list.some(x => x.id === t.id)) delete threadIndex[t.id]; });
+    list.forEach(rememberThread);
+    return list;
+  }catch(e){ return []; }
+}
+function threadsOf(parentRoom){
+  return Object.values(threadIndex).filter(t => t.parentRoom === parentRoom)
+    .sort((a, b) => parseTime(b.lastMessageAt) - parseTime(a.lastMessageAt));
+}
+function timeAgo(value){
+  const mins = Math.max(0, Math.round((Date.now() - parseTime(value)) / 60000));
+  if(mins < 1) return 'just now';
+  if(mins < 60) return mins + 'm ago';
+  if(mins < 1440) return Math.round(mins / 60) + 'h ago';
+  return Math.round(mins / 1440) + 'd ago';
+}
+
+async function openThread(id){
+  if(!socket || !socket.connected) return;
+  const thread = await ensureThread(Number(id));
+  if(!thread){ toast('That thread was deleted, or you can\'t see it.'); return; }
+  const parent = channelByRoom(thread.parentRoom);
+  if(!parent){ toast('That thread was deleted, or you can\'t see it.'); return; }
+  view = 'server';
+  currentServerId = parent.server.id;
+  currentRoom = thread.room;
+  activeDMUser = '';
+  currentGroupRoom = '';
+  paintThreadHeader(thread, parent);
+  setComposerPlaceholder('Message ' + shortName(thread.name));
+  enterRoom(thread.room);
+  $('sidebar').classList.remove('open');
+}
+function paintThreadHeader(thread, parent){
+  setHeader('#', thread.name, '');
+  $('headerIcon').innerHTML = ICON_THREAD_SVG.replace('width="18" height="18"', 'width="22" height="22"');
+  const topic = $('roomTopic');
+  topic.innerHTML = '';
+  const back = document.createElement('button');
+  back.className = 'linkBtn threadBack';
+  back.textContent = '‹ #' + parent.channel.name;
+  back.title = 'Back to #' + parent.channel.name;
+  $('chat').classList.add('threadMode');
+  back.onclick = () => openChannel(parent.channel.room);
+  topic.appendChild(back);
+}
+
+function openCreateThread(data){
+  const suggested = String(data.text || '').replace(/\s+/g, ' ').trim().slice(0, 40) || 'New thread';
+  openModal(
+    '<div class="modalHead"><h2>Create thread</h2><p>A side conversation about this message, so the channel stays tidy.</p></div>' +
+    '<div class="modalBody"><label class="formLabel" for="threadName">Thread name</label>' +
+    '<input class="formInput" id="threadName" maxlength="100"><div class="modalMsg" id="modalMsg"></div></div>' +
+    '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="threadCreate">Create Thread</button></div>'
+  );
+  $('threadName').value = suggested;
+  $('threadName').select();
+  $('threadCreate').onclick = async () => {
+    try{
+      const thread = await postJson('/threads', { messageId: data.id, name: $('threadName').value.trim() });
+      rememberThread(thread);
+      closeModal();
+      openThread(thread.id);
+    }catch(err){ modalMessage(err.message, true); }
+  };
+}
+
+function openNewPost(parentRoom){
+  openModal(
+    '<div class="modalHead"><h2>New post</h2><p>Start a new topic in this forum.</p></div>' +
+    '<div class="modalBody"><label class="formLabel" for="postTitle">Title</label>' +
+    '<input class="formInput" id="postTitle" maxlength="100" placeholder="What\'s it about?">' +
+    '<label class="formLabel" for="postText">Message</label>' +
+    '<textarea class="formInput" id="postText" maxlength="4000" style="min-height:110px;resize:vertical" placeholder="Give the details"></textarea>' +
+    '<div class="modalMsg" id="modalMsg"></div></div>' +
+    '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="postCreate">Post</button></div>'
+  );
+  $('postTitle').focus();
+  $('postCreate').onclick = async () => {
+    try{
+      const thread = await postJson('/threads', { parentRoom, name: $('postTitle').value.trim(), text: $('postText').value.trim() });
+      rememberThread(thread);
+      closeModal();
+      openThread(thread.id);
+    }catch(err){ modalMessage(err.message, true); }
+  };
+}
+
+function threadMenuItems(thread){
+  const parent = channelByRoom(thread.parentRoom);
+  const items = [{ label:'Open', action:() => openThread(thread.id) }];
+  if(thread.createdBy === username || (parent && canModerateHere(thread.parentRoom))){
+    items.push({ label:'Rename', action:async () => {
+      const name = prompt('New name for this thread:', thread.name);
+      if(!name || !name.trim()) return;
+      try{ rememberThread(await postJson('/threads/' + thread.id + '/rename', { name: name.trim() })); renderSidebar(); if(currentRoom === thread.room) paintThreadHeader(threadIndex[thread.id], parent); }
+      catch(err){ toast(err.message); }
+    } });
+    items.push({ label:'Delete', danger:true, action:async () => {
+      if(!confirm('Delete "' + thread.name + '" and all of its messages?')) return;
+      try{ await postJson('/threads/' + thread.id + '/delete'); }catch(err){ toast(err.message); }
+    } });
+  }
+  return items;
+}
+
+// "Trip planning · 4 messages · 2h ago" under a message that started a thread
+function buildThreadChip(data){
+  const t = rememberThread(data.thread);
+  const chip = document.createElement('button');
+  chip.className = 'threadChip';
+  chip.innerHTML = ICON_THREAD_SVG;
+  const name = document.createElement('b');
+  name.textContent = t.name;
+  const meta = document.createElement('span');
+  meta.textContent = t.messageCount + (t.messageCount === 1 ? ' message' : ' messages') + ' · ' + timeAgo(t.lastMessageAt);
+  chip.append(name, meta);
+  chip.onclick = () => openThread(t.id);
+  chip.oncontextmenu = e => showMenu(e, threadMenuItems(t));
+  return chip;
+}
+
+// ---- the Threads popout (header button) for a text channel
+async function toggleThreadsPopout(event){
+  event.stopPropagation();
+  const pop = $('threadsPopout');
+  if(pop.classList.contains('open')){ pop.classList.remove('open'); return; }
+  closePopouts();
+  const found = channelByRoom(currentRoom);
+  if(!found){ toast('Open a channel first.'); return; }
+  const parentRoom = found.thread ? found.thread.parentRoom : found.channel.room;
+  placePopout(pop, event.currentTarget, 'below');
+  pop.classList.add('open');
+  const list = $('threadsList');
+  list.innerHTML = '<div class="panelEmpty">Loading…</div>';
+  const threads = await loadThreadsFor(parentRoom);
+  list.innerHTML = '';
+  if(!threads.length){ list.innerHTML = '<div class="panelEmpty">No threads yet. Hover a message and pick <b>Create Thread</b> to start one.</div>'; return; }
+  threads.forEach(t => {
+    const row = document.createElement('button');
+    row.className = 'threadListRow';
+    row.innerHTML = ICON_THREAD_SVG;
+    const main = document.createElement('div');
+    main.className = 'threadListMain';
+    main.innerHTML = '<b></b><span></span>';
+    main.querySelector('b').textContent = t.name;
+    main.querySelector('span').textContent = t.messageCount + (t.messageCount === 1 ? ' message' : ' messages') + ' · active ' + timeAgo(t.lastMessageAt) + ' · started by ' + displayNameFor(t.createdBy);
+    row.appendChild(main);
+    row.onclick = () => { closePopouts(); openThread(t.id); };
+    row.oncontextmenu = e => showMenu(e, threadMenuItems(t));
+    list.appendChild(row);
+  });
+}
+
+// ---- forum channels: a list of posts instead of a chat
+let forumRoom = '';
+function closeForum(){
+  forumRoom = '';
+  $('chat').classList.remove('forumMode');
+  $('forumView').innerHTML = '';
+}
+async function renderForum(room){
+  forumRoom = room;
+  $('chat').classList.add('forumMode');
+  const found = channelByRoom(room);
+  const pane = $('forumView');
+  pane.innerHTML = '';
+  const head = document.createElement('div');
+  head.className = 'forumHead';
+  head.innerHTML = '<div><h2></h2><p></p></div>';
+  head.querySelector('h2').textContent = found ? found.channel.name : 'Forum';
+  head.querySelector('p').textContent = (found && found.channel.topic) || 'Each post is its own conversation. Open one to reply.';
+  const add = document.createElement('button');
+  add.className = 'btn';
+  add.textContent = 'New Post';
+  add.onclick = () => openNewPost(room);
+  head.appendChild(add);
+  pane.appendChild(head);
+  const list = document.createElement('div');
+  list.className = 'forumList';
+  list.innerHTML = '<div class="panelEmpty">Loading posts…</div>';
+  pane.appendChild(list);
+  const posts = await loadThreadsFor(room);
+  if(forumRoom !== room) return;
+  list.innerHTML = '';
+  if(!posts.length){ list.innerHTML = '<div class="panelEmpty"><span class="big">' + ICON_FORUM_SVG.replace('width="18" height="18"', 'width="40" height="40"') + '</span>No posts yet. Be the first - hit <b>New Post</b>.</div>'; return; }
+  posts.forEach(post => {
+    const card = document.createElement('button');
+    card.className = 'forumCard' + (unread[post.room] ? ' unread' : '');
+    const title = document.createElement('div');
+    title.className = 'forumTitle';
+    title.textContent = post.name;
+    card.appendChild(title);
+    if(post.firstMessage){
+      const preview = document.createElement('div');
+      preview.className = 'forumPreview';
+      const who = document.createElement('b');
+      who.textContent = displayNameFor(post.firstMessage.user) + ': ';
+      preview.append(who, displayText(plainMentions(post.firstMessage.text), room));
+      card.appendChild(preview);
+    }
+    const meta = document.createElement('div');
+    meta.className = 'forumMeta';
+    meta.appendChild(createAvatar(post.createdBy, 'xs'));
+    meta.appendChild(document.createTextNode(displayNameFor(post.createdBy) + ' · ' + post.messageCount + (post.messageCount === 1 ? ' message' : ' messages') + ' · ' + timeAgo(post.lastMessageAt)));
+    if(unread[post.room]) meta.appendChild(makeBadge(unread[post.room]));
+    card.appendChild(meta);
+    card.onclick = () => openThread(post.id);
+    card.oncontextmenu = e => showMenu(e, threadMenuItems(post));
+    list.appendChild(card);
+  });
+}
+
+/* ============================ scheduled events ============================ */
+const eventsByServer = {}; // serverId -> [event]
+let eventsModalServer = null;
+const ICON_CALENDAR_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>';
+
+async function loadEvents(serverId){
+  try{
+    const response = await fetch('/servers/' + serverId + '/events', { headers: bearer() });
+    eventsByServer[serverId] = response.ok ? await response.json() : [];
+  }catch(e){ eventsByServer[serverId] = eventsByServer[serverId] || []; }
+  return eventsByServer[serverId];
+}
+function eventIsLive(ev){
+  const start = parseTime(ev.startsAt).getTime();
+  const end = ev.endsAt ? parseTime(ev.endsAt).getTime() : start + 2 * 3600 * 1000;
+  return Date.now() >= start && Date.now() < end;
+}
+function eventWhen(ev){
+  const start = parseTime(ev.startsAt);
+  const day = start.toLocaleDateString([], { weekday:'short', day:'numeric', month:'short' });
+  let text = day + ' · ' + formatTime(ev.startsAt);
+  if(ev.endsAt){
+    const end = parseTime(ev.endsAt);
+    text += ' – ' + (end.toDateString() === start.toDateString() ? '' : end.toLocaleDateString([], { day:'numeric', month:'short' }) + ' ') + formatTime(ev.endsAt);
+  }
+  return text;
+}
+function eventCountdown(ev){
+  if(eventIsLive(ev)) return 'Happening now';
+  const mins = Math.round((parseTime(ev.startsAt) - Date.now()) / 60000);
+  if(mins < 60) return 'Starts in ' + Math.max(1, mins) + 'm';
+  if(mins < 48 * 60) return 'Starts in ' + Math.round(mins / 60) + 'h';
+  return 'Starts in ' + Math.round(mins / 1440) + ' days';
+}
+// <input type="datetime-local"> wants local time without a zone
+function toLocalInput(value){
+  const d = value ? parseTime(value) : new Date(Date.now() + 3600 * 1000);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function sidebarEventsRow(server){
+  const list = eventsByServer[server.id] || [];
+  const live = list.some(eventIsLive);
+  const row = document.createElement('div');
+  row.className = 'channel eventsRow' + (live ? ' live' : '');
+  row.innerHTML = '<span class="hash">' + ICON_CALENDAR_SVG + '</span>';
+  const name = document.createElement('span');
+  name.className = 'channelName';
+  name.textContent = live ? 'Event happening now' : (list.length ? list.length + (list.length === 1 ? ' Event' : ' Events') : 'Events');
+  row.appendChild(name);
+  row.onclick = () => openEventsModal(server.id);
+  return row;
+}
+
+async function openEventsModal(serverId){
+  eventsModalServer = serverId;
+  openModal('<div class="modalHead"><h2>Events</h2><p id="evSub"></p></div><div class="modalBody" id="evBody"><div class="panelEmpty">Loading…</div></div>' +
+    '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Close</button><button class="btn" id="evCreate" style="display:none">Create Event</button></div>', true);
+  await loadEvents(serverId);
+  renderEventsList();
+}
+function renderEventsList(){
+  const server = serverById(eventsModalServer);
+  const body = $('evBody');
+  if(!server || !body) return;
+  $('evSub').textContent = 'Coming up in ' + server.name;
+  const create = $('evCreate');
+  create.style.display = server.canManage ? '' : 'none';
+  create.onclick = () => renderEventForm(null);
+  const list = eventsByServer[server.id] || [];
+  body.innerHTML = '';
+  if(!list.length){
+    body.innerHTML = '<div class="panelEmpty"><span class="big">' + ICON_CALENDAR_SVG.replace('width="18" height="18"', 'width="40" height="40"') + '</span>No upcoming events.' +
+      (server.canManage ? ' Create one and members can mark themselves as interested - they\'ll get a reminder when it starts.' : '') + '</div>';
+    return;
+  }
+  list.forEach(ev => {
+    const card = document.createElement('div');
+    card.className = 'eventCard' + (eventIsLive(ev) ? ' live' : '');
+    const start = parseTime(ev.startsAt);
+    card.innerHTML = '<div class="eventDate"><span></span><b></b></div><div class="eventMain"><div class="eventWhen"></div><div class="eventName"></div><div class="eventWhere"></div><div class="eventDesc"></div><div class="eventActions"></div></div>';
+    card.querySelector('.eventDate span').textContent = start.toLocaleDateString([], { month:'short' }).toUpperCase();
+    card.querySelector('.eventDate b').textContent = start.getDate();
+    card.querySelector('.eventWhen').textContent = eventCountdown(ev) + ' · ' + eventWhen(ev);
+    card.querySelector('.eventName').textContent = ev.name;
+    const where = card.querySelector('.eventWhere');
+    if(ev.channelRoom){
+      const link = document.createElement('button');
+      link.className = 'linkBtn';
+      link.textContent = '#' + ev.channelName;
+      link.onclick = () => { closeModal(); openChannel(ev.channelRoom); };
+      where.appendChild(link);
+    }
+    if(ev.location) where.appendChild(document.createTextNode((ev.channelRoom ? ' · ' : '') + ev.location));
+    card.querySelector('.eventDesc').textContent = ev.description;
+    const actions = card.querySelector('.eventActions');
+    const rsvp = document.createElement('button');
+    rsvp.className = 'btn' + (ev.interested ? '' : ' grey');
+    rsvp.textContent = (ev.interested ? '✓ Interested' : 'Interested') + ' · ' + ev.interestedCount;
+    rsvp.setAttribute('aria-pressed', ev.interested ? 'true' : 'false');
+    rsvp.title = ev.interested ? 'You\'ll get a reminder when it starts. Click to undo.' : 'Get a reminder when it starts';
+    rsvp.onclick = async () => {
+      try{
+        const updated = await postJson('/events/' + ev.id + '/rsvp', { interested: !ev.interested });
+        Object.assign(ev, updated);
+        renderEventsList();
+      }catch(err){ toast(err.message); }
+    };
+    actions.appendChild(rsvp);
+    if(server.canManage){
+      const edit = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Edit' });
+      edit.onclick = () => renderEventForm(ev);
+      const cancel = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Cancel Event' });
+      cancel.onclick = async () => {
+        if(!confirm('Cancel "' + ev.name + '"? It will disappear for everyone.')) return;
+        try{ await postJson('/events/' + ev.id + '/cancel'); await loadEvents(server.id); renderEventsList(); renderSidebar(); }
+        catch(err){ toast(err.message); }
+      };
+      actions.append(edit, cancel);
+    }
+    body.appendChild(card);
+  });
+}
+function renderEventForm(ev){
+  const server = serverById(eventsModalServer);
+  if(!server) return;
+  $('evSub').textContent = ev ? 'Edit event' : 'Schedule an event for ' + server.name;
+  $('evCreate').style.display = 'none';
+  const body = $('evBody');
+  body.innerHTML =
+    '<label class="formLabel" for="evName">Event name</label><input class="formInput" id="evName" maxlength="100" placeholder="Movie night">' +
+    '<div class="rowFlex" style="gap:12px;align-items:flex-start"><div style="flex:1;min-width:200px"><label class="formLabel" for="evStart">Starts</label><input class="formInput" type="datetime-local" id="evStart"></div>' +
+    '<div style="flex:1;min-width:200px"><label class="formLabel" for="evEnd">Ends (optional)</label><input class="formInput" type="datetime-local" id="evEnd"></div></div>' +
+    '<div class="rowFlex" style="gap:12px;align-items:flex-start"><div style="flex:1;min-width:200px"><label class="formLabel" for="evChannel">Channel (optional)</label><select class="formInput" id="evChannel"><option value="">No channel</option></select></div>' +
+    '<div style="flex:1;min-width:200px"><label class="formLabel" for="evLocation">Location (optional)</label><input class="formInput" id="evLocation" maxlength="100" placeholder="e.g. the library, or online"></div></div>' +
+    '<label class="formLabel" for="evDesc">Description (optional)</label><textarea class="formInput" id="evDesc" maxlength="1000" style="min-height:80px;resize:vertical"></textarea>' +
+    '<div class="modalNote">People who click Interested get a reminder when it starts. If a channel is picked, a message is posted there too.</div>' +
+    '<div class="rowFlex" style="margin-top:14px"><button class="btn" id="evSave">' + (ev ? 'Save Changes' : 'Create Event') + '</button><button class="btn ghost" id="evBack">Back</button></div>' +
+    '<div class="modalMsg" id="modalMsg"></div>';
+  (server.channels || []).filter(c => c.kind !== 'forum').forEach(c => $('evChannel').appendChild(Object.assign(document.createElement('option'), { value:String(c.id), textContent:'#' + c.name })));
+  $('evName').value = ev ? ev.name : '';
+  $('evStart').value = toLocalInput(ev ? ev.startsAt : null);
+  $('evEnd').value = ev && ev.endsAt ? toLocalInput(ev.endsAt) : '';
+  $('evChannel').value = ev && ev.channelId ? String(ev.channelId) : '';
+  $('evLocation').value = ev ? ev.location : '';
+  $('evDesc').value = ev ? ev.description : '';
+  $('evName').focus();
+  $('evBack').onclick = renderEventsList;
+  $('evSave').onclick = async () => {
+    const start = $('evStart').value ? new Date($('evStart').value) : null;
+    const end = $('evEnd').value ? new Date($('evEnd').value) : null;
+    if(!start){ modalMessage('Pick when it starts.', true); return; }
+    const payload = {
+      name: $('evName').value.trim(), description: $('evDesc').value.trim(), location: $('evLocation').value.trim(),
+      channelId: Number($('evChannel').value) || null, endsAt: end ? end.toISOString() : null
+    };
+    // only send the start when it changed, so editing an event that already began still works
+    if(!ev || start.getTime() !== parseTime(ev.startsAt).getTime()) payload.startsAt = start.toISOString();
+    try{
+      await postJson(ev ? '/events/' + ev.id + '/update' : '/servers/' + server.id + '/events', payload);
+      await loadEvents(server.id);
+      renderEventsList();
+      renderSidebar();
+      toast(ev ? 'Event updated' : 'Event created');
+    }catch(err){ modalMessage(err.message, true); }
+  };
+}
+
+// "📅 Movie night is starting now!" - posted in the event's channel
+function buildEventMessageEl(item){
+  const data = item.data;
+  const wrap = document.createElement('div');
+  wrap.className = 'message first systemMessage eventMessage';
+  wrap.dataset.messageId = data.id;
+  wrap._item = item;
+  const gutter = document.createElement('div');
+  gutter.className = 'msgGutter';
+  gutter.innerHTML = ICON_CALENDAR_SVG;
+  wrap.appendChild(gutter);
+  const body = document.createElement('div');
+  body.className = 'msgBody';
+  const line = document.createElement('div');
+  line.className = 'systemText';
+  const name = document.createElement('b');
+  name.textContent = data.text;
+  const time = Object.assign(document.createElement('span'), { className:'msgTime', textContent:formatStamp(data.createdAt) });
+  line.append('Event ', name, ' is starting now!', time);
+  const found = channelByRoom(data.room);
+  if(found){
+    const open = Object.assign(document.createElement('button'), { className:'linkBtn', textContent:'See events' });
+    open.style.marginLeft = '8px';
+    open.onclick = () => openEventsModal(found.server.id);
+    line.appendChild(open);
+  }
+  body.appendChild(line);
+  const reactions = document.createElement('div');
+  reactions.className = 'reactions';
+  body.appendChild(reactions);
+  paintReactions(reactions, data);
+  wrap.appendChild(body);
+  wrap.appendChild(buildActions(item));
+  return wrap;
 }
 
 /* ============================ older history + jump to present ============================ */
@@ -5801,86 +6470,221 @@ async function saveOrder(url, ids, from, to){
   }catch(err){ toast(err.message); }
 }
 
+function channelGroups(server){
+  const channels = server.channels || [];
+  const cats = server.categories || [];
+  return [{ id:null, name:'No category', list:channels.filter(c => !c.categoryId || !cats.some(cat => cat.id === c.categoryId)) }]
+    .concat(cats.map(cat => ({ id:cat.id, name:cat.name, list:channels.filter(c => c.categoryId === cat.id) })));
+}
+
+async function postJson(url, body){
+  const response = await fetch(url, { method:'POST', headers:authHeaders(), body:JSON.stringify(body || {}) });
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok) throw new Error(data.error || 'something went wrong');
+  return data;
+}
+
 function renderServerChannels(c, sid){
   const server = serverById(sid);
   if(!server){ c.innerHTML = ''; return; }
+  const cats = server.categories || [];
+  const catOptions = '<option value="">No category</option>' + cats.map(cat => '<option value="' + cat.id + '">' + escapeHtml(cat.name) + '</option>').join('');
   c.innerHTML =
     '<h2 class="settingsTitle">Channels</h2>' +
-    (server.canManage ? section('Create Channel', '<div class="rowFlex"><input class="settingsInput" id="newChName" placeholder="new-channel" maxlength="32" style="flex:1;min-width:200px"><button class="btn" id="newChBtn">Create Channel</button></div><div class="inlineMsg" id="newChMsg"></div>') : '') +
-    section('Text Channels', '<div id="chList"></div>');
-  const list = $('chList');
-  const channels = server.channels || [];
-  channels.forEach((channel, index) => {
-    const row = document.createElement('div');
-    row.className = 'manageRow';
-    row.innerHTML = '<span class="chIcon">' + (channel.adminsOnly ? ICON_ANNOUNCE_SVG : '#') + '</span><div class="grow"><div class="rowTitle"></div><div class="rowSub"></div></div>';
-    row.querySelector('.rowTitle').textContent = channel.name;
-    const extras = [channel.adminsOnly ? 'Announcements' : '', channel.slowmode ? 'Slowmode ' + slowmodeLabel(channel.slowmode) : ''].filter(Boolean);
-    row.querySelector('.rowSub').textContent = [channel.topic || 'No topic'].concat(extras).join(' · ');
-    const editor = document.createElement('div');
-    editor.className = 'channelEditor';
-    editor.style.display = 'none';
-    if(server.canManage){
-      row.appendChild(moveButtons(index, channels.length, to => saveOrder('/servers/' + sid + '/channels/reorder', channels.map(c => c.id), index, to)));
-      const edit = document.createElement('button');
-      edit.className = 'btn grey';
-      edit.textContent = 'Edit';
-      edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+    (server.canManage ? section('Create Channel',
+      '<div class="rowFlex"><input class="settingsInput" id="newChName" placeholder="new-channel" maxlength="32" style="flex:1;min-width:200px">' +
+      '<select class="settingsInput" id="newChCat" style="width:auto">' + catOptions + '</select>' +
+      '<select class="settingsInput" id="newChKind" style="width:auto"><option value="text">Text</option><option value="forum">Forum</option></select><button class="btn" id="newChBtn">Create Channel</button></div>' +
+      '<label class="rememberRow" style="margin:10px 0 0 0"><input type="checkbox" id="newChPrivate"> Private - only admins can see it until you add people or roles</label>' +
+      '<div class="inlineMsg" id="newChMsg"></div>') : '') +
+    (server.canManage ? section('Categories',
+      '<div class="switchDesc" style="margin:0 0 10px 0">Group channels under headings people can collapse. Deleting a category keeps its channels.</div>' +
+      '<div class="rowFlex" style="margin-bottom:12px"><input class="settingsInput" id="newCatName" placeholder="New category name" maxlength="40" style="flex:1;min-width:200px"><button class="btn" id="newCatBtn">Create Category</button></div>' +
+      '<div id="catList"></div>') : '') +
+    '<div id="chGroups"></div>';
+
+  // ---- categories
+  if($('catList')){
+    if(!cats.length) $('catList').innerHTML = '<div class="switchDesc">No categories yet.</div>';
+    cats.forEach((cat, index) => {
+      const row = document.createElement('div');
+      row.className = 'manageRow catRow';
+      row.innerHTML = '<span class="chIcon">▾</span><div class="grow"><input class="settingsInput" maxlength="40"></div>';
+      const input = row.querySelector('input');
+      input.value = cat.name;
+      input.setAttribute('aria-label', 'Category name');
+      row.appendChild(moveButtons(index, cats.length, to => saveOrder('/servers/' + sid + '/categories/reorder', cats.map(x => x.id), index, to)));
+      const save = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Rename' });
+      save.onclick = async () => {
+        try{ await postJson('/servers/' + sid + '/categories/' + cat.id + '/update', { name: input.value }); await refreshServers(); toast('Category renamed'); rerenderSettingsSection(); }
+        catch(err){ toast(err.message); }
+      };
+      const del = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Delete' });
+      del.onclick = async () => {
+        if(!confirm('Delete the "' + cat.name + '" category? Its channels are kept and become uncategorised.')) return;
+        try{ await postJson('/servers/' + sid + '/categories/' + cat.id + '/delete'); await refreshServers(); rerenderSettingsSection(); }
+        catch(err){ toast(err.message); }
+      };
+      row.append(save, del);
+      $('catList').appendChild(row);
+    });
+    $('newCatBtn').onclick = async () => {
+      try{ await postJson('/servers/' + sid + '/categories', { name: $('newCatName').value }); await refreshServers(); rerenderSettingsSection(); }
+      catch(err){ toast(err.message); }
+    };
+  }
+
+  // ---- channels, grouped like the sidebar; ↑/↓ move within a group
+  let members = null; // fetched the first time someone opens "who can see this"
+  async function loadMembers(){
+    if(members) return members;
+    const response = await fetch('/servers/' + sid + '/members', { headers: bearer() });
+    members = response.ok ? await response.json() : [];
+    return members;
+  }
+  const groups = channelGroups(server);
+  const holder = $('chGroups');
+  groups.forEach(group => {
+    if(!group.list.length && group.id === null && cats.length) return;
+    const box = document.createElement('div');
+    box.className = 'formSection';
+    box.innerHTML = '<div class="sectionHeading"></div>';
+    box.querySelector('.sectionHeading').textContent = (group.id ? group.name : (cats.length ? 'No category' : 'Text Channels')) + ' — ' + group.list.length;
+    if(!group.list.length) box.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'No channels in this category yet.' }));
+    holder.appendChild(box);
+    group.list.forEach((channel, index) => {
+      const row = document.createElement('div');
+      row.className = 'manageRow';
+      row.innerHTML = '<span class="chIcon">' + channelIconHtml(channel) + '</span><div class="grow"><div class="rowTitle"></div><div class="rowSub"></div></div>';
+      row.querySelector('.rowTitle').textContent = channel.name;
+      const extras = [channel.isPrivate ? 'Private' : '', channel.adminsOnly ? 'Announcements' : '', channel.slowmode ? 'Slowmode ' + slowmodeLabel(channel.slowmode) : ''].filter(Boolean);
+      row.querySelector('.rowSub').textContent = [channel.topic || 'No topic'].concat(extras).join(' · ');
+      box.appendChild(row);
+      if(!server.canManage) return;
+      row.appendChild(moveButtons(index, group.list.length, to => {
+        const reordered = groups.map(g => g.list.map(ch => ch.id));
+        const ids = reordered[groups.indexOf(group)];
+        ids.splice(to, 0, ids.splice(index, 1)[0]);
+        const all = reordered.flat();
+        saveOrder('/servers/' + sid + '/channels/reorder', all, 0, 0);
+      }));
+      const edit = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Edit' });
       row.appendChild(edit);
-      const isOriginal = ['general', 'gaming', 'coding'].includes(channel.room);
-      editor.innerHTML =
-        '<div><label class="formLabel">Channel name</label><input class="settingsInput" data-f="name" maxlength="32"' + (isOriginal ? ' disabled title="The original channels keep their names"' : '') + '></div>' +
-        '<div><label class="formLabel">Topic</label><textarea class="settingsInput" data-f="topic" maxlength="1024" style="min-height:60px" placeholder="Let everyone know how to use this channel"></textarea></div>' +
-        '<div><label class="formLabel">Slowmode</label><select class="settingsInput" data-f="slowmode" style="max-width:220px"></select>' +
-          '<div class="switchDesc">Members have to wait this long between messages. Admins aren\'t affected.</div></div>' +
-        switchRow('chAnn' + channel.id, 'Announcement channel', 'Only the owner and admins can post here. Everyone can still read and react.', channel.adminsOnly, false) +
-        '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete"' + (isOriginal ? ' disabled title="The original channels can\'t be deleted"' : '') + '>Delete Channel</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
-      editor.querySelector('[data-f=name]').value = channel.name;
-      editor.querySelector('[data-f=topic]').value = channel.topic || '';
-      const slowSelect = editor.querySelector('[data-f=slowmode]');
-      SLOWMODE_CHOICES.forEach(sec => {
-        const opt = document.createElement('option');
-        opt.value = String(sec);
-        opt.textContent = sec ? slowmodeLabel(sec) : 'Off';
-        slowSelect.appendChild(opt);
-      });
-      slowSelect.value = String(channel.slowmode || 0);
-      editor.querySelector('[data-a=save]').onclick = async () => {
-        const body = {
-          topic: editor.querySelector('[data-f=topic]').value,
-          slowmode: Number(slowSelect.value) || 0,
-          adminsOnly: editor.querySelector('#chAnn' + channel.id).checked
-        };
-        if(!isOriginal) body.name = editor.querySelector('[data-f=name]').value;
-        try{
-          const response = await fetch('/servers/' + sid + '/channels/' + channel.id + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
-          const data = await response.json();
-          if(!response.ok) throw new Error(data.error || 'could not save');
-          await refreshServers();
-          if(currentRoom === channel.room){ const f = channelByRoom(channel.room); if(f){ setHeader('#', f.channel.name, f.channel.topic); setComposerPlaceholder(channelPlaceholder(f)); updateBlockedBar(); } }
-          toast('Channel saved');
-          rerenderSettingsSection();
-        }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
-      };
-      editor.querySelector('[data-a=delete]').onclick = async () => {
-        await deleteChannel(server, channel);
-        rerenderSettingsSection();
-      };
-    }
-    list.appendChild(row);
-    list.appendChild(editor);
+      const editor = document.createElement('div');
+      editor.className = 'channelEditor';
+      editor.style.display = 'none';
+      box.appendChild(editor);
+      edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+      buildChannelEditor(editor, server, channel, catOptions, loadMembers);
+    });
   });
+
   if($('newChBtn')) $('newChBtn').onclick = async () => {
     const name = $('newChName').value.trim();
     if(!name){ inlineMessage($('newChMsg'), 'Type a channel name.', true); return; }
     try{
-      const response = await fetch('/servers/' + sid + '/channels', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name }) });
-      const data = await response.json();
-      if(!response.ok) throw new Error(data.error || 'could not create channel');
+      const data = await postJson('/servers/' + sid + '/channels', { name, categoryId: Number($('newChCat').value) || null, isPrivate: $('newChPrivate').checked, kind: $('newChKind').value });
       await refreshServers();
       toast('#' + data.name + ' created');
       rerenderSettingsSection();
     }catch(err){ inlineMessage($('newChMsg'), err.message, true); }
+  };
+}
+
+function buildChannelEditor(editor, server, channel, catOptions, loadMembers){
+  const sid = server.id;
+  const isOriginal = ['general', 'gaming', 'coding'].includes(channel.room);
+  const access = channel.access || { roleIds:[], usernames:[] };
+  let draft = { isPrivate: channel.isPrivate, roleIds: access.roleIds.slice(), usernames: access.usernames.slice() };
+  editor.innerHTML =
+    '<div><label class="formLabel">Channel name</label><input class="settingsInput" data-f="name" maxlength="32"' + (isOriginal ? ' disabled title="The original channels keep their names"' : '') + '></div>' +
+    '<div><label class="formLabel">Topic</label><textarea class="settingsInput" data-f="topic" maxlength="1024" style="min-height:60px" placeholder="Let everyone know how to use this channel"></textarea></div>' +
+    '<div><label class="formLabel">Category</label><select class="settingsInput" data-f="category" style="max-width:260px">' + catOptions + '</select></div>' +
+    '<div><label class="formLabel">Slowmode</label><select class="settingsInput" data-f="slowmode" style="max-width:220px"></select>' +
+      '<div class="switchDesc">Members have to wait this long between messages. Admins aren\'t affected.</div></div>' +
+    switchRow('chAnn' + channel.id, 'Announcement channel', 'Only the owner and admins can post here. Everyone can still read and react.', channel.adminsOnly, false) +
+    switchRow('chPriv' + channel.id, 'Private channel', 'Only the owner, admins and the roles or people you pick below can see it - its messages, search results, mentions and notifications.', channel.isPrivate, false) +
+    '<div class="accessBox" data-f="access"></div>' +
+    '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete"' + (isOriginal ? ' disabled title="The original channels can\'t be deleted"' : '') + '>Delete Channel</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
+  editor.querySelector('[data-f=name]').value = channel.name;
+  editor.querySelector('[data-f=topic]').value = channel.topic || '';
+  editor.querySelector('[data-f=category]').value = channel.categoryId ? String(channel.categoryId) : '';
+  const slowSelect = editor.querySelector('[data-f=slowmode]');
+  SLOWMODE_CHOICES.forEach(sec => slowSelect.appendChild(Object.assign(document.createElement('option'), { value:String(sec), textContent: sec ? slowmodeLabel(sec) : 'Off' })));
+  slowSelect.value = String(channel.slowmode || 0);
+
+  const accessBox = editor.querySelector('[data-f=access]');
+  async function paintAccess(){
+    accessBox.style.display = draft.isPrivate ? 'grid' : 'none';
+    if(!draft.isPrivate) return;
+    accessBox.innerHTML = '<div class="fieldLabel">Roles that can see it</div><div class="accessChips" data-f="roles"></div>' +
+      '<div class="fieldLabel">People who can see it</div><input class="settingsInput" data-f="find" placeholder="Search members" style="max-width:260px"><div class="accessPeople" data-f="people"><div class="switchDesc">Loading…</div></div>' +
+      '<div class="switchDesc">The owner and admins can always see every channel.</div>';
+    const roleHolder = accessBox.querySelector('[data-f=roles]');
+    if(!(server.roles || []).length) roleHolder.innerHTML = '<span class="switchDesc" style="margin:0">No roles yet - make some on the Roles page.</span>';
+    (server.roles || []).forEach(role => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'accessChip' + (draft.roleIds.includes(role.id) ? ' on' : '');
+      chip.innerHTML = '<i style="background:' + (role.color || '#99aab5') + '"></i>';
+      chip.appendChild(document.createTextNode(role.name));
+      chip.setAttribute('aria-pressed', draft.roleIds.includes(role.id) ? 'true' : 'false');
+      chip.onclick = () => {
+        draft.roleIds = draft.roleIds.includes(role.id) ? draft.roleIds.filter(id => id !== role.id) : draft.roleIds.concat(role.id);
+        chip.classList.toggle('on'); chip.setAttribute('aria-pressed', chip.classList.contains('on') ? 'true' : 'false');
+      };
+      roleHolder.appendChild(chip);
+    });
+    const people = await loadMembers();
+    const list = accessBox.querySelector('[data-f=people]');
+    const find = accessBox.querySelector('[data-f=find]');
+    function paintPeople(){
+      list.innerHTML = '';
+      const term = find.value.trim().toLowerCase();
+      const shown = people.filter(m => m.role !== 'owner' && m.role !== 'admin')
+        .filter(m => !term || m.username.toLowerCase().includes(term) || (m.displayName || '').toLowerCase().includes(term))
+        .sort((a, b) => Number(draft.usernames.includes(b.username)) - Number(draft.usernames.includes(a.username)) || a.username.localeCompare(b.username))
+        .slice(0, 60);
+      if(!shown.length) list.innerHTML = '<div class="switchDesc">No members match.</div>';
+      shown.forEach(m => {
+        const label = document.createElement('label');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = draft.usernames.includes(m.username);
+        box.onchange = () => { draft.usernames = box.checked ? draft.usernames.concat(m.username) : draft.usernames.filter(u => u !== m.username); };
+        label.append(box, createAvatar(m.username, 'xs'), document.createTextNode(m.displayName || m.username));
+        list.appendChild(label);
+      });
+    }
+    find.oninput = paintPeople;
+    paintPeople();
+  }
+  editor.querySelector('#chPriv' + channel.id).onchange = e => { draft.isPrivate = e.target.checked; paintAccess(); };
+  paintAccess();
+
+  editor.querySelector('[data-a=save]').onclick = async () => {
+    const msg = editor.querySelector('[data-f=msg]');
+    const body = {
+      topic: editor.querySelector('[data-f=topic]').value,
+      slowmode: Number(slowSelect.value) || 0,
+      adminsOnly: editor.querySelector('#chAnn' + channel.id).checked,
+      categoryId: Number(editor.querySelector('[data-f=category]').value) || null
+    };
+    if(!isOriginal) body.name = editor.querySelector('[data-f=name]').value;
+    const accessChanged = draft.isPrivate !== channel.isPrivate ||
+      (draft.isPrivate && (draft.roleIds.slice().sort().join() !== access.roleIds.slice().sort().join() || draft.usernames.slice().sort().join() !== access.usernames.slice().sort().join()));
+    try{
+      await postJson('/servers/' + sid + '/channels/' + channel.id + '/update', body);
+      if(accessChanged) await postJson('/servers/' + sid + '/channels/' + channel.id + '/access', draft);
+      await refreshServers();
+      if(currentRoom === channel.room){ const f = channelByRoom(channel.room); if(f){ setHeader('#', f.channel.name, f.channel.topic); setComposerPlaceholder(channelPlaceholder(f)); updateBlockedBar(); renderMembers(true); } }
+      toast('Channel saved');
+      rerenderSettingsSection();
+    }catch(err){ inlineMessage(msg, err.message, true); }
+  };
+  editor.querySelector('[data-a=delete]').onclick = async () => {
+    await deleteChannel(server, channel);
+    rerenderSettingsSection();
   };
 }
 
@@ -6345,19 +7149,30 @@ function openJoinServer(){
   };
 }
 
-function openCreateChannel(){
+function openCreateChannel(categoryId){
   const server = currentServer();
   if(!server) return;
+  const cats = server.categories || [];
   openModal(
     '<div class="modalHead"><h2>Create channel</h2><p>Channels live inside <b>' + escapeHtml(server.name) + '</b>.</p></div>' +
     '<div class="modalBody"><label class="formLabel">Channel name</label>' +
-    '<input class="formInput" id="newChannelName" placeholder="new-channel" maxlength="32"><div class="modalMsg" id="modalMsg"></div></div>' +
+    '<input class="formInput" id="newChannelName" placeholder="new-channel" maxlength="32">' +
+    (cats.length ? '<label class="formLabel" for="newChannelCat">Category</label><select class="formInput" id="newChannelCat"><option value="">No category</option>' +
+      cats.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('') + '</select>' : '') +
+    '<label class="formLabel" for="newChannelKind">Type</label><select class="formInput" id="newChannelKind"><option value="text">Text - a normal chat</option><option value="forum">Forum - every post is its own thread</option></select>' +
+    '<label class="rememberRow" style="margin:0"><input type="checkbox" id="newChannelPrivate"> Private channel - only admins (and people you add in Server Settings) can see it</label>' +
+    '<div class="modalMsg" id="modalMsg"></div></div>' +
     '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="createChannelBtn">Create Channel</button></div>'
   );
+  if($('newChannelCat') && categoryId) $('newChannelCat').value = String(categoryId);
+  $('newChannelName').focus();
   $('createChannelBtn').onclick = async () => {
     const name = $('newChannelName').value.trim();
     try{
-      const response = await fetch('/servers/' + server.id + '/channels', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name }) });
+      const response = await fetch('/servers/' + server.id + '/channels', { method:'POST', headers:authHeaders(), body:JSON.stringify({
+        name, categoryId: $('newChannelCat') ? Number($('newChannelCat').value) || null : null, isPrivate: $('newChannelPrivate').checked,
+        kind: $('newChannelKind').value
+      }) });
       const data = await response.json();
       if(!response.ok) throw new Error(data.error || 'could not create channel');
       await loadServers();
@@ -6676,7 +7491,7 @@ document.addEventListener('click', e => {
   hideEmojiPicker();
   if(!e.target.closest || !e.target.closest('.popout')) closePopouts();
 });
-['pinsPopout','profilePopout','inboxPopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
+['pinsPopout','profilePopout','inboxPopout','threadsPopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
 window.addEventListener('resize', () => { hideContextMenu(); hideEmojiPicker(); });
 window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); });
 window.addEventListener('blur', () => { isFocused = false; });

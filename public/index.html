@@ -2663,8 +2663,6 @@ function markSendFailed(tempId){
   if(actions) actions.remove(); // nothing to edit/react to - it was never saved
 }
 
-function handleAck(result){ if(result && result.error) showError(result.error); }
-
 /* ============================ attachments + previews ============================ */
 function addFiles(files){
   const incoming = Array.from(files || []);

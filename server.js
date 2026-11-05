@@ -86,8 +86,17 @@ const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   // Render's managed Postgres requires SSL; local/self-hosted Postgres
   // usually doesn't offer it. This accepts either without extra config.
-  ssl: process.env.PGSSL === 'false' ? false : { rejectUnauthorized: false }
+  ssl: process.env.PGSSL === 'false' ? false : { rejectUnauthorized: false },
+  // A sleeping Neon database takes a few seconds to wake; don't hang
+  // forever if it never answers.
+  connectionTimeoutMillis: 15000,
+  idleTimeoutMillis: 30000
 });
+// Neon (and any hosted Postgres) drops idle connections from its side when
+// it sleeps or restarts. pg reports that as an 'error' event on the pool,
+// and an unhandled 'error' event would crash the whole process - the pool
+// already discards the dead connection, so logging is all that's needed.
+pool.on('error', err => console.error('Idle database connection closed:', err.message));
 
 // Small helper so call sites read like the old synchronous style
 // ("await q(...)") instead of repeating pool.query(...).rows everywhere.
@@ -103,11 +112,31 @@ async function one(text, params) {
 app.set('trust proxy', 1); // Render sits in front of us - lets req.ip be the real visitor (used for rate limits)
 app.use(compression()); // gzip responses: index.html and JSON shrink ~70-80%
 app.use(express.json({ limit: '3mb' })); // room for a 1.5MB avatar as base64
+app.use((req, res, next) => {
+  // Browsers must trust the Content-Type we send rather than guessing one
+  // from the bytes (a "guessed" HTML page is how uploads turn into XSS).
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 app.use(express.static(PUBLIC_DIR));
+
+// Uploaded files are served from this same origin, where the login token
+// lives in localStorage - so a file that a browser would run as a page
+// (HTML, SVG, XML...) would be able to read it and take over the account
+// of anyone who opened it. Those types are always downloaded instead of
+// opened, and sandboxed even if something does open them.
+const ACTIVE_UPLOAD_EXT = new Set(['.html', '.htm', '.xhtml', '.xht', '.shtml', '.svg', '.svgz', '.xml', '.xsl', '.xslt', '.js', '.mjs']);
 app.use('/uploads', express.static(UPLOAD_DIR, {
   index: false,
   fallthrough: false,
-  maxAge: `${FILE_EXPIRY_HOURS}h`
+  maxAge: `${FILE_EXPIRY_HOURS}h`,
+  setHeaders(res, filePath) {
+    if (ACTIVE_UPLOAD_EXT.has(path.extname(filePath).toLowerCase())) {
+      res.setHeader('Content-Disposition', 'attachment');
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+    }
+  }
 }));
 
 app.get('/', (req, res) => {
@@ -948,14 +977,6 @@ function validHexColor(value) {
 
 // Author details travel with every message so a client never has to guess an
 // avatar from a stale local cache.
-async function authorFields(username) {
-  const u = await getUser(username);
-  return {
-    displayName: u ? (u.display_name || u.username) : username,
-    avatarUrl: u ? avatarUrlOf(u) : ''
-  };
-}
-
 async function reactionSummary(messageId) {
   return (await reactionSummaries([messageId])).get(messageId) || [];
 }
@@ -974,11 +995,6 @@ async function reactionSummaries(ids) {
     out.get(r.message_id).push({ emoji: r.emoji, count: Number(r.count), users: r.users ? r.users.split(',') : [] });
   }
   return out;
-}
-
-async function replyPreview(id) {
-  if (!id) return null;
-  return (await replyPreviews([id])).get(id) || null;
 }
 
 async function replyPreviews(ids) {
@@ -2607,6 +2623,21 @@ main().catch(err => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });
+
+// Render sends SIGTERM before replacing the process on every deploy -
+// finish in-flight requests and close database connections cleanly
+// instead of being killed mid-query.
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`${signal} received, shutting down`);
+  setTimeout(() => process.exit(0), 8000).unref(); // don't wait on stragglers forever
+  // io.close() also closes the HTTP server it's attached to
+  io.close(() => pool.end().finally(() => process.exit(0)));
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // A stray rejected promise anywhere should be logged, not take the whole
 // chat offline (Node exits on unhandled rejections by default).

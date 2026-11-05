@@ -1066,7 +1066,7 @@ async function serversForUser(username) {
         adminsOnly: !!c.admins_only,
         categoryId: c.category_id || null,
         isPrivate: !!c.is_private,
-        kind: c.kind === 'forum' ? 'forum' : 'text',
+        kind: ['forum', 'voice'].includes(c.kind) ? c.kind : 'text',
         access: canManage && c.is_private ? {
           roleIds: accessRows.filter(a => a.channel_id === c.id && a.role_id).map(a => a.role_id),
           usernames: accessRows.filter(a => a.channel_id === c.id && a.username).map(a => a.username)
@@ -1201,6 +1201,7 @@ async function resyncRooms(usernames) {
     }
     for (const room of allowed) socket.join(room);
   }
+  await enforceCallAccess(usernames);
 }
 
 async function isAllowedRoom(username, room) {
@@ -2153,6 +2154,145 @@ async function scheduleEventReminders() {
   reminderTimer.unref();
 }
 
+// ---------------- VOICE + VIDEO CALLS ----------------
+// Audio/video flows directly between browsers (WebRTC). The server only
+// relays the connection setup ("signaling") and tracks who is in which
+// call. Calls live in memory - a restart ends them, which is fine.
+// Call keys: 'call:dm:<a>:<b>' (sorted), 'call:group:<id>', 'voice:<channel room>'.
+const calls = new Map(); // key -> { key, kind, room, startedAt, participants: Map, ringing: Set, ringTimer, messageId, everJoined: Set }
+const MAX_CALL_SIZE = 8; // everyone connects to everyone, so keep calls small
+const RING_MS = 45 * 1000;
+
+function callInfo(key) {
+  key = String(key || '');
+  let m = /^call:dm:([a-zA-Z0-9_.-]{2,30}):([a-zA-Z0-9_.-]{2,30})$/.exec(key);
+  if (m) return makeDMRoom(m[1], m[2]) === 'dm:' + m[1] + ':' + m[2] ? { kind: 'dm', room: 'dm:' + m[1] + ':' + m[2], users: [m[1], m[2]] } : null;
+  m = /^call:group:(\d+)$/.exec(key);
+  if (m) return { kind: 'group', room: 'group:' + m[1] };
+  m = /^voice:(.+)$/.exec(key);
+  if (m) return { kind: 'voice', room: m[1] };
+  return null;
+}
+
+// Why `username` can't join `key` right now, or null if they can.
+async function callJoinProblem(username, key) {
+  const info = callInfo(key);
+  if (!info || !(await isAllowedRoom(username, info.room))) return 'call not found';
+  if (info.kind === 'dm') {
+    const other = info.users.find(u => u !== username);
+    if (!(await getUser(other))) return 'call not found';
+    if (await blockBetween(username, other)) return 'You can\'t call this person.';
+  }
+  if (info.kind === 'voice') {
+    const channel = await getChannelByRoom(info.room);
+    if (!channel || channel.kind !== 'voice') return 'call not found';
+  }
+  if (await isMuted(username)) return 'you are muted';
+  return null;
+}
+
+// Everyone who should see a call's state (who's in it): both people in a
+// DM, a group's members, or whoever can see a voice channel.
+async function callAudience(key) {
+  const info = callInfo(key);
+  if (!info) return [];
+  if (info.kind === 'dm') return info.users;
+  if (info.kind === 'group') return (await q(`SELECT username FROM group_members WHERE group_id = $1`, [groupIdFromRoom(info.room)])).map(r => r.username);
+  const channel = await getChannelByRoom(info.room);
+  if (!channel) return [];
+  return filterChannelViewers(channel, await serverMemberUsernames(channel.server_id));
+}
+
+function callState(call) {
+  return {
+    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt,
+    participants: [...call.participants.entries()].map(([username, p]) => ({
+      username, muted: p.muted, deafened: p.deafened, video: p.video, screen: p.screen,
+      camStream: p.camStream, screenStream: p.screenStream, joinedAt: p.joinedAt
+    })),
+    ringing: [...call.ringing]
+  };
+}
+async function broadcastCall(key) {
+  const call = calls.get(key);
+  const state = call ? callState(call) : { key, participants: [], ringing: [], ended: true };
+  for (const name of await callAudience(key)) sendToUser(name, 'voice:state', state);
+}
+
+// "X started a call" in a DM/group, turned into "...lasted 3 minutes" or
+// "missed call" when it ends. Its text holds the outcome; kind = 'call'.
+async function postCallMessage(call, from) {
+  const info = callInfo(call.key);
+  const toUser = info.kind === 'dm' ? info.users.find(u => u !== from) : null;
+  const created = await one(
+    `INSERT INTO messages (room, "user", text, to_user, is_group, kind) VALUES ($1, $2, 'ongoing', $3, $4, 'call') RETURNING *`,
+    [call.room, from, toUser, info.kind === 'group' ? 1 : 0]
+  );
+  call.messageId = created.id;
+  const msg = await normaliseMessage(created);
+  if (toUser) { sendToUser(from, 'dmMessage', msg); sendToUser(toUser, 'dmMessage', msg); }
+  else io.to(call.room).emit('message', msg);
+}
+async function finishCallMessage(call) {
+  if (!call.messageId) return;
+  const secs = Math.round((Date.now() - call.startedAt) / 1000);
+  const text = call.everJoined.size > 1 ? 'ended:' + secs : 'missed';
+  await pool.query(`UPDATE messages SET text = $1 WHERE id = $2`, [text, call.messageId]);
+  const msg = await normaliseMessage(await getMessageById(call.messageId));
+  emitRoomOrDM(msg.room, msg.to, 'messageUpdated', msg);
+}
+
+function stopRinging(call, usernames) {
+  for (const name of usernames) {
+    if (call.ringing.delete(name)) sendToUser(name, 'voice:ringStop', { key: call.key });
+  }
+  if (!call.ringing.size) clearTimeout(call.ringTimer);
+}
+
+async function leaveCall(key, username, reason) {
+  const call = calls.get(key);
+  if (!call || !call.participants.has(username)) return;
+  const p = call.participants.get(username);
+  call.participants.delete(username);
+  if (reason) io.to(p.socketId).emit('voice:forceLeave', { key, reason });
+  if (!call.participants.size) {
+    stopRinging(call, [...call.ringing]);
+    calls.delete(key);
+    await finishCallMessage(call).catch(err => console.error('call message failed:', err.message));
+  }
+  await broadcastCall(key);
+}
+
+// Which call (if any) a user is currently in - one call at a time.
+function callOf(username) {
+  for (const call of calls.values()) if (call.participants.has(username)) return call;
+  return null;
+}
+
+// Kick people out of calls they're no longer allowed in (lost access to a
+// voice channel, got blocked, got muted...). Called from resyncRooms().
+async function enforceCallAccess(usernames) {
+  for (const name of usernames) {
+    const call = callOf(name);
+    if (call && (await callJoinProblem(name, call.key))) await leaveCall(call.key, name, 'You no longer have access to this call.');
+  }
+}
+
+// STUN lets browsers find each other; a TURN relay (optional, set with
+// TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL) carries the call when a
+// network (often school or office wifi) blocks direct connections.
+app.get('/voice/ice', requireAuth, route(async (req, res) => {
+  const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+  if (process.env.TURN_URLS) {
+    iceServers.push({
+      urls: process.env.TURN_URLS.split(',').map(u => u.trim()).filter(Boolean),
+      username: process.env.TURN_USERNAME || '',
+      credential: process.env.TURN_CREDENTIAL || ''
+    });
+  }
+  res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
+}));
+
 // ---------------- THREADS + FORUM POSTS ----------------
 function threadFromRow(t) {
   if (!t) return null;
@@ -2179,7 +2319,7 @@ app.post('/threads', requireAuth, route(async (req, res) => {
     if (existing) return res.json(threadFromRow(existing)); // one thread per message
     parentRoom = starter.room;
     const channel = await getChannelByRoom(parentRoom);
-    if (!channel || channel.kind === 'forum') return res.status(400).json({ error: 'threads can only be started from messages in text channels' });
+    if (!channel || channel.kind === 'forum' || channel.kind === 'voice') return res.status(400).json({ error: 'threads can only be started from messages in text channels' });
   } else {
     parentRoom = String(req.body.parentRoom || '');
     const channel = await getChannelByRoom(parentRoom);
@@ -2700,7 +2840,7 @@ app.post('/servers/:id/channels', requireAuth, route(async (req, res) => {
       await pool.query(`UPDATE server_channels SET category_id = $1 WHERE id = $2`, [categoryId, created.id]);
     }
     if (req.body.isPrivate) await pool.query(`UPDATE server_channels SET is_private = 1 WHERE id = $1`, [created.id]);
-    if (req.body.kind === 'forum') await pool.query(`UPDATE server_channels SET kind = 'forum' WHERE id = $1`, [created.id]);
+    if (['forum', 'voice'].includes(req.body.kind)) await pool.query(`UPDATE server_channels SET kind = $1 WHERE id = $2`, [req.body.kind, created.id]);
     if (srv.is_default) { try { await insertChannel(name, req.username); } catch (_) {} }
     await notifyServerMembers(serverId, 'serversChanged', {});
     res.status(201).json({ id: created.id, name, room, serverId });
@@ -2720,6 +2860,8 @@ app.post('/servers/:id/channels/:channelId/delete', requireAuth, route(async (re
 
   await pool.query(`DELETE FROM server_channels WHERE id = $1`, [channelId]);
   await pool.query(`DELETE FROM channel_access WHERE channel_id = $1`, [channelId]);
+  const voiceCall = calls.get('voice:' + channel.room);
+  if (voiceCall) for (const name of [...voiceCall.participants.keys()]) await leaveCall(voiceCall.key, name, 'This voice channel was deleted.');
   await pool.query(`DELETE FROM threads WHERE parent_room = $1`, [channel.room]);
   await pool.query(`UPDATE servers SET system_channel_id = NULL WHERE id = $1 AND system_channel_id = $2`, [serverId, channelId]);
   await deleteChannelRow(channel.name);
@@ -3227,6 +3369,7 @@ app.post('/friends/block', requireAuth, route(async (req, res) => {
     [req.username, other]
   );
   await pool.query(`INSERT INTO blocks (blocker, blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [req.username, other]);
+  await enforceCallAccess([req.username, other]); // ends a call between them
   // The other person only sees the friendship (if any) disappear.
   friendsChanged(req.username, other);
   res.json({ message: 'blocked' });
@@ -3315,6 +3458,7 @@ app.post('/groups/:id/remove-member', requireAuth, route(async (req, res) => {
   if (username === group.owner) return res.status(400).json({ error: 'cannot remove group owner' });
   if (group.owner !== req.username && !(await isAdmin(req.username))) return res.status(403).json({ error: 'only the group owner can remove members' });
   await pool.query(`DELETE FROM group_members WHERE group_id = $1 AND username = $2`, [groupId, username]);
+  await resyncRooms([username]); // stop their open tabs receiving the group
   sendToUser(username, 'groupsChanged', {});
   io.to(`group:${groupId}`).emit('groupsChanged', {});
   res.json({ message: 'ok' });
@@ -3326,6 +3470,7 @@ app.post('/groups/:id/leave', requireAuth, route(async (req, res) => {
   if (!group || !(await isGroupMember(req.username, groupId))) return res.status(404).json({ error: 'group not found' });
   if (group.owner === req.username) return res.status(400).json({ error: 'owner cannot leave. Remove members or rename instead.' });
   await pool.query(`DELETE FROM group_members WHERE group_id = $1 AND username = $2`, [groupId, req.username]);
+  await resyncRooms([req.username]);
   io.to(`group:${groupId}`).emit('groupsChanged', {});
   res.json({ message: 'ok' });
 }));
@@ -3711,6 +3856,7 @@ io.on('connection', (socket) => {
           [user, until, socket.username]
         );
         sendToUser(user, 'adminNotice', { message: `You have been muted until ${until.toISOString()}.` });
+        await enforceCallAccess([user]); // muted people can't stay in calls
         if (typeof ack === 'function') ack({ message: 'user muted' });
       } else if (action === 'unmute') {
         const user = cleanUsername(data.username);
@@ -3756,7 +3902,124 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ---- calls
+  socket.on('voice:join', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const key = String(data.key || '');
+    if (rateLimited('voicejoin:' + socket.username, 12, 60 * 1000)) return reply({ error: 'Slow down a little.' });
+    const problem = await callJoinProblem(socket.username, key);
+    if (problem) return reply({ error: problem });
+    const info = callInfo(key);
+    // one call at a time: leave any other call (or this one, from another tab)
+    const current = callOf(socket.username);
+    if (current && current.key !== key) await leaveCall(current.key, socket.username, 'You joined another call.');
+    let call = calls.get(key);
+    if (call && call.participants.has(socket.username)) {
+      const old = call.participants.get(socket.username);
+      if (old.socketId !== socket.id) io.to(old.socketId).emit('voice:forceLeave', { key, reason: 'You joined this call from somewhere else.' });
+      call.participants.delete(socket.username);
+    }
+    if (call && call.participants.size >= MAX_CALL_SIZE) return reply({ error: `This call is full (${MAX_CALL_SIZE} people max).` });
+    const isNew = !call;
+    if (isNew) {
+      call = { key, kind: info.kind, room: info.room, startedAt: Date.now(), participants: new Map(), ringing: new Set(), ringTimer: null, messageId: null, everJoined: new Set() };
+      calls.set(key, call);
+    }
+    const others = [...call.participants.keys()];
+    call.participants.set(socket.username, {
+      socketId: socket.id, muted: !!data.muted, deafened: !!data.deafened, video: false, screen: false,
+      camStream: null, screenStream: null, joinedAt: Date.now()
+    });
+    call.everJoined.add(socket.username);
+    stopRinging(call, [socket.username]);
+    reply({ message: 'ok', participants: others });
+    if (isNew && info.kind !== 'voice') {
+      // ring everyone else in the DM / group
+      const targets = (await callAudience(key)).filter(u => u !== socket.username);
+      const group = info.kind === 'group' ? await getGroup(groupIdFromRoom(info.room)) : null;
+      for (const name of targets) {
+        if (info.kind === 'group' && (await blockBetween(name, socket.username))) continue;
+        call.ringing.add(name);
+        sendToUser(name, 'voice:ring', { key, from: socket.username, kind: info.kind, room: info.room, groupName: group ? group.name : '' });
+        sendPushToUser(name, {
+          title: info.kind === 'dm' ? `${socket.username} is calling you` : `${socket.username} started a call in ${group ? group.name : 'a group chat'}`,
+          body: 'Open Chat to answer',
+          tag: 'call:' + key,
+          url: '/'
+        }).catch(err => console.error('call push failed:', err.message));
+      }
+      call.ringTimer = setTimeout(() => {
+        const c = calls.get(key);
+        if (!c) return;
+        const unanswered = [...c.ringing];
+        stopRinging(c, unanswered);
+        for (const p of c.participants.values()) io.to(p.socketId).emit('voice:noAnswer', { key, users: unanswered });
+        broadcastCall(key).catch(() => {});
+      }, RING_MS);
+      call.ringTimer.unref();
+      await postCallMessage(call, socket.username).catch(err => console.error('call message failed:', err.message));
+    }
+    await broadcastCall(key);
+  });
+
+  // Relay connection-setup data between two people in the same call - and
+  // only then, so this can't be used to message strangers.
+  socket.on('voice:signal', (data = {}) => {
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    const target = call && call.participants.get(String(data.to || ''));
+    if (!me || me.socketId !== socket.id || !target) return;
+    io.to(target.socketId).emit('voice:signal', { key: call.key, from: socket.username, data: data.data });
+  });
+
+  socket.on('voice:update', async (data = {}) => {
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    if (!me || me.socketId !== socket.id) return;
+    for (const f of ['muted', 'deafened', 'video', 'screen']) if (f in data) me[f] = !!data[f];
+    for (const f of ['camStream', 'screenStream']) if (f in data) me[f] = data[f] ? String(data[f]).slice(0, 100) : null;
+    await broadcastCall(call.key);
+  });
+
+  socket.on('voice:leave', async (data = {}) => {
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    if (me && me.socketId === socket.id) await leaveCall(call.key, socket.username);
+  });
+
+  socket.on('voice:decline', async (data = {}) => {
+    const call = calls.get(String(data.key || ''));
+    if (!call || !call.ringing.has(socket.username)) return;
+    stopRinging(call, [socket.username]);
+    for (const p of call.participants.values()) io.to(p.socketId).emit('voice:declined', { key: call.key, by: socket.username });
+    await broadcastCall(call.key);
+  });
+
+  // Every call this person can currently see (to draw who's in voice).
+  socket.on('voice:snapshot', async (a, b) => {
+    const ack = typeof a === 'function' ? a : b; // works with or without a data argument
+    const out = [];
+    for (const call of calls.values()) {
+      if ((await callAudience(call.key)).includes(socket.username)) out.push(callState(call));
+    }
+    if (typeof ack === 'function') ack({ calls: out });
+  });
+
+  // Server admins can disconnect someone from a voice channel.
+  socket.on('voice:kick', async (data = {}, ack) => {
+    const call = calls.get(String(data.key || ''));
+    const target = String(data.username || '');
+    if (!call || call.kind !== 'voice' || !call.participants.has(target)) { if (typeof ack === 'function') ack({ error: 'not in this call' }); return; }
+    if (!(await canModerateRoom(socket.username, call.room))) { if (typeof ack === 'function') ack({ error: 'only server admins can do that' }); return; }
+    await leaveCall(call.key, target, `You were disconnected by ${socket.username}.`);
+    if (typeof ack === 'function') ack({ message: 'ok' });
+  });
+
   socket.on('disconnect', () => {
+    for (const call of [...calls.values()]) {
+      const p = call.participants.get(socket.username);
+      if (p && p.socketId === socket.id) leaveCall(call.key, socket.username).catch(err => console.error('leaveCall failed:', err.message));
+    }
     removeOnlineUser(socket.id);
     idleSockets.delete(socket.id);
     broadcastPresence();

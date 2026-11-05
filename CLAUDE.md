@@ -13,6 +13,8 @@ off there (with anything learned) when they ship.
   Keep it a single file unless asked otherwise.
 - `public/sw.js`: Web Push service worker.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
+  Calls need a real browser to check audio/video: Playwright's Chromium
+  with `--use-fake-ui-for-media-stream --use-fake-device-for-media-stream`.
 
 ## Rules
 - **Never assume a fresh database.** `setupSchema()` runs on every boot
@@ -52,6 +54,12 @@ off there (with anything learned) when they ship.
   client trusts those flags, never the raw text.
 - Anything that reads across many rooms (search everywhere, the mentions
   inbox) must go through `readableRoomsClause()` so it can't leak rooms.
+- Calls (WebRTC, in-memory `calls` Map): `callJoinProblem()` is the only
+  check for who may join a call - it reuses `isAllowedRoom()`, blocks and
+  mutes. `resyncRooms()` also runs `enforceCallAccess()`, so anything that
+  removes access ends the person's call too. `voice:signal` is relayed
+  only between two current participants; never relay to anyone else.
+  Ring notifications follow the honest-notification rule above.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

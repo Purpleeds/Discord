@@ -63,14 +63,27 @@ large, new system - also split it over several sessions).
   hourly). If the free Render server is asleep at start time, the reminder
   goes out when it wakes - up to 1 hour late, after that it's skipped.*
 
-## Batch 3 - voice and video (its own project)
+## Batch 3 - voice and video (done)
 
-- [ ] **11. Voice and video calls (WebRTC)** - `xhigh` / `max`, over several sessions
-  In order: 11a DM voice calls -> 11b video + group calls -> 11c voice
-  channels -> 11d screen sharing -> 11e push-to-talk, noise suppression.
-  Calls connect device to device; some school/office networks block that
-  without a paid TURN relay server - tell William before relying on it.
-  Soundboard, Stage channels and Watch Together come after this.
+- [x] **11. Voice and video calls (WebRTC)** - `xhigh` / `max` - *done Nov 2026*
+  11a DM voice calls -> 11b video + group calls -> 11c voice channels ->
+  11d screen sharing -> 11e push-to-talk, noise suppression.
+  *Mesh calls (everyone sends to everyone), max 8 people. The server only
+  relays setup messages (`voice:signal`), and only between two people in
+  the same call. Calls are kept in memory (`calls` Map in server.js):
+  a restart ends them and the browsers rejoin. Call keys:
+  `call:dm:<a>:<b>`, `call:group:<id>`, `voice:<channel room>`; voice
+  channels are `server_channels.kind = 'voice'`. A DM/group call rings for
+  45s and leaves a `kind = 'call'` message (`ongoing` -> `ended:<secs>` or
+  `missed`). `callJoinProblem()` is the one access check for joining;
+  `enforceCallAccess()` (run from `resyncRooms()`) kicks people out of calls
+  they lose access to. Push-to-talk only works while the tab is focused (a
+  website can't read keys in other apps). Only STUN by default - some
+  school/office networks need a TURN relay (`TURN_URLS`, see README); told
+  William. Found + fixed on the way: people removed from (or leaving) a
+  group chat kept getting its live messages until they reloaded.*
+  Next ideas (not planned yet): soundboard, Stage channels, Watch Together,
+  an SFU server if calls ever need more than 8 people.
 
 ## Batch 4 - automation
 
@@ -94,7 +107,7 @@ large, new system - also split it over several sessions).
 
 ## Already built (Nov 2026)
 
-Batches 1 and 2 above, plus: DMs, group chats, servers with invites, text channels with topics,
+Batches 1-3 above, plus: DMs, group chats, servers with invites, text channels with topics,
 announcement channels, slowmode, channel reordering, editing/deleting,
 replies, pins, reactions, emoji picker, Markdown, file sharing (deleted
 after 6h), @mentions, per-conversation search, custom role colours,

@@ -271,3 +271,69 @@ test('batch 2: private channels, threads, forums, events', async () => {
 
   assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
 });
+
+// Waits for the next `event` on a socket that matches `pred` (fails after 5s).
+const nextEvent = (socket, event, pred = () => true) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => { socket.off(event, handler); reject(new Error('timed out waiting for ' + event)); }, 5000);
+  function handler(data) { if (pred(data)) { clearTimeout(timer); socket.off(event, handler); resolve(data); } }
+  socket.on(event, handler);
+});
+
+test('batch 3: calls ring, connect, relay only between participants, and end', async () => {
+  const key = 'call:dm:' + [names.a, names.b].sort().join(':');
+  const room = 'dm:' + [names.a, names.b].sort().join(':');
+  assert.ok((await api(tokens.a, '/voice/ice')).data.iceServers.length);
+
+  // outsiders can't join someone else's DM call
+  assert.ok((await emit(sockets.c, 'voice:join', { key })).error);
+
+  const ring = nextEvent(sockets.b, 'voice:ring', r => r.key === key);
+  assert.equal((await emit(sockets.a, 'voice:join', { key })).message, 'ok');
+  assert.equal((await ring).from, names.a);
+  const both = nextEvent(sockets.a, 'voice:state', s => s.key === key && s.participants.length === 2);
+  assert.deepEqual((await emit(sockets.b, 'voice:join', { key })).participants, [names.a]);
+  assert.deepEqual((await both).ringing, []);
+
+  // connection-setup data goes between people in the call, never from outside it
+  let leaked = false;
+  sockets.b.on('voice:signal', s => { if (s.from === names.c) leaked = true; });
+  const relayed = nextEvent(sockets.b, 'voice:signal', s => s.from === names.a);
+  sockets.a.emit('voice:signal', { key, to: names.b, data: { description: { type: 'offer', sdp: 'x' } } });
+  assert.equal((await relayed).data.description.type, 'offer');
+  sockets.c.emit('voice:signal', { key, to: names.b, data: { candidate: 'y' } });
+
+  // the call shows in the DM as a call message, finished when everyone leaves
+  const log = (await api(tokens.a, '/messages?room=' + encodeURIComponent(room))).data.find(m => m.kind === 'call');
+  assert.equal(log.text, 'ongoing');
+  const ended = nextEvent(sockets.a, 'messageUpdated', m => m.id === log.id);
+  sockets.a.emit('voice:leave', { key });
+  sockets.b.emit('voice:leave', { key });
+  assert.match((await ended).text, /^ended:/);
+  assert.equal(leaked, false);
+
+  // blocked people can't call each other
+  await api(tokens.c, '/friends/block', { username: names.a });
+  assert.match((await emit(sockets.a, 'voice:join', { key: 'call:dm:' + [names.a, names.c].sort().join(':') })).error, /can't call/);
+  await api(tokens.c, '/friends/unblock', { username: names.a });
+
+  // voice channels: admins can disconnect people, and losing access ends your call
+  const sid = (await api(tokens.a, '/servers', { name: 'Voice ' + tag })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  const vc = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'Lounge', kind: 'voice' })).data;
+  const vkey = 'voice:' + vc.room;
+  assert.equal((await emit(sockets.a, 'voice:join', { key: vkey })).message, 'ok');
+  assert.equal((await emit(sockets.b, 'voice:join', { key: vkey })).message, 'ok');
+  assert.ok((await emit(sockets.b, 'voice:kick', { key: vkey, username: names.a })).error);
+  const kicked = nextEvent(sockets.b, 'voice:forceLeave', f => f.key === vkey);
+  assert.equal((await emit(sockets.a, 'voice:kick', { key: vkey, username: names.b })).message, 'ok');
+  await kicked;
+  assert.equal((await emit(sockets.b, 'voice:join', { key: vkey })).message, 'ok');
+  const removed = nextEvent(sockets.b, 'voice:forceLeave', f => f.key === vkey);
+  await api(tokens.a, `/servers/${sid}/channels/${vc.id}/access`, { isPrivate: true, roleIds: [] });
+  assert.match((await removed).reason, /no longer have access/);
+  assert.ok((await emit(sockets.b, 'voice:join', { key: vkey })).error);
+  sockets.a.emit('voice:leave', { key: vkey });
+
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});

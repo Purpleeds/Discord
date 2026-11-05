@@ -823,8 +823,11 @@ input[type=color]::-webkit-color-swatch{border:2px dashed var(--border-strong);}
   #membersBtn{display:none;} /* the member list itself is hidden on phones */
   #chat.threadMode #pinsBtn,#chat.threadMode #threadsBtn{display:none;} /* room for the title + back link */
   #chat.threadMode #roomTopic{flex:0 0 auto;}
-  .headerSearch input,.headerSearch input:focus,.headerSearch input.hasValue{width:96px;}
-  #chatHeader{gap:4px;padding:0 8px;}
+  .headerSearch input,.headerSearch input:focus,.headerSearch input.hasValue{width:72px;}
+  #chatHeader{gap:4px;padding:0 8px;overflow:hidden;} /* never wider than the phone (that zooms the whole page out) */
+  #chat{overflow:hidden;} /* same for the hidden "Jump to Present" bar, which used to poke past the edge */
+  .jumpBar{max-width:calc(100% - 24px);}
+  .jumpBar span{overflow:hidden;text-overflow:ellipsis;}
   #roomTitle{min-width:0;flex:1 1 auto;}
   #chat.friendsMode #roomTitle{display:none;}
   #friendsTabs{padding-left:8px;margin-left:0;}
@@ -1001,6 +1004,79 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
 .eventMessage .msgGutter{color:var(--brand);}
 .eventMessage .systemText b{color:var(--text-bright);}
 
+/* ---------------- voice + video calls ---------------- */
+.callPanel{display:none;flex-direction:column;gap:12px;padding:14px 16px;background:var(--bg-floating);border-bottom:1px solid var(--divider);max-height:62vh;}
+.callPanel.show{display:flex;}
+.callGrid{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;overflow-y:auto;min-height:0;}
+.callTile{position:relative;width:180px;height:120px;border-radius:10px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 0 0 2px transparent;transition:box-shadow .12s ease;}
+.callTile.speaking{box-shadow:0 0 0 3px var(--green);}
+.callTile .avatarWrap .avatar,.callTile > .avatarWrap{width:64px;height:64px;font-size:24px;}
+.callTile.hasVideo{width:280px;height:158px;background:#000;}
+.callTile video{width:100%;height:100%;object-fit:cover;}
+.callTile.screenTile{height:min(40vh,430px);width:auto;aspect-ratio:16/9;max-width:100%;flex:0 1 auto;}
+.callGrid.hasScreen{flex-wrap:wrap;}
+.callGrid.hasScreen .screenTile + .callTile,.callGrid.hasScreen .callTile:not(.screenTile){width:120px;height:72px;}
+.callGrid.hasScreen .callTile:not(.screenTile) > .avatarWrap,.callGrid.hasScreen .callTile:not(.screenTile) .avatarWrap .avatar{width:36px;height:36px;font-size:14px;}
+.callGrid.hasScreen .callTile:not(.screenTile) .callTileName{font-size:11px;padding:1px 5px;bottom:4px;left:4px;}
+.callGrid.hasScreen::after{content:'';flex-basis:100%;order:1;}
+.callGrid.hasScreen .screenTile{order:0;}
+.callGrid.hasScreen .callTile:not(.screenTile){order:2;}
+.callTile.screenTile video{object-fit:contain;}
+video.mirror{transform:scaleX(-1);}
+.callTile.ringing{opacity:.6;}
+.callTileName{position:absolute;left:8px;bottom:6px;display:flex;align-items:center;gap:4px;max-width:calc(100% - 16px);padding:2px 8px;border-radius:4px;background:rgba(0,0,0,.6);color:#fff;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.callTileName svg{width:14px;height:14px;flex:0 0 14px;color:#f23f43;}
+.callTileStatus{position:absolute;top:6px;left:8px;right:8px;text-align:center;font-size:12px;color:#fff;background:rgba(0,0,0,.55);border-radius:4px;padding:2px 6px;}
+.callEmpty{color:var(--text-muted);font-size:14px;padding:18px;}
+.callControls{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;}
+.callCtl{width:46px;height:46px;border-radius:50%;background:var(--btn-grey);color:#fff;display:flex;align-items:center;justify-content:center;}
+.callCtl:hover{filter:brightness(1.15);}
+.callCtl.off{background:#fff;color:#1e1f22;}
+.callCtl.on{background:var(--green);}
+.callCtl.hangup{background:var(--red);}
+.joinCallBtn{min-width:120px;}
+.voiceBar{display:none;align-items:center;gap:4px;padding:8px;background:var(--bg-tertiary);border-bottom:1px solid var(--divider);}
+.voiceBar.show{display:flex;}
+.voiceBar .vbInfo{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;text-align:left;padding:2px 4px;border-radius:4px;}
+.voiceBar .vbInfo:hover{background:var(--hover);}
+.voiceBar .vbInfo b{color:var(--green);font-size:13px;}
+.voiceBar .vbInfo b.pending{color:var(--yellow);}
+.voiceBar .vbInfo span{color:var(--text-muted);font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.voiceBar .callCtl{width:32px;height:32px;background:transparent;color:var(--icon);}
+.voiceBar .callCtl svg{width:18px;height:18px;}
+.voiceBar .callCtl:hover{background:var(--hover);}
+.voiceBar .callCtl.off{color:var(--red);background:transparent;}
+.voiceBar .callCtl.hangup{color:var(--red);background:transparent;}
+.incomingCall{position:fixed;right:20px;bottom:20px;z-index:150;width:300px;max-width:calc(100vw - 32px);background:var(--bg-floating);border-radius:12px;box-shadow:var(--shadow-high);padding:16px;display:none;flex-direction:column;gap:14px;border:1px solid var(--divider);}
+.incomingCall.show{display:flex;animation:messageIn .2s ease-out;}
+.icWho{display:flex;align-items:center;gap:12px;}
+.icWho b{display:block;color:var(--text-bright);font-size:16px;}
+.icWho span{color:var(--text-muted);font-size:13px;}
+.icButtons{display:flex;justify-content:center;gap:18px;}
+.roundCallBtn{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;}
+.roundCallBtn.accept{background:var(--green);}
+.roundCallBtn.decline{background:var(--red);}
+.roundCallBtn:hover{filter:brightness(1.1);}
+.voiceMember{display:flex;align-items:center;gap:8px;padding:3px 8px 3px 30px;margin-bottom:1px;border-radius:4px;color:var(--text-muted);font-size:14px;cursor:pointer;}
+.voiceMember:hover{background:var(--hover);color:var(--text);}
+.voiceMember .avatarWrap{border-radius:50%;box-shadow:0 0 0 2px transparent;}
+.voiceMember.speaking .avatarWrap{box-shadow:0 0 0 2px var(--green);}
+.vmIcons{display:flex;align-items:center;gap:3px;margin-left:auto;}
+.vmIcons svg{width:14px;height:14px;}
+.liveTag{font-size:10px;font-weight:700;color:#fff;background:var(--red);border-radius:3px;padding:0 4px;}
+.callDot{color:var(--green);display:flex;}
+.callDot svg{width:15px;height:15px;}
+.callMessage .msgGutter{color:var(--green);}
+.callMessage.missed .msgGutter{color:var(--red);}
+.micMeter{flex:1;min-width:160px;max-width:320px;height:8px;border-radius:4px;background:var(--bg-tertiary);overflow:hidden;}
+.micMeter i{display:block;height:100%;width:0;background:var(--green);transition:width .08s linear;}
+.camPreview video{margin-top:12px;width:320px;max-width:100%;border-radius:8px;background:#000;}
+@media (max-width:900px){
+  .callTile{width:140px;height:100px;}
+  .callTile.hasVideo{width:46%;height:auto;aspect-ratio:16/10;}
+  .incomingCall{left:16px;right:16px;bottom:16px;width:auto;}
+}
+
 </style>
 </head>
 
@@ -1049,6 +1125,7 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
       <span id="sidebarChev">⌄</span>
     </div>
     <div id="sidebarBody"></div>
+    <div id="voiceBar" class="voiceBar" aria-label="Voice connection"></div>
     <div id="userPanel">
       <div id="userPanelInfo" onclick="openProfilePopout(event, username)" title="View your profile">
         <div id="userPanelAvatar"></div>
@@ -1076,6 +1153,8 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
       <div id="roomTopic"></div>
       <div id="friendsTabs" role="tablist" aria-label="Friends"></div>
       <div class="headerSpacer"></div>
+      <button class="headerBtn" id="callBtn" title="Start a voice call" aria-label="Start a voice call" onclick="startCallHere(false)" style="display:none"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6.6 3.3l2.7 2.7c.5.5.6 1.2.2 1.8l-1.3 1.9a12.6 12.6 0 0 0 6.1 6.1l1.9-1.3c.6-.4 1.3-.3 1.8.2l2.7 2.7c.6.6.6 1.5 0 2.1l-1.2 1.2c-1 1-2.6 1.4-4 .9A18.5 18.5 0 0 1 3.4 9.4c-.5-1.4-.1-3 .9-4l1.2-1.2c.6-.6 1.5-.6 2.1 0z"/></svg></button>
+      <button class="headerBtn" id="videoCallBtn" title="Start a video call" aria-label="Start a video call" onclick="startCallHere(true)" style="display:none"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 6h10a2 2 0 0 1 2 2v1.5l4.4-2.6a1 1 0 0 1 1.6.8v8.6a1 1 0 0 1-1.6.8L16 14.5V16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/></svg></button>
       <button class="headerBtn" id="threadsBtn" title="Threads" aria-label="Threads in this channel" onclick="toggleThreadsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14v9H11l-4 3v-3H5z"/><path d="M9 9h6"/></svg></button>
       <button class="headerBtn" id="inboxBtn" title="Mentions" aria-label="Mentions inbox" onclick="toggleInbox(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M5.5 5h13L21 13v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5z"/></svg><span class="inboxDot"></span></button>
       <button class="headerBtn" id="pinsBtn" title="Pinned Messages" aria-label="Pinned Messages" onclick="togglePinsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15.6 2.3a1 1 0 0 1 1.4 0l4.7 4.7a1 1 0 0 1 0 1.4l-.6.6a1.5 1.5 0 0 1-1.6.3l-3.6 3.6.3 3.3a1.5 1.5 0 0 1-.4 1.2l-1 1a1 1 0 0 1-1.4 0l-3.3-3.3-4.6 4.6a1 1 0 1 1-1.4-1.4l4.6-4.6-3.3-3.3a1 1 0 0 1 0-1.4l1-1a1.5 1.5 0 0 1 1.2-.4l3.3.3 3.6-3.6a1.5 1.5 0 0 1 .3-1.6l.6-.6z"/></svg></button>
@@ -1086,6 +1165,7 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
         <button class="searchClear" aria-label="Clear search" onclick="clearSearch()">✕</button>
       </div>
     </div>
+    <div id="callPanel" class="callPanel" aria-label="Call"></div>
     <div id="messages"><div id="messagesInner"></div></div>
     <div id="friendsView"></div>
     <div id="forumView"></div>
@@ -1171,6 +1251,8 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
   <div id="lightboxBar"><span id="lightboxName"></span><a id="lightboxOpen" target="_blank" rel="noopener">Open original</a></div>
 </div>
 <div id="toast"></div>
+<div id="incomingCall" class="incomingCall" role="dialog" aria-label="Incoming call"></div>
+<div id="voiceAudio" hidden></div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
@@ -1468,6 +1550,8 @@ async function logout(){
 // Shared by a normal logout and by sessionExpired() below - clears local
 // state and shows the login screen with whatever message applies.
 function resetToLoginScreen(message){
+  leaveCall();
+  stopIncomingCall();
   if(socket) socket.disconnect();
   token=''; username=''; activeDMUser=''; currentGroupRoom=''; currentRoom='general';
   servers=[]; groups=[]; groupByRoom={}; unread={}; pendingFiles=[]; replyTo=null;
@@ -1512,6 +1596,7 @@ window.fetch = async function(input, init){
 /* ============================ sockets ============================ */
 function connectSocket(){
   socket = io({ auth:{ token } });
+  setupVoiceSocket();
 
   socket.on('connect', async () => {
     reportedIdle = false;
@@ -1520,6 +1605,7 @@ function connectSocket(){
     const first = servers.find(s => s.isDefault) || servers[0];
     if(first) switchServer(first.id, true);
     handleLocationHash();
+    syncVoiceAfterConnect();
   });
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
@@ -1703,7 +1789,7 @@ function handleIncoming(msg, kind){
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     return;
   }
-  if(msg.kind === 'join' || msg.kind === 'event'){
+  if(msg.kind === 'join' || msg.kind === 'event' || msg.kind === 'call'){
     // "X joined" - shows up and counts as unread, but never pings
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
     else bumpUnreadQuietly(msg.room);
@@ -1724,6 +1810,10 @@ function handleIncomingDM(msg, kind){
   const other = msg.user === username ? (msg.to || msg.dmTo) : msg.user;
   const room = msg.room || roomNameForDM(username, other);
   if(isBlocked(msg.user)){
+    if(room === currentRoom) appendItem({ kind, data:msg });
+    return;
+  }
+  if(msg.kind === 'call'){
     if(room === currentRoom) appendItem({ kind, data:msg });
     return;
   }
@@ -2033,6 +2123,7 @@ function renderSidebar(){
       row.appendChild(avatar);
       row.appendChild(nameEl);
       row.appendChild(badge);
+      if(callActive('call:' + group.room)) row.insertAdjacentHTML('beforeend', '<span class="callDot" title="Call in progress">' + ICON_PHONE_SVG + '</span>');
       row.onclick = () => openGroup(group.room);
       row.oncontextmenu = e => showGroupMenu(e, group);
       body.appendChild(row);
@@ -2076,6 +2167,7 @@ function renderSidebar(){
       }
       row.appendChild(info);
       row.appendChild(makeBadge(unread[room]));
+      if(callActive('call:' + room)) row.insertAdjacentHTML('beforeend', '<span class="callDot" title="Call in progress">' + ICON_PHONE_SVG + '</span>');
       row.onclick = () => openDM(person.username);
       row.oncontextmenu = e => showUserMenu(e, person.username);
       body.appendChild(row);
@@ -2131,9 +2223,27 @@ function renderSidebar(){
       nameEl.textContent = channel.name;
       item.appendChild(nameEl);
       item.appendChild(makeBadge(count));
-      item.onclick = () => openChannel(channel.room);
+      item.onclick = channel.kind === 'voice'
+        ? () => { openChannel(channel.room); joinCall('voice:' + channel.room); } // clicking a voice channel joins it
+        : () => openChannel(channel.room);
       item.oncontextmenu = e => showChannelMenu(e, server, channel);
       body.appendChild(item);
+      if(channel.kind === 'voice'){
+        const st = callStates['voice:' + channel.room];
+        (st ? st.participants : []).forEach(p => {
+          const who = document.createElement('div');
+          who.className = 'voiceMember';
+          who.dataset.speaker = p.username;
+          if(voice.speaking.has(p.username)) who.classList.add('speaking');
+          who.appendChild(createAvatar(p.username, 'xs'));
+          who.appendChild(Object.assign(document.createElement('span'), { className:'channelName', textContent: displayNameFor(p.username) }));
+          const icons = (p.screen ? '<span class="liveTag">LIVE</span>' : '') + (p.video ? ICON_CAMERA_SVG : '') + (p.deafened ? ICON_DEAF_SVG : (p.muted ? ICON_MIC_OFF_SVG : ''));
+          if(icons) who.insertAdjacentHTML('beforeend', '<span class="vmIcons">' + icons + '</span>');
+          who.onclick = e => openProfilePopout(e, p.username);
+          who.oncontextmenu = e => showVoiceUserMenu(e, p.username);
+          body.appendChild(who);
+        });
+      }
       // threads worth showing: the open one, unread ones, and ones active in the last day
       if(channel.kind !== 'forum') threadsOf(channel.room)
         .filter(t => t.room === currentRoom || unread[t.room] || Date.now() - parseTime(t.lastMessageAt) < 24 * 3600 * 1000)
@@ -2164,6 +2274,7 @@ function renderSidebar(){
 
 const ICON_LOCK_HASH_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M9.6 3l-.7 4H5.5l-.3 2h3.4l-1 6H4.2L3.9 17h3.4l-.7 4h2l.7-4h3.3l.5-2H9.6l1-6h4.1l.4-2h-4.2l.7-4z"/><path fill="currentColor" d="M16.5 13.5v-1a2.5 2.5 0 0 1 5 0v1h.5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-6a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zm1.3 0h2.4v-1a1.2 1.2 0 0 0-2.4 0z"/></svg>';
 function channelIconHtml(channel){
+  if(channel.kind === 'voice') return ICON_SPEAKER_SVG;
   if(channel.kind === 'forum') return ICON_FORUM_SVG;
   if(channel.adminsOnly) return ICON_ANNOUNCE_SVG;
   if(channel.isPrivate) return ICON_LOCK_HASH_SVG;
@@ -2276,6 +2387,7 @@ function enterRoom(room){
   typingUsers.clear();
   renderTyping();
   updateBlockedBar();
+  renderCallUI();
   const found = channelByRoom(room);
   if(found && !found.thread && found.channel.kind === 'forum'){ renderForum(room); return; }
   socket.emit('joinRoom', room, result => {
@@ -2534,6 +2646,7 @@ function buildMessageEl(item, grouped){
   const data = item.data;
   if(item.kind === 'message' && data.kind === 'join') return buildJoinMessageEl(item);
   if(item.kind === 'message' && data.kind === 'event') return buildEventMessageEl(item);
+  if(item.kind === 'message' && data.kind === 'call') return buildCallMessageEl(item);
   const wrap = document.createElement('div');
   wrap.className = 'message' + (grouped ? ' grouped' : ' first') + (data.pending ? ' pending' : '');
   if(item.kind === 'message') wrap.dataset.messageId = data.id;
@@ -2710,7 +2823,7 @@ function buildActions(item){
       bar.appendChild(toolbarButton(ICONS.edit, 'Edit', e => startEdit(liveData(e.currentTarget, data))));
     }
     const home = channelByRoom(data.room);
-    if(home && !home.thread && home.channel.kind !== 'forum' && !data.kind && !data.thread){
+    if(home && !home.thread && home.channel.kind === 'text' && !data.kind && !data.thread){
       bar.appendChild(toolbarButton(ICON_THREAD_SVG, 'Create Thread', e => openCreateThread(liveData(e.currentTarget, data))));
     }
     bar.appendChild(toolbarButton(ICONS.link, 'Copy Message Link', e => { copyText(messageLink(liveData(e.currentTarget, data).id)); }));
@@ -2918,6 +3031,7 @@ function applyReactions(payload){
 function applyUpdatedMessage(msg){
   const el = document.querySelector('.message[data-message-id="' + msg.id + '"]');
   if(!el) return;
+  if(msg.kind === 'call'){ const item = { kind:'message', data:msg }; el.replaceWith(buildCallMessageEl(item)); return; }
   if(el._item) el._item.data = Object.assign({}, el._item.data, msg);
   const text = el.querySelector('.msgText');
   if(text && !msg.deleted && editingId !== msg.id){
@@ -4542,7 +4656,7 @@ function updateBlockedBar(){
     ? 'You can\'t send messages to a user you have blocked.'
     : 'This is an announcement channel - only admins can post here.';
   $('composerNoticeBtn').style.display = blocked ? '' : 'none';
-  $('threadsBtn').style.display = found ? '' : 'none'; // threads live in server channels
+  $('threadsBtn').style.display = found && (found.thread || found.channel.kind === 'text') ? '' : 'none'; // threads live in text channels
   $('blockedBar').classList.toggle('show', blocked || readOnly);
   if(currentRoom) setComposerEnabled(!(blocked || readOnly));
 }
@@ -4593,6 +4707,7 @@ function openFriends(){
   renderSidebar();
   renderMembers();
   renderFriendsView();
+  renderCallUI();
   $('sidebar').classList.remove('open');
 }
 function closeFriends(){
@@ -5603,6 +5718,768 @@ function buildEventMessageEl(item){
   return wrap;
 }
 
+/* ============================ voice + video calls ============================ */
+// Audio/video goes straight between browsers (WebRTC); the server only
+// relays the connection setup and says who is in which call. One engine
+// for DM calls ('call:dm:a:b'), group calls ('call:group:N') and voice
+// channels ('voice:<room>').
+const DEFAULT_VOICE_PREFS = { inputId:'', outputId:'', cameraId:'', noiseSuppression:true, echoCancellation:true, autoGain:true, mode:'voice', pttKey:'', pttLabel:'' };
+let voicePrefs = Object.assign({}, DEFAULT_VOICE_PREFS);
+try{ voicePrefs = Object.assign({}, DEFAULT_VOICE_PREFS, JSON.parse(localStorage.getItem('voicePrefs') || '{}')); }catch(e){}
+function saveVoicePrefs(){ try{ localStorage.setItem('voicePrefs', JSON.stringify(voicePrefs)); }catch(e){} }
+
+const callStates = {}; // key -> latest { key, kind, room, participants:[...], ringing:[...] } from the server
+const voice = {
+  key:null, joining:false, mic:null, cam:null, screen:null, peers:new Map(),
+  muted:false, deafened:false, pttHeld:false, iceServers:null, speaking:new Set(),
+  audioCtx:null, meters:new Map(), meterTimer:null, videoEls:new Map()
+};
+let incomingCall = null;
+let stopRingtone = null;
+
+const ICON_PHONE_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6.6 3.3l2.7 2.7c.5.5.6 1.2.2 1.8l-1.3 1.9a12.6 12.6 0 0 0 6.1 6.1l1.9-1.3c.6-.4 1.3-.3 1.8.2l2.7 2.7c.6.6.6 1.5 0 2.1l-1.2 1.2c-1 1-2.6 1.4-4 .9A18.5 18.5 0 0 1 3.4 9.4c-.5-1.4-.1-3 .9-4l1.2-1.2c.6-.6 1.5-.6 2.1 0z"/></svg>';
+const ICON_CAMERA_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M4 6h10a2 2 0 0 1 2 2v1.5l4.4-2.6a1 1 0 0 1 1.6.8v8.6a1 1 0 0 1-1.6.8L16 14.5V16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/></svg>';
+const ICON_MIC_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a3.5 3.5 0 0 1 3.5 3.5v6a3.5 3.5 0 0 1-7 0v-6A3.5 3.5 0 0 1 12 2zm-7 9.5a1 1 0 0 1 2 0 5 5 0 0 0 10 0 1 1 0 0 1 2 0 7 7 0 0 1-6 6.9V21h3a1 1 0 0 1 0 2H8a1 1 0 0 1 0-2h3v-2.6a7 7 0 0 1-6-6.9z"/></svg>';
+const ICON_MIC_OFF_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a3.5 3.5 0 0 1 3.5 3.5v6c0 .5-.1 1-.3 1.4L8.6 6.3A3.5 3.5 0 0 1 12 2zM3.3 3.3a1 1 0 0 1 1.4 0l16 16a1 1 0 0 1-1.4 1.4l-3.4-3.4a7 7 0 0 1-2.9 1.1V21h3a1 1 0 0 1 0 2H8a1 1 0 0 1 0-2h3v-2.6a7 7 0 0 1-6-6.9 1 1 0 0 1 2 0 5 5 0 0 0 7.5 4.3l-1.6-1.6A3.5 3.5 0 0 1 8.5 11.5v-.6L3.3 4.7a1 1 0 0 1 0-1.4zM17 11.5a1 1 0 0 1 2 0c0 1-.2 2-.6 2.9l-1.6-1.6c.1-.4.2-.9.2-1.3z"/></svg>';
+const ICON_DEAF_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 0 0-9 9v5a3 3 0 0 0 3 3h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H5a7 7 0 0 1 14 0h-2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1a3 3 0 0 0 3-3v-5a9 9 0 0 0-9-9z"/></svg>';
+const ICON_SCREEN_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-7v2h3a1 1 0 0 1 0 2H7a1 1 0 0 1 0-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm9 3l-4 4h3v3h2v-3h3z"/></svg>';
+const ICON_HANGUP_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 8c3.6 0 6.9 1 9.4 2.8.6.4.8 1.3.4 2l-1.3 2.2c-.4.6-1.1.9-1.8.6l-2.9-1.1c-.6-.2-.9-.8-.9-1.4v-1.6a14 14 0 0 0-5.8 0v1.6c0 .6-.4 1.2-.9 1.4l-2.9 1.1c-.7.3-1.4 0-1.8-.6l-1.3-2.2c-.4-.7-.2-1.6.4-2C5.1 9 8.4 8 12 8z"/></svg>';
+const ICON_SPEAKER_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M11 4.5v15a1 1 0 0 1-1.7.7L5.6 16H3a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1h2.6l3.7-3.7a1 1 0 0 1 1.7.7zM15.5 8.2a1 1 0 0 1 1.4 0 5.4 5.4 0 0 1 0 7.6 1 1 0 0 1-1.4-1.4 3.4 3.4 0 0 0 0-4.8 1 1 0 0 1 0-1.4z"/></svg>';
+
+function callKeyForRoom(room){
+  if(isDMRoom(room) || isGroupRoom(room)) return 'call:' + room;
+  const found = channelByRoom(room);
+  if(found && !found.thread && found.channel.kind === 'voice') return 'voice:' + room;
+  return null;
+}
+function callRoomOf(key){ return String(key || '').replace(/^call:/, '').replace(/^voice:/, ''); }
+function callTitle(key){
+  const room = callRoomOf(key);
+  if(isDMRoom(room)) return '@' + displayNameFor(room.slice(3).split(':').find(u => u !== username) || '');
+  if(isGroupRoom(room)) return groupByRoom[room] ? groupByRoom[room].name : 'Group call';
+  const found = channelByRoom(room);
+  return found ? found.channel.name + ' / ' + found.server.name : 'Voice';
+}
+function callActive(key){ const st = callStates[key]; return !!(st && st.participants && st.participants.length); }
+function openCallRoom(key){
+  const room = callRoomOf(key);
+  if(isDMRoom(room)) openDM(room.slice(3).split(':').find(u => u !== username));
+  else if(isGroupRoom(room)) openGroup(room);
+  else openChannel(room);
+}
+
+async function getIceServers(){
+  if(voice.iceServers) return voice.iceServers;
+  try{
+    const response = await fetch('/voice/ice', { headers: bearer() });
+    const data = await response.json();
+    voice.iceServers = data.iceServers || [];
+  }catch(e){ voice.iceServers = [{ urls:'stun:stun.l.google.com:19302' }]; }
+  return voice.iceServers;
+}
+function micConstraints(){
+  return { audio: {
+    deviceId: voicePrefs.inputId ? { exact: voicePrefs.inputId } : undefined,
+    noiseSuppression: voicePrefs.noiseSuppression, echoCancellation: voicePrefs.echoCancellation, autoGainControl: voicePrefs.autoGain
+  } };
+}
+function micTrack(){ return voice.mic ? voice.mic.getAudioTracks()[0] : null; }
+// The mic only sends while not muted/deafened - and, in push-to-talk
+// mode, only while the key is held.
+function applyMicEnabled(){
+  const track = micTrack();
+  if(track) track.enabled = !voice.muted && !voice.deafened && (voicePrefs.mode !== 'ptt' || voice.pttHeld);
+}
+function publishVoiceState(){
+  if(!voice.key || !socket) return;
+  socket.emit('voice:update', {
+    key: voice.key, muted: voice.muted || !voice.mic, deafened: voice.deafened,
+    video: !!voice.cam, screen: !!voice.screen,
+    camStream: voice.cam ? voice.cam.id : null, screenStream: voice.screen ? voice.screen.id : null
+  });
+}
+
+async function joinCall(key, opts){
+  opts = opts || {};
+  if(!socket || !socket.connected || voice.joining) return;
+  if(voice.key === key){ if(opts.video && !voice.cam) toggleCamera(); return; }
+  if(typeof RTCPeerConnection === 'undefined' || !navigator.mediaDevices){ toast('Calls need a newer browser (and a secure https:// page).'); return; }
+  if(voice.key) leaveCall();
+  voice.joining = true;
+  stopIncomingCall();
+  renderCallUI();
+  await getIceServers();
+  let mic = null;
+  try{ mic = await navigator.mediaDevices.getUserMedia(micConstraints()); }
+  catch(e){ toast('No microphone access - you can listen, but others won\'t hear you. Allow the microphone for this site to talk.'); }
+  socket.emit('voice:join', { key, muted: !mic || voice.muted, deafened: voice.deafened }, ack => {
+    voice.joining = false;
+    if(!ack || ack.error){
+      if(mic) mic.getTracks().forEach(t => t.stop());
+      toast((ack && ack.error) || 'Could not join the call.');
+      renderCallUI();
+      return;
+    }
+    voice.key = key;
+    voice.mic = mic;
+    if(!mic) voice.muted = true;
+    applyMicEnabled();
+    ensureAudioCtx();
+    if(mic) watchLevel(username, mic);
+    startMeterLoop();
+    // the newcomer connects to everyone already there
+    (ack.participants || []).forEach(user => ensurePeer(user));
+    if(opts.video) toggleCamera();
+    renderCallUI();
+    renderSidebar();
+  });
+}
+
+function leaveCall(){
+  if(!voice.key) return;
+  if(socket) socket.emit('voice:leave', { key: voice.key });
+  cleanupCall();
+}
+function cleanupCall(){
+  for(const user of [...voice.peers.keys()]) closePeer(user);
+  [voice.mic, voice.cam, voice.screen].forEach(s => { if(s) s.getTracks().forEach(t => t.stop()); });
+  voice.mic = voice.cam = voice.screen = null;
+  voice.key = null;
+  voice.pttHeld = false;
+  voice.speaking.clear();
+  voice.meters.clear();
+  voice.videoEls.clear();
+  clearInterval(voice.meterTimer);
+  voice.meterTimer = null;
+  renderCallUI();
+  renderSidebar();
+}
+
+function sendSignal(to, data){ if(socket && voice.key) socket.emit('voice:signal', { key: voice.key, to, data }); }
+
+function ensurePeer(user){
+  if(voice.peers.has(user)) return voice.peers.get(user);
+  const pc = new RTCPeerConnection({ iceServers: voice.iceServers || [] });
+  // "perfect negotiation": both sides may (re)negotiate at any time - e.g.
+  // when someone turns a camera on - and the polite side yields on clashes
+  const peer = { pc, polite: username > user, makingOffer:false, ignoreOffer:false, streams:new Map(), camSender:null, screenSender:null, state:'connecting', audioEl:null, failTimer:null };
+  voice.peers.set(user, peer);
+  if(voice.mic) pc.addTrack(micTrack(), voice.mic);
+  else pc.addTransceiver('audio', { direction:'recvonly' }); // still hear them without a mic
+  if(voice.cam) peer.camSender = pc.addTrack(voice.cam.getVideoTracks()[0], voice.cam);
+  if(voice.screen) peer.screenSender = pc.addTrack(voice.screen.getVideoTracks()[0], voice.screen);
+  pc.onnegotiationneeded = async () => {
+    try{
+      peer.makingOffer = true;
+      await pc.setLocalDescription();
+      sendSignal(user, { description: pc.localDescription });
+    }catch(e){ console.warn('negotiation failed', e); }
+    finally{ peer.makingOffer = false; }
+  };
+  pc.onicecandidate = e => { if(e.candidate) sendSignal(user, { candidate: e.candidate }); };
+  pc.ontrack = e => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    peer.streams.set(stream.id, stream);
+    if(e.track.kind === 'audio') attachAudio(user, stream);
+    stream.onremovetrack = () => renderCallUI();
+    e.track.onunmute = () => renderCallUI();
+    renderCallUI();
+  };
+  pc.onconnectionstatechange = () => {
+    peer.state = pc.connectionState;
+    clearTimeout(peer.failTimer);
+    if(pc.connectionState === 'failed'){ try{ pc.restartIce(); }catch(e){} }
+    if(pc.connectionState === 'connecting' || pc.connectionState === 'failed'){
+      // most often a network (school/office wifi) blocking direct connections
+      peer.failTimer = setTimeout(() => { if(pc.connectionState !== 'connected'){ peer.state = 'blocked'; renderCallUI(); } }, 15000);
+    }
+    renderCallUI();
+  };
+  return peer;
+}
+async function handleVoiceSignal(msg){
+  if(!msg || msg.key !== voice.key || !msg.data) return;
+  const peer = ensurePeer(msg.from);
+  const pc = peer.pc;
+  const data = msg.data;
+  try{
+    if(data.description){
+      const collision = data.description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
+      peer.ignoreOffer = !peer.polite && collision;
+      if(peer.ignoreOffer) return;
+      await pc.setRemoteDescription(data.description);
+      if(data.description.type === 'offer'){
+        await pc.setLocalDescription();
+        sendSignal(msg.from, { description: pc.localDescription });
+      }
+    }else if(data.candidate){
+      try{ await pc.addIceCandidate(data.candidate); }
+      catch(e){ if(!peer.ignoreOffer) console.warn('ice candidate failed', e); }
+    }
+  }catch(e){ console.warn('signal handling failed', e); }
+}
+function closePeer(user){
+  const peer = voice.peers.get(user);
+  if(!peer) return;
+  clearTimeout(peer.failTimer);
+  try{ peer.pc.close(); }catch(e){}
+  if(peer.audioEl) peer.audioEl.remove();
+  voice.meters.delete(user);
+  voice.speaking.delete(user);
+  voice.peers.delete(user);
+}
+function attachAudio(user, stream){
+  const peer = voice.peers.get(user);
+  if(!peer) return;
+  if(!peer.audioEl){
+    peer.audioEl = document.createElement('audio');
+    peer.audioEl.autoplay = true;
+    peer.audioEl.dataset.user = user;
+    $('voiceAudio').appendChild(peer.audioEl);
+  }
+  peer.audioEl.srcObject = stream;
+  peer.audioEl.muted = voice.deafened;
+  if(voicePrefs.outputId && peer.audioEl.setSinkId) peer.audioEl.setSinkId(voicePrefs.outputId).catch(() => {});
+  peer.audioEl.play().catch(() => {});
+  watchLevel(user, stream);
+}
+
+// ---- speaking rings: a light level meter on each voice
+function ensureAudioCtx(){
+  try{
+    if(!voice.audioCtx) voice.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(voice.audioCtx.state === 'suspended') voice.audioCtx.resume();
+  }catch(e){}
+}
+function watchLevel(id, stream){
+  if(!voice.audioCtx || !stream.getAudioTracks().length) return;
+  try{
+    const analyser = voice.audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    voice.audioCtx.createMediaStreamSource(stream).connect(analyser);
+    voice.meters.set(id, { analyser, data: new Uint8Array(analyser.fftSize) });
+  }catch(e){}
+}
+function levelOf(meter){
+  meter.analyser.getByteTimeDomainData(meter.data);
+  let sum = 0;
+  for(const v of meter.data){ const x = (v - 128) / 128; sum += x * x; }
+  return Math.sqrt(sum / meter.data.length);
+}
+function startMeterLoop(){
+  clearInterval(voice.meterTimer);
+  voice.meterTimer = setInterval(() => {
+    let changed = false;
+    for(const [id, meter] of voice.meters){
+      const track = id === username ? micTrack() : null;
+      const talking = (id !== username || (track && track.enabled)) && levelOf(meter) > 0.035;
+      if(talking !== voice.speaking.has(id)){ changed = true; if(talking) voice.speaking.add(id); else voice.speaking.delete(id); }
+    }
+    if(changed) document.querySelectorAll('[data-speaker]').forEach(el => el.classList.toggle('speaking', voice.speaking.has(el.dataset.speaker)));
+  }, 120);
+}
+
+// ---- controls
+function toggleMute(){
+  if(!voice.key) return;
+  if(!voice.mic){ toast('No microphone - allow it for this site, then rejoin the call.'); return; }
+  voice.muted = !voice.muted;
+  if(!voice.muted && voice.deafened) setDeafened(false);
+  applyMicEnabled();
+  publishVoiceState();
+  renderCallUI();
+}
+function setDeafened(on){
+  voice.deafened = on;
+  voice.peers.forEach(p => { if(p.audioEl) p.audioEl.muted = on; });
+  applyMicEnabled();
+}
+function toggleDeafen(){
+  if(!voice.key) return;
+  setDeafened(!voice.deafened);
+  publishVoiceState();
+  renderCallUI();
+}
+async function toggleCamera(){
+  if(!voice.key) return;
+  if(voice.cam){
+    voice.peers.forEach(p => { if(p.camSender){ try{ p.pc.removeTrack(p.camSender); }catch(e){} p.camSender = null; } });
+    voice.cam.getTracks().forEach(t => t.stop());
+    voice.cam = null;
+  }else{
+    try{
+      voice.cam = await navigator.mediaDevices.getUserMedia({ video: {
+        deviceId: voicePrefs.cameraId ? { exact: voicePrefs.cameraId } : undefined,
+        width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24 }
+      } });
+    }catch(e){ toast('Could not start the camera - allow it for this site.'); return; }
+    const track = voice.cam.getVideoTracks()[0];
+    voice.peers.forEach(p => { p.camSender = p.pc.addTrack(track, voice.cam); });
+  }
+  publishVoiceState();
+  renderCallUI();
+}
+const canShareScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+async function toggleScreen(){
+  if(!voice.key || !canShareScreen) return;
+  if(voice.screen){
+    voice.peers.forEach(p => { if(p.screenSender){ try{ p.pc.removeTrack(p.screenSender); }catch(e){} p.screenSender = null; } });
+    voice.screen.getTracks().forEach(t => t.stop());
+    voice.screen = null;
+  }else{
+    try{ voice.screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15 } }, audio: false }); }
+    catch(e){ return; } // picker cancelled
+    const track = voice.screen.getVideoTracks()[0];
+    track.contentHint = 'detail';
+    track.onended = () => { if(voice.screen) toggleScreen(); }; // the browser's own "Stop sharing" button
+    voice.peers.forEach(p => { p.screenSender = p.pc.addTrack(track, voice.screen); });
+  }
+  publishVoiceState();
+  renderCallUI();
+}
+
+// ---- incoming calls
+function playRingtone(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    let stopped = false;
+    const ring = () => {
+      if(stopped) return;
+      [0, 0.45].forEach(offset => {
+        const osc = ctx.createOscillator(), gain = ctx.createGain();
+        osc.frequency.value = offset ? 660 : 520;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + offset);
+        gain.gain.exponentialRampToValueAtTime(0.15 * (notifPrefs.volume || 0.5), ctx.currentTime + offset + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + offset + 0.4);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(ctx.currentTime + offset);
+        osc.stop(ctx.currentTime + offset + 0.42);
+      });
+    };
+    ring();
+    const timer = setInterval(ring, 2200);
+    return () => { stopped = true; clearInterval(timer); ctx.close().catch(() => {}); };
+  }catch(e){ return () => {}; }
+}
+function showIncomingCall(data){
+  incomingCall = data;
+  const card = $('incomingCall');
+  card.innerHTML = '';
+  const who = document.createElement('div');
+  who.className = 'icWho';
+  who.appendChild(createAvatar(data.from, ''));
+  const text = document.createElement('div');
+  text.innerHTML = '<b></b><span></span>';
+  text.querySelector('b').textContent = displayNameFor(data.from);
+  text.querySelector('span').textContent = data.kind === 'group' ? 'started a call in ' + (data.groupName || 'a group chat') : 'is calling you…';
+  who.appendChild(text);
+  card.appendChild(who);
+  const buttons = document.createElement('div');
+  buttons.className = 'icButtons';
+  const mk = (cls, icon, label, fn) => { const b = document.createElement('button'); b.className = 'roundCallBtn ' + cls; b.innerHTML = icon; b.title = label; b.setAttribute('aria-label', label); b.onclick = fn; return b; };
+  buttons.append(
+    mk('decline', ICON_HANGUP_SVG, 'Decline', () => { socket.emit('voice:decline', { key: data.key }); stopIncomingCall(); }),
+    mk('accept', ICON_CAMERA_SVG, 'Answer with video', () => { joinCall(data.key, { video:true }); openCallRoom(data.key); }),
+    mk('accept', ICON_PHONE_SVG, 'Answer', () => { joinCall(data.key); openCallRoom(data.key); })
+  );
+  card.appendChild(buttons);
+  card.classList.add('show');
+  if(stopRingtone) stopRingtone();
+  stopRingtone = myPresence() === 'dnd' ? null : playRingtone(); // Do Not Disturb: no ringing sound
+  // an honest notification: says who is calling, in this app
+  if(desktopNotificationsEnabled && typeof Notification !== 'undefined' && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())){
+    try{ new Notification(displayNameFor(data.from) + ' is calling you', { body: data.kind === 'group' ? 'Group call in ' + data.groupName : 'Voice call in Chat' }); }catch(e){}
+  }
+}
+function stopIncomingCall(key){
+  if(key && incomingCall && incomingCall.key !== key) return;
+  incomingCall = null;
+  $('incomingCall').classList.remove('show');
+  if(stopRingtone){ stopRingtone(); stopRingtone = null; }
+}
+
+// ---- server events
+function applyCallState(state){
+  if(!state || !state.key) return;
+  if(state.participants && state.participants.length) callStates[state.key] = state;
+  else delete callStates[state.key];
+  if(state.key === voice.key){
+    const present = new Set((state.participants || []).map(p => p.username));
+    if(!present.has(username) && !voice.joining){ cleanupCall(); return; }
+    for(const user of [...voice.peers.keys()]) if(!present.has(user)) closePeer(user);
+  }
+  renderCallUI();
+  renderSidebar();
+  // "Join the call" links come and go with the call (and with whether you're in it)
+  document.querySelectorAll('#messagesInner .callMessage').forEach(el => { if(el._item) el.replaceWith(buildCallMessageEl(el._item)); });
+}
+function setupVoiceSocket(){
+  socket.on('voice:state', applyCallState);
+  socket.on('voice:signal', handleVoiceSignal);
+  socket.on('voice:ring', data => { if(data && !isBlocked(data.from) && voice.key !== data.key) showIncomingCall(data); });
+  socket.on('voice:ringStop', data => stopIncomingCall(data && data.key));
+  socket.on('voice:declined', data => { if(data && data.key === voice.key) toast(displayNameFor(data.by) + ' declined the call.'); });
+  socket.on('voice:noAnswer', data => { if(data && data.key === voice.key) toast('No answer.'); });
+  socket.on('voice:forceLeave', data => {
+    if(data && data.key === voice.key){ cleanupCall(); toast(data.reason || 'You were disconnected from the call.'); }
+  });
+}
+// After (re)connecting: learn who's in which call, and rejoin our own call
+// if the connection dropped mid-call (the server will have removed us).
+function syncVoiceAfterConnect(){
+  socket.emit('voice:snapshot', res => {
+    Object.keys(callStates).forEach(k => delete callStates[k]);
+    ((res && res.calls) || []).forEach(st => { callStates[st.key] = st; });
+    const key = voice.key;
+    if(key && !(callStates[key] && callStates[key].participants.some(p => p.username === username))){
+      cleanupCall();
+      toast('Reconnecting to the call…');
+      joinCall(key);
+    }
+    renderCallUI();
+    renderSidebar();
+  });
+}
+
+// ---- push to talk (only while this tab is focused - browsers can't see keys otherwise)
+function isTypingTarget(el){ return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
+window.addEventListener('keydown', e => {
+  if(voicePrefs.mode !== 'ptt' || !voicePrefs.pttKey || !voice.key || e.code !== voicePrefs.pttKey) return;
+  if(isTypingTarget(document.activeElement) && e.key.length === 1) return; // let people type that letter
+  if(!voice.pttHeld){ voice.pttHeld = true; applyMicEnabled(); renderVoiceBar(); }
+});
+window.addEventListener('keyup', e => {
+  if(voicePrefs.mode === 'ptt' && e.code === voicePrefs.pttKey && voice.pttHeld){ voice.pttHeld = false; applyMicEnabled(); renderVoiceBar(); }
+});
+window.addEventListener('blur', () => { if(voice.pttHeld){ voice.pttHeld = false; applyMicEnabled(); renderVoiceBar(); } });
+
+// ---- UI
+function callButton(icon, label, fn, cls, pressed){
+  const b = document.createElement('button');
+  b.className = 'callCtl' + (cls ? ' ' + cls : '');
+  b.innerHTML = icon;
+  b.title = label;
+  b.setAttribute('aria-label', label);
+  if(pressed !== undefined) b.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+  b.onclick = fn;
+  return b;
+}
+function videoFor(stream, mirror){
+  let el = voice.videoEls.get(stream.id);
+  if(!el){
+    el = document.createElement('video');
+    el.autoplay = true; el.playsInline = true; el.muted = true; // audio plays through the hidden <audio>
+    el.srcObject = stream;
+    voice.videoEls.set(stream.id, el);
+  }
+  el.classList.toggle('mirror', !!mirror);
+  el.play().catch(() => {});
+  return el;
+}
+function participantTile(p, inCall){
+  const mine = p.username === username;
+  const peer = voice.peers.get(p.username);
+  const tile = document.createElement('div');
+  tile.className = 'callTile';
+  tile.dataset.speaker = p.username;
+  if(voice.speaking.has(p.username)) tile.classList.add('speaking');
+  const camStream = mine ? voice.cam : (p.video && peer ? peer.streams.get(p.camStream) : null);
+  if(camStream && camStream.getVideoTracks().length){ tile.classList.add('hasVideo'); tile.appendChild(videoFor(camStream, mine)); }
+  else tile.appendChild(createAvatar(p.username, ''));
+  const label = document.createElement('div');
+  label.className = 'callTileName';
+  label.textContent = displayNameFor(p.username);
+  if(p.deafened) label.insertAdjacentHTML('afterbegin', ICON_DEAF_SVG);
+  else if(p.muted) label.insertAdjacentHTML('afterbegin', ICON_MIC_OFF_SVG);
+  tile.appendChild(label);
+  if(inCall && !mine){
+    const status = !peer ? 'Connecting…' : (peer.state === 'blocked' ? 'Can\'t connect - this network may block calls' : (peer.state === 'connected' ? '' : 'Connecting…'));
+    if(status){ const s = document.createElement('div'); s.className = 'callTileStatus'; s.textContent = status; tile.appendChild(s); }
+  }
+  tile.oncontextmenu = e => showVoiceUserMenu(e, p.username);
+  return tile;
+}
+function screenTile(p){
+  const mine = p.username === username;
+  const peer = voice.peers.get(p.username);
+  const stream = mine ? voice.screen : (p.screen && peer ? peer.streams.get(p.screenStream) : null);
+  if(!stream || !stream.getVideoTracks().length) return null;
+  const tile = document.createElement('div');
+  tile.className = 'callTile screenTile hasVideo';
+  tile.appendChild(videoFor(stream, false));
+  const label = document.createElement('div');
+  label.className = 'callTileName';
+  label.textContent = (mine ? 'Your screen' : displayNameFor(p.username) + '\'s screen');
+  tile.appendChild(label);
+  tile.ondblclick = () => { const v = tile.querySelector('video'); if(v && v.requestFullscreen) v.requestFullscreen().catch(() => {}); };
+  return tile;
+}
+function showVoiceUserMenu(e, user){
+  const items = [{ label:'Profile', action:() => openProfilePopout(null, user) }];
+  const peer = voice.peers.get(user);
+  if(peer && peer.audioEl){
+    items.push({ label: peer.audioEl.volume < 1 ? 'Volume: normal' : 'Volume: quieter', action:() => { peer.audioEl.volume = peer.audioEl.volume < 1 ? 1 : 0.4; } });
+  }
+  const key = voice.key || callKeyForRoom(currentRoom);
+  if(key && key.startsWith('voice:') && user !== username && canModerateHere(callRoomOf(key))){
+    items.push({ sep:true });
+    items.push({ label:'Disconnect from voice', danger:true, action:() => socket.emit('voice:kick', { key, username:user }, r => { if(r && r.error) toast(r.error); }) });
+  }
+  showMenu(e, items);
+}
+
+function renderCallUI(){
+  renderCallPanel();
+  renderVoiceBar();
+  renderHeaderCallButtons();
+}
+function renderHeaderCallButtons(){
+  const inDM = view === 'dm' && !friendsOpen && (activeDMUser || currentGroupRoom);
+  const show = !!(inDM && !(activeDMUser && isBlocked(activeDMUser)));
+  $('callBtn').style.display = show ? '' : 'none';
+  $('videoCallBtn').style.display = show ? '' : 'none';
+}
+function startCallHere(video){
+  const key = callKeyForRoom(currentRoom);
+  if(key) joinCall(key, { video });
+}
+function renderCallPanel(){
+  const panel = $('callPanel');
+  const key = currentRoom && !friendsOpen ? callKeyForRoom(currentRoom) : null;
+  const state = key ? callStates[key] : null;
+  const inThis = !!key && voice.key === key;
+  const isVoiceChannel = !!key && key.startsWith('voice:');
+  if(!key || (!state && !inThis && !isVoiceChannel && !voice.joining)){ panel.classList.remove('show'); panel.innerHTML = ''; return; }
+  panel.classList.add('show');
+  panel.innerHTML = '';
+  const participants = state ? state.participants.slice() : [];
+  if(inThis && !participants.some(p => p.username === username)){
+    participants.unshift({ username, muted: voice.muted, deafened: voice.deafened, video: !!voice.cam, screen: !!voice.screen });
+  }
+  const grid = document.createElement('div');
+  grid.className = 'callGrid';
+  participants.forEach(p => { const sc = inThis ? screenTile(p) : null; if(sc) grid.appendChild(sc); });
+  grid.classList.toggle('hasScreen', !!grid.querySelector('.screenTile')); // others shrink into a strip
+  participants.forEach(p => grid.appendChild(participantTile(p, inThis)));
+  (state ? state.ringing : []).forEach(user => {
+    const tile = document.createElement('div');
+    tile.className = 'callTile ringing';
+    tile.appendChild(createAvatar(user, ''));
+    tile.appendChild(Object.assign(document.createElement('div'), { className:'callTileName', textContent: displayNameFor(user) }));
+    tile.appendChild(Object.assign(document.createElement('div'), { className:'callTileStatus', textContent:'Calling…' }));
+    grid.appendChild(tile);
+  });
+  if(!participants.length && !(state && state.ringing.length)){
+    grid.appendChild(Object.assign(document.createElement('div'), { className:'callEmpty', textContent: voice.joining ? 'Joining…' : 'No one is here yet.' }));
+  }
+  panel.appendChild(grid);
+  const controls = document.createElement('div');
+  controls.className = 'callControls';
+  if(inThis){
+    controls.append(
+      callButton(voice.muted ? ICON_MIC_OFF_SVG : ICON_MIC_SVG, voice.muted ? 'Unmute' : 'Mute', toggleMute, voice.muted ? 'off' : '', voice.muted),
+      callButton(ICON_DEAF_SVG, voice.deafened ? 'Undeafen' : 'Deafen', toggleDeafen, voice.deafened ? 'off' : '', voice.deafened),
+      callButton(ICON_CAMERA_SVG, voice.cam ? 'Turn camera off' : 'Turn camera on', toggleCamera, voice.cam ? 'on' : '', !!voice.cam)
+    );
+    if(canShareScreen) controls.appendChild(callButton(ICON_SCREEN_SVG, voice.screen ? 'Stop sharing' : 'Share your screen', toggleScreen, voice.screen ? 'on' : '', !!voice.screen));
+    controls.appendChild(callButton(ICON_HANGUP_SVG, 'Leave call', leaveCall, 'hangup'));
+  }else{
+    const join = document.createElement('button');
+    join.className = 'btn joinCallBtn';
+    join.disabled = voice.joining;
+    join.textContent = voice.joining ? 'Joining…' : (isVoiceChannel ? 'Join Voice' : 'Join Call');
+    join.onclick = () => joinCall(key);
+    controls.appendChild(join);
+    if(!isVoiceChannel){
+      const vid = Object.assign(document.createElement('button'), { className:'btn grey joinCallBtn', textContent:'Join with Video' });
+      vid.onclick = () => joinCall(key, { video:true });
+      controls.appendChild(vid);
+    }
+  }
+  panel.appendChild(controls);
+}
+function renderVoiceBar(){
+  const bar = $('voiceBar');
+  if(!voice.key){ bar.classList.remove('show'); bar.innerHTML = ''; return; }
+  bar.classList.add('show');
+  bar.innerHTML = '';
+  const info = document.createElement('button');
+  info.className = 'vbInfo';
+  const allConnected = [...voice.peers.values()].every(p => p.state === 'connected');
+  info.innerHTML = '<b></b><span></span>';
+  info.querySelector('b').textContent = !voice.peers.size ? 'Voice Connected' : (allConnected ? 'Voice Connected' : 'Connecting…');
+  info.querySelector('b').classList.toggle('pending', !!voice.peers.size && !allConnected);
+  info.querySelector('span').textContent = callTitle(voice.key) + (voicePrefs.mode === 'ptt' ? (voice.pttHeld ? ' · talking' : ' · push to talk: ' + (voicePrefs.pttLabel || 'not set')) : '');
+  info.title = 'Go to the call';
+  info.onclick = () => openCallRoom(voice.key);
+  bar.appendChild(info);
+  bar.append(
+    callButton(voice.muted ? ICON_MIC_OFF_SVG : ICON_MIC_SVG, voice.muted ? 'Unmute' : 'Mute', toggleMute, voice.muted ? 'off' : '', voice.muted),
+    callButton(ICON_DEAF_SVG, voice.deafened ? 'Undeafen' : 'Deafen', toggleDeafen, voice.deafened ? 'off' : '', voice.deafened),
+    callButton(ICON_HANGUP_SVG, 'Disconnect', leaveCall, 'hangup')
+  );
+}
+
+// "X started a call (that lasted 3 minutes)" / "missed call" in the DM
+function buildCallMessageEl(item){
+  const data = item.data;
+  const wrap = document.createElement('div');
+  wrap.className = 'message first systemMessage callMessage';
+  wrap.dataset.messageId = data.id;
+  wrap._item = item;
+  const gutter = document.createElement('div');
+  gutter.className = 'msgGutter';
+  gutter.innerHTML = ICON_PHONE_SVG.replace(/width="20" height="20"/, 'width="18" height="18"');
+  wrap.appendChild(gutter);
+  const body = document.createElement('div');
+  body.className = 'msgBody';
+  const line = document.createElement('div');
+  line.className = 'systemText';
+  const who = data.user === username ? 'You' : (data.displayName || displayNameFor(data.user));
+  const text = String(data.text || '');
+  let sentence;
+  if(text.startsWith('ended:')){
+    const secs = Number(text.slice(6)) || 0;
+    const length = secs < 60 ? 'a few seconds' : (secs < 3600 ? Math.round(secs / 60) + ' minute' + (Math.round(secs / 60) === 1 ? '' : 's') : Math.round(secs / 360) / 10 + ' hours');
+    sentence = who + ' started a call that lasted ' + length + '.';
+  }else if(text === 'missed'){
+    sentence = data.user === username ? 'You started a call that nobody answered.' : 'You missed a call from ' + who + '.';
+    if(data.user !== username) wrap.classList.add('missed');
+  }else sentence = who + ' started a call.';
+  line.appendChild(document.createTextNode(sentence));
+  const key = callKeyForRoom(data.room);
+  if(text === 'ongoing' && key && callActive(key) && voice.key !== key){
+    const join = Object.assign(document.createElement('button'), { className:'linkBtn', textContent:'Join the call' });
+    join.style.marginLeft = '8px';
+    join.onclick = () => joinCall(key);
+    line.appendChild(join);
+  }
+  line.appendChild(Object.assign(document.createElement('span'), { className:'msgTime', textContent:formatStamp(data.createdAt) }));
+  body.appendChild(line);
+  wrap.appendChild(body);
+  wrap.appendChild(buildActions(item));
+  return wrap;
+}
+
+// ---- Settings > Voice & Video
+async function renderVoiceSection(c){
+  c.innerHTML = '<h2 class="settingsTitle">Voice & Video</h2>' +
+    section('Devices',
+      '<div class="rowFlex" style="gap:16px;align-items:flex-start">' +
+      '<div style="flex:1;min-width:220px"><label class="formLabel" for="vInput">Microphone</label><select class="settingsInput" id="vInput"></select></div>' +
+      '<div style="flex:1;min-width:220px" id="vOutputBox"><label class="formLabel" for="vOutput">Speakers</label><select class="settingsInput" id="vOutput"></select></div></div>' +
+      '<div class="rowFlex" style="margin-top:14px"><button class="btn grey" id="vMicTest">Test Microphone</button><div class="micMeter" aria-label="Microphone level"><i id="vMeter"></i></div></div>' +
+      '<div class="switchDesc" id="vMicMsg">Speak and watch the bar move. Device names appear once you allow the microphone.</div>') +
+    section('Camera',
+      '<label class="formLabel" for="vCamera">Camera</label><select class="settingsInput" id="vCamera" style="max-width:420px"></select>' +
+      '<div class="rowFlex" style="margin-top:12px"><button class="btn grey" id="vCamTest">Test Camera</button></div><div id="vCamPreview" class="camPreview"></div>') +
+    section('Input Mode',
+      '<label class="statusOption wide" style="max-width:420px"><input type="radio" name="vMode" value="voice"> Voice Activity - your mic is open while you\'re unmuted</label>' +
+      '<label class="statusOption wide" style="max-width:420px"><input type="radio" name="vMode" value="ptt"> Push to Talk - only sends while you hold a key</label>' +
+      '<div class="rowFlex" id="vPttRow" style="margin-top:10px"><span class="switchDesc" style="margin:0">Push to Talk key:</span><span class="kbd" id="vPttKey"></span><button class="btn grey" id="vPttRecord">Record Keybind</button></div>' +
+      '<div class="switchDesc">Push to Talk works while this tab is focused - browsers can\'t see keys pressed in other apps.</div>') +
+    section('Voice Processing',
+      switchRow('vNoise', 'Noise suppression', 'Filters out background noise like keyboards and fans.', voicePrefs.noiseSuppression) +
+      switchRow('vEcho', 'Echo cancellation', 'Stops others hearing themselves through your speakers.', voicePrefs.echoCancellation) +
+      switchRow('vGain', 'Automatic gain control', 'Keeps your volume steady.', voicePrefs.autoGain)) +
+    section('If calls don\'t connect', '<div class="switchDesc">Calls connect straight between devices. Some school or office networks block that; if people show as "can\'t connect", try another network (like mobile data). The site owner can add a TURN relay server to fix this for everyone.</div>');
+  let testStream = null, camStream = null;
+  const stopTests = () => {
+    if(testStream){ testStream.getTracks().forEach(t => t.stop()); testStream = null; }
+    if(camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  };
+  async function fillDevices(){
+    let devices = [];
+    try{ devices = await navigator.mediaDevices.enumerateDevices(); }catch(e){}
+    const fill = (sel, kind, current, fallback) => {
+      sel.innerHTML = '<option value="">' + fallback + '</option>';
+      devices.filter(d => d.kind === kind && d.deviceId && d.deviceId !== 'default').forEach((d, i) => sel.appendChild(Object.assign(document.createElement('option'), { value:d.deviceId, textContent:d.label || (kind + ' ' + (i + 1)) })));
+      sel.value = current || '';
+    };
+    fill($('vInput'), 'audioinput', voicePrefs.inputId, 'Default microphone');
+    fill($('vOutput'), 'audiooutput', voicePrefs.outputId, 'Default speakers');
+    fill($('vCamera'), 'videoinput', voicePrefs.cameraId, 'Default camera');
+  }
+  await fillDevices();
+  if(!('setSinkId' in HTMLMediaElement.prototype)) $('vOutputBox').style.display = 'none'; // only some browsers can pick speakers
+  $('vInput').onchange = e => { voicePrefs.inputId = e.target.value; saveVoicePrefs(); swapMicrophone(); };
+  $('vOutput').onchange = e => { voicePrefs.outputId = e.target.value; saveVoicePrefs(); voice.peers.forEach(p => { if(p.audioEl && p.audioEl.setSinkId) p.audioEl.setSinkId(voicePrefs.outputId).catch(() => {}); }); };
+  $('vCamera').onchange = e => { voicePrefs.cameraId = e.target.value; saveVoicePrefs(); };
+  $('vMicTest').onclick = async () => {
+    if(testStream){ stopTests(); $('vMicTest').textContent = 'Test Microphone'; $('vMeter').style.width = '0%'; return; }
+    try{ testStream = await navigator.mediaDevices.getUserMedia(micConstraints()); }
+    catch(e){ inlineMessage($('vMicMsg'), 'The microphone is blocked - allow it for this site in your browser settings.', true); return; }
+    $('vMicTest').textContent = 'Stop Test';
+    await fillDevices();
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = ctx.createAnalyser(); analyser.fftSize = 512;
+    ctx.createMediaStreamSource(testStream).connect(analyser);
+    const meter = { analyser, data: new Uint8Array(512) };
+    const tick = () => {
+      if(!testStream || !document.body.contains($('vMeter') || document.createElement('i'))){ stopTests(); ctx.close().catch(() => {}); return; }
+      $('vMeter').style.width = Math.min(100, levelOf(meter) * 400) + '%';
+      requestAnimationFrame(tick);
+    };
+    tick();
+  };
+  $('vCamTest').onclick = async () => {
+    const box = $('vCamPreview');
+    if(camStream){ camStream.getTracks().forEach(t => t.stop()); camStream = null; box.innerHTML = ''; $('vCamTest').textContent = 'Test Camera'; return; }
+    try{ camStream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: voicePrefs.cameraId ? { exact: voicePrefs.cameraId } : undefined } }); }
+    catch(e){ toast('The camera is blocked or missing.'); return; }
+    const v = document.createElement('video'); v.autoplay = true; v.muted = true; v.playsInline = true; v.className = 'mirror'; v.srcObject = camStream;
+    box.innerHTML = ''; box.appendChild(v);
+    $('vCamTest').textContent = 'Stop Camera';
+    await fillDevices();
+  };
+  document.querySelectorAll('input[name=vMode]').forEach(r => {
+    r.checked = r.value === voicePrefs.mode;
+    r.onchange = () => { voicePrefs.mode = r.value; saveVoicePrefs(); voice.pttHeld = false; applyMicEnabled(); paintPtt(); renderVoiceBar(); };
+  });
+  function paintPtt(){
+    $('vPttRow').style.display = voicePrefs.mode === 'ptt' ? '' : 'none';
+    $('vPttKey').textContent = voicePrefs.pttLabel || 'Not set';
+  }
+  paintPtt();
+  $('vPttRecord').onclick = () => {
+    $('vPttRecord').textContent = 'Press a key…';
+    const grab = e => {
+      e.preventDefault(); e.stopPropagation();
+      if(e.key !== 'Escape'){ voicePrefs.pttKey = e.code; voicePrefs.pttLabel = e.key === ' ' ? 'Space' : (e.key.length === 1 ? e.key.toUpperCase() : e.key); saveVoicePrefs(); }
+      window.removeEventListener('keydown', grab, true);
+      $('vPttRecord').textContent = 'Record Keybind';
+      paintPtt(); renderVoiceBar();
+    };
+    window.addEventListener('keydown', grab, true);
+  };
+  const processing = { vNoise:'noiseSuppression', vEcho:'echoCancellation', vGain:'autoGain' };
+  Object.entries(processing).forEach(([id, prop]) => {
+    $(id).onchange = e => {
+      voicePrefs[prop] = e.target.checked; saveVoicePrefs();
+      // browsers ignore processing changes on a running mic, so restart it
+      // with the new settings and swap it into the call seamlessly
+      swapMicrophone();
+    };
+  });
+}
+// Switch microphones mid-call without reconnecting anyone.
+async function swapMicrophone(){
+  if(!voice.key) return;
+  // close the old mic first: while it's open, browsers hand back the same
+  // device with its old settings (e.g. noise suppression stays on)
+  const senders = [];
+  voice.peers.forEach(p => { const sender = p.pc.getSenders().find(s => s.track && s.track.kind === 'audio'); if(sender) senders.push(sender); });
+  if(voice.mic) voice.mic.getTracks().forEach(t => t.stop());
+  let fresh;
+  try{ fresh = await navigator.mediaDevices.getUserMedia(micConstraints()); }
+  catch(e){ voice.mic = null; voice.muted = true; publishVoiceState(); renderCallUI(); toast('Could not use that microphone - you are muted.'); return; }
+  const track = fresh.getAudioTracks()[0];
+  senders.forEach(sender => sender.replaceTrack(track));
+  voice.mic = fresh;
+  applyMicEnabled();
+  watchLevel(username, fresh);
+}
+
 /* ============================ older history + jump to present ============================ */
 let timelineItems = [];
 let historyState = { room:'', oldestId:null, hasMore:false, loading:false };
@@ -5796,6 +6673,7 @@ function openSettings(sectionKey){
       { key:'appearance', label:'Appearance', render:renderAppearanceSection },
       { key:'accessibility', label:'Accessibility', render:renderAccessibilitySection },
       { key:'chat', label:'Chat', render:renderChatSection },
+      { key:'voice', label:'Voice & Video', render:renderVoiceSection },
       { key:'notifications', label:'Notifications', render:renderNotificationsSection },
       { key:'keybinds', label:'Keybinds', render:renderKeybindsSection }
     ]},
@@ -6248,6 +7126,8 @@ function renderKeybindsSection(c){
     ['Pick an @mention', ['Tab'], 'or Enter, while the list is open'],
     ['Move through @mentions', ['↑', '↓']],
     ['Quick Switcher: jump to any channel, DM or server', ['Ctrl', 'K']],
+    ['Mute / unmute in a call', ['Ctrl', 'Shift', 'M']],
+    ['Deafen / undeafen in a call', ['Ctrl', 'Shift', 'D']],
     ['Search this conversation', ['Ctrl', 'F']],
     ['Close menus, settings or cancel a reply', ['Esc']],
     ['Paste an image or file to upload it', ['Ctrl', 'V']]
@@ -6494,7 +7374,7 @@ function renderServerChannels(c, sid){
     (server.canManage ? section('Create Channel',
       '<div class="rowFlex"><input class="settingsInput" id="newChName" placeholder="new-channel" maxlength="32" style="flex:1;min-width:200px">' +
       '<select class="settingsInput" id="newChCat" style="width:auto">' + catOptions + '</select>' +
-      '<select class="settingsInput" id="newChKind" style="width:auto"><option value="text">Text</option><option value="forum">Forum</option></select><button class="btn" id="newChBtn">Create Channel</button></div>' +
+      '<select class="settingsInput" id="newChKind" style="width:auto"><option value="text">Text</option><option value="forum">Forum</option><option value="voice">Voice</option></select><button class="btn" id="newChBtn">Create Channel</button></div>' +
       '<label class="rememberRow" style="margin:10px 0 0 0"><input type="checkbox" id="newChPrivate"> Private - only admins can see it until you add people or roles</label>' +
       '<div class="inlineMsg" id="newChMsg"></div>') : '') +
     (server.canManage ? section('Categories',
@@ -7159,7 +8039,7 @@ function openCreateChannel(categoryId){
     '<input class="formInput" id="newChannelName" placeholder="new-channel" maxlength="32">' +
     (cats.length ? '<label class="formLabel" for="newChannelCat">Category</label><select class="formInput" id="newChannelCat"><option value="">No category</option>' +
       cats.map(c => '<option value="' + c.id + '">' + escapeHtml(c.name) + '</option>').join('') + '</select>' : '') +
-    '<label class="formLabel" for="newChannelKind">Type</label><select class="formInput" id="newChannelKind"><option value="text">Text - a normal chat</option><option value="forum">Forum - every post is its own thread</option></select>' +
+    '<label class="formLabel" for="newChannelKind">Type</label><select class="formInput" id="newChannelKind"><option value="text">Text - a normal chat</option><option value="forum">Forum - every post is its own thread</option><option value="voice">Voice - talk, video and screen share</option></select>' +
     '<label class="rememberRow" style="margin:0"><input type="checkbox" id="newChannelPrivate"> Private channel - only admins (and people you add in Server Settings) can see it</label>' +
     '<div class="modalMsg" id="modalMsg"></div></div>' +
     '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="createChannelBtn">Create Channel</button></div>'
@@ -7501,6 +8381,11 @@ $('overlay').addEventListener('click', e => { if(e.target.id === 'overlay') clos
 $('lightbox').addEventListener('click', e => { if(e.target.id === 'lightbox') closeLightbox(); });
 
 document.addEventListener('keydown', e => {
+  if((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && voice.key && ['m', 'd'].includes(e.key.toLowerCase())){
+    e.preventDefault();
+    if(e.key.toLowerCase() === 'm') toggleMute(); else toggleDeafen();
+    return;
+  }
   if((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k' && token){
     e.preventDefault();
     if(switcherOpen()) closeSwitcher(); else openSwitcher();

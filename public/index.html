@@ -4569,7 +4569,7 @@ function buildMessageCard(msg, opts){
   opts = opts || {};
   const card = document.createElement('div');
   card.className = opts.pin ? 'pinCard' : 'resultCard';
-  card.appendChild(createAvatar(msg.user, 'sm'));
+  card.appendChild(msg.bot ? botAvatar(msg.displayName, 'sm') : createAvatar(msg.user, 'sm'));
   const main = document.createElement('div');
   main.className = 'resultMain';
   if(opts.where){
@@ -4586,7 +4586,7 @@ function buildMessageCard(msg, opts){
   main.appendChild(head);
   const text = document.createElement('div');
   text.className = 'resultText';
-  text.innerHTML = renderMarkdown(msg.text || '');
+  text.innerHTML = messageTextHtml(msg);
   censorRenderedElement(text, msg.room);
   if(opts.highlight) highlightIn(text, opts.highlight);
   main.appendChild(text);

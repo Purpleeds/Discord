@@ -1,5 +1,8 @@
 const express = require('express');
 const http = require('http');
+const https = require('https');
+const dns = require('dns');
+const net = require('net');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -2650,6 +2653,202 @@ app.post('/messages/:id/reaction-roles/delete', requireAuth, route(async (req, r
   await pool.query(`DELETE FROM reaction_roles WHERE message_id = $1 AND emoji = $2`, [target.row.id, String(req.body.emoji || '')]);
   await emitMessageUpdate(target.row.id);
   res.json({ message: 'ok' });
+}));
+
+// ---------------- LINK PREVIEWS ----------------
+// The server fetches a linked page and reads its title/description/image
+// (Open Graph tags), so viewers' addresses aren't sent to every site that
+// gets linked. Fetching URLs that users choose is a classic way to attack
+// the server's own network (SSRF), so every request:
+//  - is http(s) on the default port only, with no user:password@,
+//  - resolves DNS here and refuses unless EVERY address is public (no
+//    loopback, private, link-local - e.g. cloud metadata - CGNAT, multicast,
+//    reserved or IPv6 equivalents), then connects to that checked address
+//    (pinned, so the name can't be re-pointed between check and connect),
+//  - follows at most 3 redirects, each checked the same way,
+//  - gives up after 6 seconds and reads at most 512 KB.
+// Results (including "no preview") are cached, and the number of fetches
+// in flight is capped.
+const PREVIEW_BLOCKLIST = new net.BlockList();
+for (const [address, prefix] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12],
+  ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
+  ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4]
+]) PREVIEW_BLOCKLIST.addSubnet(address, prefix, 'ipv4');
+for (const [address, prefix] of [
+  ['::', 128], ['::1', 128], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48], ['100::', 64],
+  ['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8]
+]) PREVIEW_BLOCKLIST.addSubnet(address, prefix, 'ipv6');
+
+function isPublicAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return !PREVIEW_BLOCKLIST.check(address, 'ipv4');
+  if (family === 6) return !/^::ffff:/i.test(address) && !PREVIEW_BLOCKLIST.check(address, 'ipv6');
+  return false;
+}
+// For the automated tests only: exact "host:port" pairs allowed to skip the
+// public-address rule, and only while rate limits are off (never in production).
+const PREVIEW_TEST_HOSTS = new Set(
+  !RATE_LIMITS_ON ? String(process.env.LINK_PREVIEW_TEST_HOSTS || '').split(',').map(h => h.trim()).filter(Boolean) : []
+);
+const PREVIEW_TIMEOUT_MS = 6000;
+const PREVIEW_MAX_BYTES = 512 * 1024;
+const PREVIEW_UA = 'Mozilla/5.0 (compatible; ChatLinkPreview/1.0; self-hosted chat app)';
+
+async function resolvePreviewHost(url) {
+  const testHost = PREVIEW_TEST_HOSTS.has(url.host);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('unsupported url');
+  if (url.port && !testHost) throw new Error('non-default port');
+  const host = url.hostname.replace(/^\[|\]$/g, '');
+  if (!testHost && /(^|\.)(localhost|local|localdomain|internal|intranet|lan|home|corp|arpa)$/i.test(host)) throw new Error('internal name');
+  const addresses = net.isIP(host)
+    ? [{ address: host, family: net.isIP(host) }]
+    : await dns.promises.lookup(host, { all: true, verbatim: true });
+  if (!addresses.length) throw new Error('no address');
+  if (!testHost && !addresses.every(a => isPublicAddress(a.address))) throw new Error('not a public address');
+  return addresses[0];
+}
+
+// One request to an already-checked address. Resolves to { redirect } or
+// { html } or { other } (not a web page).
+function previewRequest(url, pinned) {
+  return new Promise((resolve, reject) => {
+    const lib = url.protocol === 'https:' ? https : http;
+    let settled = false;
+    const done = (fn, value) => { if (!settled) { settled = true; clearTimeout(deadline); fn(value); } };
+    const req = lib.request(url, {
+      method: 'GET',
+      agent: false,
+      headers: { 'user-agent': PREVIEW_UA, accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.1', 'accept-encoding': 'identity', 'accept-language': 'en' },
+      // connect to the address we checked, never a fresh lookup
+      lookup: (hostname, options, cb) => {
+        if (options && options.all) cb(null, [{ address: pinned.address, family: pinned.family }]);
+        else cb(null, pinned.address, pinned.family);
+      }
+    }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        let next;
+        try { next = new URL(res.headers.location, url); } catch (e) { return done(reject, new Error('bad redirect')); }
+        return done(resolve, { redirect: next });
+      }
+      const type = String(res.headers['content-type'] || '').toLowerCase();
+      const encoding = String(res.headers['content-encoding'] || 'identity').toLowerCase();
+      if (res.statusCode !== 200 || !/text\/html|application\/xhtml/.test(type) || encoding !== 'identity') {
+        res.destroy();
+        return done(resolve, { other: true });
+      }
+      const chunks = [];
+      let size = 0;
+      res.on('data', chunk => {
+        chunks.push(chunk);
+        size += chunk.length;
+        // everything a preview needs is in <head>: stop as soon as it's over
+        if (size >= PREVIEW_MAX_BYTES || /<\/head>|<body[\s>]/i.test(chunk.toString('latin1'))) {
+          res.destroy();
+          done(resolve, { html: Buffer.concat(chunks).subarray(0, PREVIEW_MAX_BYTES).toString('utf8') });
+        }
+      });
+      res.on('end', () => done(resolve, { html: Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', err => done(reject, err));
+    });
+    const deadline = setTimeout(() => { req.destroy(new Error('timeout')); done(reject, new Error('timeout')); }, PREVIEW_TIMEOUT_MS);
+    req.on('error', err => done(reject, err));
+    req.end();
+  });
+}
+
+function decodeEntities(text) {
+  const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  return String(text).replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|[a-z]{2,6});/gi, (m, e) => {
+    if (e[0] === '#') {
+      const code = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : m;
+    }
+    return named[e.toLowerCase()] !== undefined ? named[e.toLowerCase()] : m;
+  });
+}
+function previewField(text, max) {
+  return text ? decodeEntities(text).replace(/\s+/g, ' ').trim().slice(0, max) : '';
+}
+function parsePreview(html, pageUrl) {
+  const head = html.slice(0, PREVIEW_MAX_BYTES);
+  const metas = {};
+  for (const tag of head.match(/<meta\b[^>]*>/gi) || []) {
+    const attrs = {};
+    for (const a of tag.matchAll(/([a-zA-Z_:.-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) attrs[a[1].toLowerCase()] = a[3] ?? a[4] ?? a[5] ?? '';
+    const key = String(attrs.property || attrs.name || attrs.itemprop || '').toLowerCase();
+    if (key && attrs.content !== undefined && !(key in metas)) metas[key] = attrs.content;
+  }
+  const titleTag = /<title[^>]*>([\s\S]{0,500}?)<\/title>/i.exec(head);
+  const title = previewField(metas['og:title'] || metas['twitter:title'] || (titleTag ? titleTag[1] : ''), 200);
+  const description = previewField(metas['og:description'] || metas['twitter:description'] || metas.description, 300);
+  if (!title && !description) return null;
+  let image = '';
+  const rawImage = metas['og:image:secure_url'] || metas['og:image'] || metas['twitter:image'] || metas['twitter:image:src'];
+  if (rawImage) {
+    try {
+      const u = new URL(decodeEntities(rawImage).trim(), pageUrl);
+      if (u.protocol === 'https:' && u.href.length <= 1000) image = u.href; // http images would be blocked as mixed content anyway
+    } catch (e) { /* no image */ }
+  }
+  const color = /^#[0-9a-f]{6}$/i.test(String(metas['theme-color'] || '').trim()) ? metas['theme-color'].trim() : '';
+  return {
+    title,
+    description,
+    siteName: previewField(metas['og:site_name'], 100) || pageUrl.hostname.replace(/^www\./, ''),
+    image,
+    largeImage: String(metas['twitter:card'] || '').toLowerCase() === 'summary_large_image',
+    color
+  };
+}
+
+async function fetchLinkPreview(rawUrl) {
+  let url = new URL(rawUrl);
+  for (let hop = 0; hop <= 3; hop++) {
+    const pinned = await resolvePreviewHost(url);
+    const result = await previewRequest(url, pinned);
+    if (result.redirect) { url = result.redirect; continue; }
+    if (!result.html) return null;
+    return parsePreview(result.html, url);
+  }
+  return null; // too many redirects
+}
+
+const previewCache = new Map(); // url -> { at, data } (data null = no preview)
+const previewInflight = new Map(); // url -> promise
+const PREVIEW_TTL_MS = 6 * 60 * 60 * 1000;
+const PREVIEW_MISS_TTL_MS = 30 * 60 * 1000;
+const PREVIEW_CACHE_MAX = 1000;
+const PREVIEW_MAX_INFLIGHT = 8;
+function cachePreview(key, data) {
+  previewCache.delete(key);
+  previewCache.set(key, { at: Date.now(), data });
+  while (previewCache.size > PREVIEW_CACHE_MAX) previewCache.delete(previewCache.keys().next().value);
+}
+
+app.get('/link-preview', requireAuth, route(async (req, res) => {
+  let target;
+  try { target = new URL(String(req.query.url || '')); } catch (e) { return res.json({ none: true }); }
+  if (!['http:', 'https:'].includes(target.protocol) || target.href.length > 2048) return res.json({ none: true });
+  target.hash = '';
+  const key = target.href;
+  const cached = previewCache.get(key);
+  if (cached && Date.now() - cached.at < (cached.data ? PREVIEW_TTL_MS : PREVIEW_MISS_TTL_MS)) {
+    return res.json(cached.data ? { url: key, ...cached.data } : { none: true });
+  }
+  if (rateLimited('preview:' + req.username, 120, 60 * 1000)) return res.status(429).json({ none: true });
+  let pending = previewInflight.get(key);
+  if (!pending) {
+    if (previewInflight.size >= PREVIEW_MAX_INFLIGHT) return res.json({ none: true, busy: true });
+    pending = fetchLinkPreview(key)
+      .catch(() => null)
+      .then(data => { cachePreview(key, data); return data; })
+      .finally(() => previewInflight.delete(key));
+    previewInflight.set(key, pending);
+  }
+  const data = await pending;
+  res.json(data ? { url: key, ...data } : { none: true });
 }));
 
 // ---------------- THREADS + FORUM POSTS ----------------

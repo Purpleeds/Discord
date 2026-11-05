@@ -389,3 +389,17 @@ test('batch 4: webhooks, slash commands, auto-roles and reaction roles', async (
   assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
   assert.equal((await post(url, { content: 'x' })).status, 401);
 });
+
+test('link previews never fetch internal addresses (SSRF)', async () => {
+  let hits = 0;
+  const internal = require('node:http').createServer((req, res) => { hits++; res.end('<head><title>secret</title></head>'); });
+  await new Promise(r => internal.listen(0, '127.0.0.1', r));
+  const port = internal.address().port;
+  const preview = async url => (await api(tokens.a, '/link-preview?url=' + encodeURIComponent(url))).data;
+  for (const url of [
+    `http://127.0.0.1:${port}/`, `http://localhost:${port}/`, `http://[::1]:${port}/`, 'http://169.254.169.254/latest/meta-data/',
+    'http://10.0.0.1/', 'http://192.168.0.1/', 'http://2130706433/', 'http://[::ffff:127.0.0.1]/', 'file:///etc/passwd'
+  ]) assert.equal((await preview(url)).none, true, url);
+  assert.equal(hits, 0);
+  internal.close();
+});

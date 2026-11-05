@@ -490,6 +490,17 @@ select option{background:var(--bg-floating);color:var(--text-bright);}
 .roleMenuItem:hover{border-color:var(--text-muted);}
 .roleMenuItem.mine{border-color:var(--brand);background:rgba(88,101,242,.18);}
 .roleMenuItem .rmName{font-weight:600;}
+.linkPreviews{display:flex;flex-direction:column;gap:6px;margin-top:4px;}
+.linkPreviews:empty{display:none;}
+.linkCard{display:flex;gap:12px;max-width:520px;padding:10px 12px;border-radius:4px;background:rgba(0,0,0,.14);border:1px solid var(--divider);border-left:4px solid var(--border-strong);}
+.linkCard.large{flex-direction:column;}
+.linkCardText{min-width:0;flex:1;}
+.linkCardSite{font-size:12px;color:var(--text-muted);margin-bottom:2px;}
+.linkCardTitle{display:block;font-weight:600;color:var(--link);text-decoration:none;margin-bottom:4px;overflow-wrap:anywhere;}
+.linkCardTitle:hover{text-decoration:underline;}
+.linkCardDesc{font-size:14px;color:var(--text);line-height:1.35;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.linkCardImg{width:80px;height:80px;object-fit:cover;border-radius:4px;flex:0 0 80px;cursor:pointer;}
+.linkCard.large .linkCardImg{width:100%;height:auto;max-height:300px;flex:none;}
 .spoiler{background:#1e1f22;color:transparent;border-radius:3px;cursor:pointer;padding:0 2px;}
 .spoiler *{visibility:hidden;}
 .spoiler.shown{background:rgba(255,255,255,.08);color:inherit;cursor:auto;}
@@ -2810,6 +2821,7 @@ function buildMessageEl(item, grouped){
     if(data.pinned) text.appendChild(pinMarker());
     body.appendChild(text);
     appendLinkedImages(body, data.text || '');
+    appendLinkPreviews(body, data);
     if(!data.deleted && (data.reactionRoles || []).length) body.appendChild(buildRoleMenu(data));
     const reactions = document.createElement('div');
     reactions.className = 'reactions';
@@ -2952,6 +2964,58 @@ function renderMarkdown(text){
     return '<a class="msgLink" href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
   });
   return html;
+}
+
+// Preview cards for links (title, description, picture). The chat server
+// fetches the page (see /link-preview), so the linked site never sees who
+// is reading; only the card's picture is loaded from the site itself.
+const linkPreviewCache = new Map(); // url -> promise of the preview (or null)
+function previewUrlsIn(text){
+  const urls = String(text || '').match(/https?:\/\/[^\s<>]+[^\s<>.,!?)\]'"]/g) || [];
+  return [...new Set(urls)].filter(u => !IMAGE_EXT.test(u) && !u.startsWith(location.origin + '/')).slice(0, 2);
+}
+function getLinkPreview(url){
+  if(!linkPreviewCache.has(url)){
+    linkPreviewCache.set(url, fetch('/link-preview?url=' + encodeURIComponent(url), { headers:authHeaders() })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d && !d.none ? d : null)
+      .catch(() => null));
+    if(linkPreviewCache.size > 500) linkPreviewCache.delete(linkPreviewCache.keys().next().value);
+  }
+  return linkPreviewCache.get(url);
+}
+function appendLinkPreviews(body, data){
+  if(appearance.linkPreviews === false || data.deleted || data.pending) return;
+  const urls = previewUrlsIn(data.text);
+  if(!urls.length) return;
+  const holder = document.createElement('div');
+  holder.className = 'linkPreviews';
+  const before = body.querySelector(':scope > .roleMenu, :scope > .reactions');
+  if(before) before.before(holder); else body.appendChild(holder);
+  urls.forEach(url => getLinkPreview(url).then(preview => {
+    if(!preview || !holder.isConnected) return;
+    const stick = isAtBottom();
+    holder.appendChild(buildLinkPreviewCard(url, preview));
+    if(stick) scrollToBottom();
+  }));
+}
+function buildLinkPreviewCard(url, p){
+  const card = document.createElement('div');
+  card.className = 'linkCard' + (p.largeImage && p.image ? ' large' : '');
+  if(p.color) card.style.borderLeftColor = p.color;
+  const text = document.createElement('div');
+  text.className = 'linkCardText';
+  if(p.siteName) text.appendChild(Object.assign(document.createElement('div'), { className:'linkCardSite', textContent:p.siteName }));
+  if(p.title) text.appendChild(Object.assign(document.createElement('a'), { className:'linkCardTitle', href:url, target:'_blank', rel:'noopener noreferrer', textContent:p.title }));
+  if(p.description) text.appendChild(Object.assign(document.createElement('div'), { className:'linkCardDesc', textContent:p.description }));
+  card.appendChild(text);
+  if(p.image && /^https:\/\//.test(p.image)){
+    const img = Object.assign(document.createElement('img'), { className:'linkCardImg', src:p.image, alt:'', loading:'lazy', referrerPolicy:'no-referrer' });
+    img.onerror = () => img.remove();
+    img.onclick = () => openLightbox(p.image, p.title || 'image');
+    card.appendChild(img);
+  }
+  return card;
 }
 
 function appendLinkedImages(body, text){
@@ -3145,6 +3209,9 @@ function applyUpdatedMessage(msg){
   const chip = el.querySelector('.threadChip');
   if(chip) chip.remove();
   if(msg.thread){ const b = el.querySelector('.msgBody'); if(b) b.appendChild(buildThreadChip(msg)); }
+  // an edit can add or remove links
+  const oldPreviews = el.querySelector('.linkPreviews');
+  if(oldPreviews) oldPreviews.remove();
   // reaction roles added / removed by an admin
   const oldMenu = el.querySelector('.roleMenu');
   if(oldMenu) oldMenu.remove();
@@ -3153,6 +3220,7 @@ function applyUpdatedMessage(msg){
     const reactions = el.querySelector('.msgBody > .reactions');
     if(reactions) reactions.before(menu); else { const b = el.querySelector('.msgBody'); if(b) b.appendChild(menu); }
   }
+  if(!msg.deleted && el._item){ const b = el.querySelector('.msgBody'); if(b) appendLinkPreviews(b, el._item.data); }
   // pin/unpin label on the hover toolbar depends on the new state
   const oldBar = el.querySelector('.msgActions');
   if(oldBar && el._item) oldBar.replaceWith(buildActions(el._item));
@@ -3377,6 +3445,9 @@ function confirmPendingSendData(msg){
     muteUnpingedMentions(text, msg);
     censorRenderedElement(text, msg.room);
   }
+  // link previews wait for the real message (no fetches for a send that fails)
+  const body = el.querySelector('.msgBody');
+  if(body && !body.querySelector('.linkPreviews')) appendLinkPreviews(body, msg);
   return true;
 }
 
@@ -7224,7 +7295,7 @@ function renderAccessibilitySection(c){
 function renderChatSection(c){
   c.innerHTML =
     '<h2 class="settingsTitle">Chat</h2>' +
-    section('Display', switchRow('chLinkImages', 'Show images from links', 'When someone posts a link to an image, show the picture under the message.', appearance.linkPreviews !== false)) +
+    section('Display', switchRow('chLinkImages', 'Show link previews', 'Show a preview card under links (title, description, picture) and the picture for image links. The chat server fetches the page, so the site doesn\'t see who\'s reading; pictures are loaded from the site.', appearance.linkPreviews !== false)) +
     section('Typing', switchRow('chTyping', 'Show when people are typing', 'The "… is typing" line above the message box.', appearance.showTyping !== false));
   $('chLinkImages').onchange = e => setAppearance({ linkPreviews:e.target.checked }, true);
   $('chTyping').onchange = e => { setAppearance({ showTyping:e.target.checked }); renderTyping(); };

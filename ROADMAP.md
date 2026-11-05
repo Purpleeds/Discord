@@ -85,14 +85,35 @@ large, new system - also split it over several sessions).
   Next ideas (not planned yet): soundboard, Stage channels, Watch Together,
   an SFU server if calls ever need more than 8 people.
 
-## Batch 4 - automation
+## Batch 4 - automation (done)
 
-- [ ] **12. Webhooks + simple bots** - `high`
+- [x] **12. Webhooks + simple bots** - `high` - *done Nov 2026*
   Incoming webhooks, slash commands, reaction roles, auto-roles. Bot and
   webhook tokens are secrets: hash them, allow resetting them.
-- [ ] **13. Link previews** - `high`
+  *Webhooks: Server Settings → Integrations; Discord-compatible
+  `/api/webhooks/<id>/<token>` (content, username, embeds flattened to
+  quotes, `?wait=true`). Token = 32 random bytes, only SHA-256 stored,
+  shown once, "New Link" resets. Webhook messages have `"user" =
+  'webhook:<id>'` + `webhook_id` + `author_name`, show a BOT tag and never
+  ping. Slash commands: composer autocomplete; /shrug /tableflip /unflip
+  /lenny /me /spoiler /poll are done in the browser, /roll and /flip on the
+  server (`runCommand`, kind 'roll') so results can't be faked; custom
+  per-server commands (`server_commands`, kind 'command'). Auto-roles:
+  `server_roles.auto_assign`, given on join. Reaction roles:
+  `reaction_roles` (message, emoji → role), toggled in the `reactMessage`
+  handler + `resyncRooms()`.*
+  Not done (next if wanted): bot accounts that log in with a token and
+  read/answer messages through the API (outgoing webhooks / a bot SDK).
+- [x] **13. Link previews** - `high` - *done Nov 2026*
   The server must fetch pages, so guard against SSRF (no private/internal
   addresses, size and time limits, no redirects to internal hosts).
+  *`/link-preview` + `fetchLinkPreview()`: http(s), default ports, every
+  DNS answer must be public (net.BlockList of private/reserved v4+v6),
+  connection pinned to the checked IP, manual redirects (max 3, each
+  re-checked), 6s / 512KB, 8 in flight, cached 6h (misses 30 min). Only the
+  card's picture is loaded from the site itself. Tested against a decoy
+  server: localhost tricks, numeric IPs, IPv6-mapped, metadata IP,
+  redirects to internal hosts.*
 
 ## Decided against
 
@@ -107,7 +128,7 @@ large, new system - also split it over several sessions).
 
 ## Already built (Nov 2026)
 
-Batches 1-3 above, plus: DMs, group chats, servers with invites, text channels with topics,
+Batches 1-4 above, plus: DMs, group chats, servers with invites, text channels with topics,
 announcement channels, slowmode, channel reordering, editing/deleting,
 replies, pins, reactions, emoji picker, Markdown, file sharing (deleted
 after 6h), @mentions, per-conversation search, custom role colours,

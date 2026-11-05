@@ -60,6 +60,16 @@ off there (with anything learned) when they ship.
   removes access ends the person's call too. `voice:signal` is relayed
   only between two current participants; never relay to anyone else.
   Ring notifications follow the honest-notification rule above.
+- Webhook tokens are passwords: store only `sha256Hex(token)`, show the
+  token once, compare with `webhookTokenMatches()` (constant time). Webhook
+  messages are `"user" = 'webhook:<id>'` (never a real username) with
+  `bot: true`; they never ping and the client shows no profile for them.
+- Message kinds made by the server (`roll`, `command`, `call`, `join`,
+  `event`, `poll`) can't be edited - `editMessage` refuses any `kind`.
+- Anything that fetches a URL a user supplied must go through the
+  link-preview guards (`resolvePreviewHost()` + `previewRequest()`): public
+  addresses only, pinned connection, re-checked redirects, time/size caps.
+  Never `fetch()` user URLs directly from the server.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

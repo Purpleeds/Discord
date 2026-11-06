@@ -115,6 +115,21 @@ large, new system - also split it over several sessions).
   server: localhost tricks, numeric IPs, IPv6-mapped, metadata IP,
   redirects to internal hosts.*
 
+## Extras (Nov 2026)
+
+- [x] **Hover and click animations** - subtle, mouse-only lifts; Settings >
+  Appearance > Reduced motion (defaults to the device's setting) turns them off.
+- [x] **Server setup** - creating a server is a short setup: template
+  (Gaming, School Club, Study Group, Friends, Artists & Creators, Local
+  Community or Create My Own) -> community or friends (community adds an
+  Information category with admin-only #welcome-and-rules and
+  #announcements) -> icon, name, description, banner -> invite code.
+  `SERVER_TEMPLATES` in server.js builds the categories and channels; every
+  new server gets voice channels. The original server got a #lounge voice
+  channel once (site_settings `default_voice_added`, so deleting it sticks).
+- [x] **Discord-style banner** - taller, name on top, folds into a normal
+  header when you scroll the channel list. The voice channel you're in is green.
+
 ## Decided against
 
 - Game detection / Rich Presence, game overlays, PlayStation/Xbox linking -

@@ -1,7 +1,8 @@
 # Chat
 
 A self-hosted, Discord-style chat app: servers and channels, DMs, group
-chats, voice and video calls, voice channels and screen sharing, friends
+chats, voice and video calls, voice channels and screen sharing, a
+guided server setup with templates and banners, friends
 and blocking, reactions, replies, file sharing, link previews, webhooks,
 slash commands, reaction roles, push notifications and a full settings
 screen.

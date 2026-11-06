@@ -320,7 +320,8 @@ test('batch 3: calls ring, connect, relay only between participants, and end', a
   const sid = (await api(tokens.a, '/servers', { name: 'Voice ' + tag })).data.id;
   const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
   await api(tokens.b, '/servers/join', { code: s.inviteCode });
-  const vc = (await api(tokens.a, `/servers/${sid}/channels`, { name: 'Lounge', kind: 'voice' })).data;
+  const vc = s.channels.find(c => c.kind === 'voice'); // every new server comes with one
+  assert.ok(vc, 'new servers have a voice channel');
   const vkey = 'voice:' + vc.room;
   assert.equal((await emit(sockets.a, 'voice:join', { key: vkey })).message, 'ok');
   assert.equal((await emit(sockets.b, 'voice:join', { key: vkey })).message, 'ok');

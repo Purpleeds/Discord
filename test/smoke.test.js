@@ -404,3 +404,57 @@ test('link previews never fetch internal addresses (SSRF)', async () => {
   assert.equal(hits, 0);
   internal.close();
 });
+
+test('bot accounts: tokens, servers, slash commands and limits', async () => {
+  const botName = 'bot' + tag;
+  const made = await api(tokens.a, '/bots', { username: botName });
+  assert.equal(made.status, 201);
+  assert.match(made.data.token, /^bot_/);
+  const bot = (p, b) => fetch(BASE + p, { method: b ? 'POST' : 'GET', headers: { 'content-type': 'application/json', authorization: 'Bot ' + made.data.token }, body: b ? JSON.stringify(b) : undefined });
+  assert.equal((await (await bot('/profile')).json()).username, botName);
+  // no password logins, no invite codes, no friends, not in the open default server
+  const login = await fetch(BASE + '/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: botName, password: '!bot' }) });
+  assert.equal(login.status, 401);
+  assert.equal((await bot('/servers/join', { code: 'x' })).status, 403);
+  assert.equal((await api(tokens.b, '/friends/request', { username: botName })).status, 400);
+  assert.equal((await bot('/messages?room=general')).status, 403);
+  assert.equal((await api(tokens.c, `/bots/${botName}/token`, {})).status, 404, 'only the owner manages it');
+
+  // the owner adds it to their server; it answers over Socket.IO like a member
+  const sid = (await api(tokens.a, '/servers', { name: 'Bots ' + tag })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  assert.equal((await api(tokens.a, `/bots/${botName}/servers`, { serverId: sid })).status, 200);
+  const general = s.channels.find(c => c.name === 'general');
+  const botSocket = await new Promise((resolve, reject) => {
+    const sock = io(BASE, { auth: { token: 'Bot ' + made.data.token }, transports: ['websocket'] });
+    sock.on('connect', () => resolve(sock));
+    sock.on('connect_error', reject);
+  });
+  await new Promise(r => setTimeout(r, 300));
+  const heard = nextEvent(botSocket, 'message', m => m.text === '!ping');
+  await emit(sockets.b, 'joinRoom', general.room);
+  await emit(sockets.b, 'message', { room: general.room, text: '!ping' });
+  await heard;
+  const answer = nextEvent(sockets.b, 'message', m => m.user === botName);
+  assert.equal((await emit(botSocket, 'message', { room: general.room, text: 'Pong!' })).message, 'ok');
+  assert.equal((await answer).botAccount, true);
+
+  // slash commands go to the bot, which answers "<person> used /hello"
+  assert.equal((await emit(botSocket, 'bot:setCommands', { commands: [{ name: 'hello', description: 'hi' }] })).message, 'ok');
+  const interaction = nextEvent(botSocket, 'interactionCreate', i => i.command === 'hello');
+  assert.equal((await emit(sockets.b, 'runCommand', { room: general.room, name: 'hello' })).message, 'ok');
+  const it = await interaction;
+  assert.ok((await emit(sockets.b, 'interactionReply', { id: it.id, text: 'fake' })).error, 'people cannot answer as the bot');
+  const replied = nextEvent(sockets.b, 'message', m => m.kind === 'command' && m.user === botName);
+  await emit(botSocket, 'interactionReply', { id: it.id, text: 'Hello!' });
+  assert.equal((await replied).invokedBy, names.b);
+  assert.ok((await emit(botSocket, 'voice:join', { key: 'voice:' + s.channels.find(c => c.kind === 'voice').room })).error, 'bots cannot join calls');
+
+  // a new token locks out the old one
+  await api(tokens.a, `/bots/${botName}/token`, {});
+  assert.equal((await bot('/profile')).status, 401);
+  botSocket.close();
+  await api(tokens.a, `/bots/${botName}/delete`, {});
+  assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});

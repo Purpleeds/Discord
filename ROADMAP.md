@@ -102,8 +102,17 @@ large, new system - also split it over several sessions).
   `server_roles.auto_assign`, given on join. Reaction roles:
   `reaction_roles` (message, emoji → role), toggled in the `reactMessage`
   handler + `resyncRooms()`.*
-  Not done (next if wanted): bot accounts that log in with a token and
-  read/answer messages through the API (outgoing webhooks / a bot SDK).
+  *Bot accounts (done Nov 2026): users with `is_bot`/`bot_owner`, token
+  "bot_..." (SHA-256 in `bot_token_hash`, `usernameForBotToken()`), made in
+  Settings > My Bots (max 5), added by their owner to servers the owner
+  manages (`addServerMember()`). Same access checks as people; limits: no
+  password login, invites, servers, friends, groups, calls, server admin,
+  or the open default server; DMs only with shared-server people or people
+  who DMed them (`botMayDM()`). discord.js-style SDK at
+  `public/sdk/chat-bot.js`. Bot slash commands: `bot_commands` +
+  `bot:setCommands`, used via `runCommand` -> `interactionCreate` to the
+  bot -> `interactionReply` (15 min, max 5 answers), posted as kind
+  'command' with `invoked_by`.*
 - [x] **13. Link previews** - `high` - *done Nov 2026*
   The server must fetch pages, so guard against SSRF (no private/internal
   addresses, size and time limits, no redirects to internal hosts).

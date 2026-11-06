@@ -552,6 +552,24 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS author_name TEXT`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS command_name TEXT`);
   await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS auto_assign INTEGER DEFAULT 0`);
+
+  // Bot accounts: users with is_bot = 1, made by a person (bot_owner), who
+  // sign in with a token - only its SHA-256 is stored - never a password.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_bot INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_owner TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bot_token_hash TEXT`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_bot_token ON users (bot_token_hash) WHERE bot_token_hash IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_bot_owner ON users (bot_owner) WHERE is_bot = 1`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bot_commands (
+      bot TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      PRIMARY KEY (bot, name)
+    )
+  `);
+  // a bot's answer to a slash command shows "<invoked_by> used /name"
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS invoked_by TEXT`);
 }
 
 // ---------------- SERVERS (guilds) ----------------
@@ -642,7 +660,7 @@ let DEFAULT_SERVER = null;
 // itself, and keeps rows in a small in-memory cache that every write to the
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
-const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears,
+const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
   bio, banner_color, custom_status, pronouns, presence, avatar_version, created_at,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
@@ -762,7 +780,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT 300
      ) recent ORDER BY id ASC`,
     [room]
@@ -771,7 +789,7 @@ async function getMessagesForRoom(room) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
@@ -899,8 +917,8 @@ async function deleteToken(token) {
 
 async function authFromRequest(req) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const username = await usernameForToken(token);
+  const token = header.startsWith('Bearer ') ? header.slice(7) : (header.startsWith('Bot ') ? header.slice(4) : '');
+  const username = isBotToken(token) ? await usernameForBotToken(token) : await usernameForToken(token);
   if (!username) return null;
   const user = await getUser(username);
   if (!user || user.banned) return null;
@@ -1006,7 +1024,7 @@ async function isGroupMember(username, groupId) {
 async function isServerMember(username, serverId) {
   const srv = await getServerById(serverId);
   if (!srv) return false;
-  if (srv.is_default) return true; // everyone is in the default "general" server
+  if (srv.is_default) return !(await isBotUser(username)); // every PERSON is in the default "general" server
   return !!(await one(`SELECT 1 FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, username]));
 }
 
@@ -1071,10 +1089,10 @@ async function serversForUser(username) {
             CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
             CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' ELSE 'data:' END AS banner_url
      FROM servers s
-     WHERE s.is_default = 1
+     WHERE (s.is_default = 1 AND NOT $2)
         OR s.id IN (SELECT server_id FROM server_members WHERE username = $1)
      ORDER BY s.is_default DESC, s.id ASC`,
-    [username]
+    [username, await isBotUser(username)]
   );
   if (!rows.length) return [];
   const ids = rows.map(s => s.id);
@@ -1148,7 +1166,7 @@ async function serversForUser(username) {
 async function serverMemberUsernames(serverId) {
   const srv = await getServerById(serverId);
   if (!srv) return [];
-  if (srv.is_default) return (await q(`SELECT username FROM users WHERE banned = 0`)).map(r => r.username);
+  if (srv.is_default) return (await q(`SELECT username FROM users WHERE banned = 0 AND COALESCE(is_bot, 0) = 0`)).map(r => r.username);
   return (await q(`SELECT username FROM server_members WHERE server_id = $1`, [serverId])).map(r => r.username);
 }
 
@@ -1225,14 +1243,14 @@ async function canViewChannel(username, channel) {
 async function readableChannelRooms(username) {
   const rows = await q(
     `SELECT c.room FROM server_channels c JOIN servers s ON s.id = c.server_id
-     WHERE (s.is_default = 1 OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1))
+     WHERE ((s.is_default = 1 AND NOT $3) OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1))
        AND (COALESCE(c.is_private, 0) = 0
             OR $2
             OR s.owner = $1
             OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1 AND m.role IN ('admin', 'owner'))
             OR EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c.id
                        AND (a.username = $1 OR a.role_id IN (SELECT role_id FROM server_member_roles WHERE username = $1))))`,
-    [username, await isAdmin(username)]
+    [username, await isAdmin(username), await isBotUser(username)]
   );
   return rows.map(r => r.room);
 }
@@ -1351,7 +1369,9 @@ function profileFromRow(u) {
     bannerColor: u.banner_color || '',
     customStatus: u.custom_status || '',
     pronouns: u.pronouns || '',
-    memberSince: u.created_at || null
+    memberSince: u.created_at || null,
+    isBot: !!u.is_bot,
+    botOwner: u.is_bot ? (u.bot_owner || '') : ''
   };
 }
 
@@ -1481,10 +1501,12 @@ async function normaliseMessages(rows) {
       user: row.user,
       // webhook posts show their own name, always marked as a bot
       bot: !!row.webhook_id,
+      botAccount: !!(u && u.is_bot), // written by a bot account (has a profile, unlike webhooks)
       webhookId: row.webhook_id || null,
       displayName: row.webhook_id ? (row.author_name || 'Webhook') : (u ? (u.display_name || u.username) : row.user),
       avatarUrl: u ? avatarUrlOf(u) : '',
       commandName: row.command_name || '',
+      invokedBy: row.invoked_by || '',
       reactionRoles: deleted ? [] : (reactionRolesBy.get(row.id) || []),
       text: deleted ? '[message deleted]' : row.text,
       to: row.to_user || '',
@@ -1781,6 +1803,7 @@ app.post('/login', route(async (req, res) => {
   }
 
   if (!user || user.banned) return res.status(401).json({ error: 'invalid username or password' });
+  if (user.is_bot) return res.status(401).json({ error: 'That\'s a bot account - bots connect with their token, not a password.' });
   // async compare: the old compareSync froze the whole server (every chat,
   // every socket) for ~100ms on each login attempt
   const ok = await bcrypt.compare(password, user.password_hash);
@@ -1844,6 +1867,7 @@ app.post('/profile', requireAuth, route(async (req, res) => {
 // OTHER session for this account (keeps the one making the change) - the
 // usual reason to change a password is that someone else might know it.
 app.post('/settings/password', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
   const current = String(req.body.currentPassword || '');
   const next = String(req.body.newPassword || '');
   const user = await getUser(req.username);
@@ -2374,6 +2398,192 @@ app.get('/voice/ice', requireAuth, route(async (req, res) => {
   res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
 }));
 
+// ---------------- BOT ACCOUNTS ----------------
+// A bot is a users row with is_bot = 1 and bot_owner = the person who made
+// it. It signs in with a token ("bot_" + 32 random bytes; only its SHA-256
+// is stored, shown once, resettable) - never a password. Everything a bot
+// can see or do goes through the SAME checks as a person, plus a few
+// limits: owners add their bots to servers they manage (no invite codes,
+// not the open default server), and bots can't make servers, friends,
+// groups or calls, and only DM people they share a server with (or who
+// messaged them first). The public library is /sdk/chat-bot.js.
+const MAX_BOTS_PER_OWNER = 5;
+const botTokenCache = new Map(); // sha256(token) -> { username, at }
+function isBotToken(token) {
+  return typeof token === 'string' && token.startsWith('bot_');
+}
+function newBotToken() {
+  return 'bot_' + crypto.randomBytes(32).toString('base64url');
+}
+async function usernameForBotToken(token) {
+  if (!/^bot_[A-Za-z0-9_-]{20,100}$/.test(String(token || ''))) return null;
+  const hash = sha256Hex(token);
+  const hit = botTokenCache.get(hash);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit.username;
+  const row = await one(`SELECT username, bot_owner FROM users WHERE bot_token_hash = $1 AND is_bot = 1 AND banned = 0`, [hash]);
+  if (!row) return null;
+  const owner = await getUser(row.bot_owner);
+  if (!owner || owner.banned) return null; // a banned owner's bots stop too
+  botTokenCache.set(hash, { username: row.username, at: Date.now() });
+  return row.username;
+}
+async function isBotUser(username) {
+  const u = await getUser(username);
+  return !!(u && u.is_bot);
+}
+// Bots may DM someone they share a server with, or who has DMed them.
+async function botMayDM(bot, other) {
+  if (await one(
+    `SELECT 1 FROM server_members a JOIN server_members b ON b.server_id = a.server_id AND b.username = $2 WHERE a.username = $1 LIMIT 1`,
+    [bot, other]
+  )) return true;
+  return !!(await one(`SELECT 1 FROM messages WHERE room = $1 AND "user" = $2 LIMIT 1`, [makeDMRoom(bot, other), other]));
+}
+const BOTS_ONLY_PEOPLE = 'Bots can\'t do that - it\'s for people only.';
+
+// Slash commands handed to bots, waiting for an answer: id -> details.
+const interactions = new Map();
+async function startInteraction(socket, bot, cmd, reply) {
+  if (!(await isAllowedRoom(bot, cmd.room))) return reply({ error: `@${bot} can't see this channel.` });
+  if (!onlineUsers.has(bot)) return reply({ error: `@${bot} is offline right now - its owner needs to start it.` });
+  const blocked = await channelPostBlock(socket.username, cmd.room); // slowmode / admins-only still apply to whoever uses it
+  if (blocked) return reply({ error: blocked });
+  const now = Date.now();
+  if (interactions.size > 5000) for (const [key, it] of interactions) if (it.expires < now) interactions.delete(key);
+  const id = crypto.randomBytes(12).toString('hex');
+  interactions.set(id, { bot, room: cmd.room, user: socket.username, command: cmd.name, expires: now + 15 * 60 * 1000, replies: 0 });
+  const me = await getUser(socket.username);
+  sendToUser(bot, 'interactionCreate', {
+    id, command: cmd.name, args: cmd.args, room: cmd.room, serverId: cmd.serverId,
+    user: { username: socket.username, displayName: (me && me.display_name) || socket.username }
+  });
+  return reply({ message: 'ok', interaction: id });
+}
+
+async function botsOf(owner) {
+  const rows = await q(`SELECT ${USER_COLUMNS} FROM users WHERE is_bot = 1 AND bot_owner = $1 AND banned = 0 ORDER BY id`, [owner]);
+  if (!rows.length) return [];
+  const memberships = await q(
+    `SELECT m.username, s.id, s.name FROM server_members m JOIN servers s ON s.id = m.server_id WHERE m.username = ANY($1) ORDER BY s.id`,
+    [rows.map(r => r.username)]
+  );
+  return rows.map(r => ({
+    ...profileFromRow(r),
+    online: onlineUsers.has(r.username),
+    servers: memberships.filter(m => m.username === r.username).map(m => ({ id: m.id, name: m.name }))
+  }));
+}
+// The owner's bot named in the URL, or a 404 already sent.
+async function ownedBot(req, res) {
+  if (await isBotUser(req.username)) { res.status(403).json({ error: BOTS_ONLY_PEOPLE }); return null; }
+  const bot = await getUser(cleanUsername(req.params.name));
+  if (!bot || !bot.is_bot || bot.banned || bot.bot_owner !== req.username) { res.status(404).json({ error: 'bot not found' }); return null; }
+  return bot;
+}
+
+app.get('/bots', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  res.json(await botsOf(req.username));
+}));
+
+app.post('/bots', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  if (rateLimited('createbot:' + req.username, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'You\'ve made a lot of bots - try again later.' });
+  const username = cleanUsername(req.body.username);
+  if (!validUsername(username)) return res.status(400).json({ error: 'bot names are 2-30 letters, numbers, dots, hyphens or underscores' });
+  const count = await one(`SELECT count(*)::int AS n FROM users WHERE is_bot = 1 AND bot_owner = $1 AND banned = 0`, [req.username]);
+  if (count.n >= MAX_BOTS_PER_OWNER) return res.status(400).json({ error: `you can have up to ${MAX_BOTS_PER_OWNER} bots` });
+  if (await getUser(username)) return res.status(409).json({ error: 'that name is taken' });
+  const token = newBotToken();
+  try {
+    // one INSERT, so it's never briefly a normal account; '!' is not a
+    // bcrypt hash, and /login refuses bots before checking passwords anyway
+    await pool.query(
+      `INSERT INTO users (username, password_hash, display_name, is_bot, bot_owner, bot_token_hash) VALUES ($1, '!bot', $2, 1, $3, $4)`,
+      [username, cleanText(req.body.displayName || username, 40) || username, req.username, sha256Hex(token)]
+    );
+  } catch (err) {
+    return res.status(409).json({ error: 'that name is taken' });
+  }
+  const bot = (await botsOf(req.username)).find(b => b.username === username);
+  res.status(201).json({ ...bot, token });
+}));
+
+app.post('/bots/:name/update', requireAuth, route(async (req, res) => {
+  const bot = await ownedBot(req, res);
+  if (!bot) return;
+  const body = req.body || {};
+  const sets = [], values = [];
+  const set = (column, value) => { values.push(value); sets.push(`${column} = $${values.length}`); };
+  if ('displayName' in body) set('display_name', cleanText(body.displayName || bot.username, 40) || bot.username);
+  if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
+  if ('avatarUrl' in body && !String(body.avatarUrl || '').startsWith('/avatars/')) {
+    const value = cleanText(body.avatarUrl || '', 2100000);
+    if (value && !value.startsWith('data:image/')) return res.status(400).json({ error: 'the picture must be an uploaded image' });
+    set('avatar_url', value);
+    set('avatar_version', value ? crypto.createHash('md5').update(value).digest('hex').slice(0, 10) : null);
+  }
+  if (sets.length) {
+    values.push(bot.username);
+    await pool.query(`UPDATE users SET ${sets.join(', ')} WHERE username = $${values.length}`, values);
+    invalidateUser(bot.username);
+    imageCache.delete('u:' + bot.username);
+    io.emit('profilesChanged', { username: bot.username, profile: await profileFor(bot.username) });
+  }
+  res.json((await botsOf(req.username)).find(b => b.username === bot.username));
+}));
+
+// A new token - the old one stops working at once (and its connections drop).
+app.post('/bots/:name/token', requireAuth, route(async (req, res) => {
+  const bot = await ownedBot(req, res);
+  if (!bot) return;
+  const token = newBotToken();
+  await pool.query(`UPDATE users SET bot_token_hash = $1 WHERE username = $2`, [sha256Hex(token), bot.username]);
+  botTokenCache.clear();
+  disconnectUser(bot.username, 'This bot\'s token was reset - restart it with the new token.');
+  res.json({ username: bot.username, token });
+}));
+
+app.post('/bots/:name/delete', requireAuth, route(async (req, res) => {
+  const bot = await ownedBot(req, res);
+  if (!bot) return;
+  const servers = (await q(`DELETE FROM server_members WHERE username = $1 RETURNING server_id`, [bot.username])).map(r => r.server_id);
+  await pool.query(`DELETE FROM server_member_roles WHERE username = $1`, [bot.username]);
+  await pool.query(`DELETE FROM group_members WHERE username = $1`, [bot.username]);
+  // the name stays taken (old messages still show it); the account can't sign in again
+  await pool.query(`UPDATE users SET banned = 1, bot_token_hash = NULL WHERE username = $1`, [bot.username]);
+  await pool.query(`DELETE FROM bot_commands WHERE bot = $1`, [bot.username]);
+  invalidateUser(bot.username);
+  botTokenCache.clear();
+  disconnectUser(bot.username, 'This bot was deleted by its owner.');
+  for (const id of servers) await notifyServerMembers(id, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// Add your bot to a server you own or are an admin of.
+app.post('/bots/:name/servers', requireAuth, route(async (req, res) => {
+  const bot = await ownedBot(req, res);
+  if (!bot) return;
+  const srv = await getServerById(Number(req.body.serverId) || 0);
+  if (!srv || !(await isServerMember(req.username, srv.id))) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'bots can\'t join the open general server - add it to one of your own servers' });
+  if (!(await canManageServer(req.username, srv.id))) return res.status(403).json({ error: 'you can only add bots to servers you own or are an admin of' });
+  await addServerMember(srv, bot.username);
+  res.json((await botsOf(req.username)).find(b => b.username === bot.username));
+}));
+
+app.post('/bots/:name/servers/:serverId/remove', requireAuth, route(async (req, res) => {
+  const bot = await ownedBot(req, res);
+  if (!bot) return;
+  const serverId = Number(req.params.serverId) || 0;
+  await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, bot.username]);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, bot.username]);
+  await resyncRooms([bot.username]);
+  sendToUser(bot.username, 'serversChanged', {});
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json((await botsOf(req.username)).find(b => b.username === bot.username));
+}));
+
 // ---------------- WEBHOOKS, SLASH COMMANDS, REACTION ROLES ----------------
 async function emitMessageUpdate(id) {
   const row = await getMessageById(id);
@@ -2577,7 +2787,15 @@ async function managedCommand(req, res) {
 app.get('/servers/:id/commands', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   if (!(await isServerMember(req.username, serverId))) return res.status(403).json({ error: 'forbidden' });
-  res.json((await q(`SELECT * FROM server_commands WHERE server_id = $1 ORDER BY name`, [serverId])).map(commandFromRow));
+  const custom = (await q(`SELECT * FROM server_commands WHERE server_id = $1 ORDER BY name`, [serverId])).map(commandFromRow);
+  const fromBots = await q(
+    `SELECT bc.bot, bc.name, bc.description FROM bot_commands bc
+     JOIN server_members m ON m.username = bc.bot AND m.server_id = $1
+     JOIN users u ON u.username = bc.bot AND u.banned = 0
+     ORDER BY bc.name, bc.bot`,
+    [serverId]
+  );
+  res.json(custom.concat(fromBots.map(c => ({ name: c.name, description: c.description || '', bot: c.bot }))));
 }));
 
 app.post('/servers/:id/commands', requireAuth, route(async (req, res) => {
@@ -3340,6 +3558,7 @@ async function applyServerBanner(serverId, body) {
 }
 
 app.post('/servers', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
   if (rateLimited('createserver:' + req.username, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'You\'ve made a lot of servers - try again in a while.' });
   const name = cleanText(req.body.name, 60);
   const iconUrl = cleanText(req.body.iconUrl || '', 2100000);
@@ -3392,13 +3611,12 @@ app.post('/servers', requireAuth, route(async (req, res) => {
   res.status(201).json({ id: serverId, name, inviteCode: srv.invite_code });
 }));
 
-app.post('/servers/join', requireAuth, route(async (req, res) => {
-  const code = cleanText(req.body.code, 40).toLowerCase();
-  const srv = await getServerByCode(code);
-  if (!srv) return res.status(404).json({ error: 'invite code not found' });
+// Adds someone to a server: auto-roles, the "joined the server" message
+// and telling everyone. Returns false if they were already in it.
+async function addServerMember(srv, username) {
   const joined = await one(
     `INSERT INTO server_members (server_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING RETURNING username`,
-    [srv.id, req.username]
+    [srv.id, username]
   );
   // Only for someone actually new - re-using an invite you're already in
   // shouldn't announce you again. Posted before serversChanged goes out:
@@ -3410,22 +3628,32 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
     if (autoRoles.length) {
       await pool.query(
         `INSERT INTO server_member_roles (server_id, role_id, username) SELECT $1, unnest($2::int[]), $3 ON CONFLICT DO NOTHING`,
-        [srv.id, autoRoles, req.username]
+        [srv.id, autoRoles, username]
       );
-      await resyncRooms([req.username]);
     }
+    await resyncRooms([username]); // their open connections join the new rooms
   }
   if (joined && srv.system_channel_id) {
     const channel = await getChannelById(srv.system_channel_id);
     if (channel && channel.server_id === srv.id) {
       const created = await one(
         `INSERT INTO messages (room, "user", text, is_group, kind) VALUES ($1, $2, 'joined the server', 0, 'join') RETURNING *`,
-        [channel.room, req.username]
+        [channel.room, username]
       );
       io.to(channel.room).emit('message', await normaliseMessage(created));
     }
   }
+  sendToUser(username, 'serversChanged', {});
   await notifyServerMembers(srv.id, 'serversChanged', {});
+  return !!joined;
+}
+
+app.post('/servers/join', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: 'Bots join servers when their owner adds them (Settings > My Bots), not with invite codes.' });
+  const code = cleanText(req.body.code, 40).toLowerCase();
+  const srv = await getServerByCode(code);
+  if (!srv) return res.status(404).json({ error: 'invite code not found' });
+  await addServerMember(srv, req.username);
   res.json({ id: srv.id, name: srv.name });
 }));
 
@@ -3611,6 +3839,8 @@ app.post('/servers/:id/members/:username/role', requireAuth, route(async (req, r
   if (!(await isServerOwnerLevel(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can change roles' });
   if (target === srv.owner) return res.status(400).json({ error: 'the owner already manages this server' });
   if (!['admin', 'member'].includes(role)) return res.status(400).json({ error: 'role must be "admin" or "member"' });
+  // a leaked bot token shouldn't be able to run a server
+  if (role === 'admin' && (await isBotUser(target))) return res.status(400).json({ error: 'Bots can\'t be server admins.' });
   if (!(await one(`SELECT 1 FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, target]))) {
     return res.status(404).json({ error: 'user is not a member of this server' });
   }
@@ -3964,6 +4194,7 @@ app.post('/friends/request', requireAuth, route(async (req, res) => {
   const to = cleanUsername(req.body.username);
   if (to === req.username) return res.status(400).json({ error: "You can't add yourself as a friend." });
   if (!validUsername(to) || !(await getUser(to))) return res.status(404).json({ error: "Hm, that didn't work. Double-check the username is correct." });
+  if ((await isBotUser(req.username)) || (await isBotUser(to))) return res.status(400).json({ error: 'Bots can\'t be friends - add them to a server instead.' });
 
   const block = await blockBetween(req.username, to);
   if (block === 'you') return res.status(403).json({ error: 'You have blocked this user. Unblock them first to send a friend request.' });
@@ -4067,13 +4298,14 @@ app.post('/groups', requireAuth, route(async (req, res) => {
   const name = cleanText(req.body.name, 60);
   const members = Array.isArray(req.body.members) ? req.body.members.map(cleanUsername).filter(Boolean) : [];
   if (!name) return res.status(400).json({ error: 'group name required' });
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
 
   const group = await one(`INSERT INTO chat_groups (name, owner) VALUES ($1, $2) RETURNING *`, [name, req.username]);
   const groupId = group.id;
   await pool.query(`INSERT INTO group_members (group_id, username, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`, [groupId, req.username]);
 
   for (const member of members) {
-    if (validUsername(member) && (await getUser(member))) {
+    if (validUsername(member) && (await getUser(member)) && !(await isBotUser(member))) {
       await pool.query(`INSERT INTO group_members (group_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`, [groupId, member]);
     }
   }
@@ -4102,6 +4334,7 @@ app.post('/groups/:id/members', requireAuth, route(async (req, res) => {
   if (!group || !(await isGroupMember(req.username, groupId))) return res.status(404).json({ error: 'group not found' });
   if (group.owner !== req.username && !(await isAdmin(req.username))) return res.status(403).json({ error: 'only the group owner can add members' });
   if (!validUsername(username) || !(await getUser(username))) return res.status(400).json({ error: 'user not found' });
+  if (await isBotUser(username)) return res.status(400).json({ error: 'Bots can\'t be added to group chats - add them to a server instead.' });
   await pool.query(`INSERT INTO group_members (group_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`, [groupId, username]);
   sendToUser(username, 'groupsChanged', {});
   io.to(`group:${groupId}`).emit('groupsChanged', {});
@@ -4187,6 +4420,7 @@ app.post('/upload', requireAuth, route(async (req, res) => {
     if (!validUsername(to) || to === req.username || !(await getUser(to))) return res.status(400).json({ error: 'invalid recipient' });
     const block = await blockBetween(req.username, to);
     if (block) return res.status(403).json({ error: dmBlockedError(block) });
+    if ((await isBotUser(req.username)) && !(await botMayDM(req.username, to))) return res.status(403).json({ error: 'Bots can only message people they share a server with, or who messaged them first.' });
     finalRoom = makeDMRoom(req.username, to);
     toUser = to;
     isGroup = 0;
@@ -4227,8 +4461,9 @@ app.set('io', io);
 
 // ---------------- SOCKET AUTH ----------------
 io.use((socket, next) => {
-  const token = socket.handshake.auth && socket.handshake.auth.token;
-  usernameForToken(token).then(username => {
+  let token = String((socket.handshake.auth && socket.handshake.auth.token) || '');
+  if (token.startsWith('Bot ')) token = token.slice(4);
+  (isBotToken(token) ? usernameForBotToken(token) : usernameForToken(token)).then(username => {
     if (!username) return next(new Error('not authenticated'));
     return getUser(username).then(user => {
       if (!user || user.banned) return next(new Error('not authenticated'));
@@ -4362,8 +4597,17 @@ io.on('connection', (socket) => {
       kind = 'roll';
     } else {
       const channel = COMMAND_NAME_RE.test(name) ? await channelForRoom(room) : null;
-      const cmd = channel ? await one(`SELECT * FROM server_commands WHERE server_id = $1 AND name = $2`, [channel.server_id, name]) : null;
-      if (!cmd) return reply({ error: `There's no /${name.slice(0, 32)} command here.` });
+      const wantedBot = cleanUsername(data.bot || '');
+      const cmd = channel && !wantedBot ? await one(`SELECT * FROM server_commands WHERE server_id = $1 AND name = $2`, [channel.server_id, name]) : null;
+      if (!cmd) {
+        const botCmd = channel ? await one(
+          `SELECT bc.bot FROM bot_commands bc JOIN server_members m ON m.username = bc.bot AND m.server_id = $1
+           WHERE bc.name = $2 AND ($3 = '' OR bc.bot = $3) ORDER BY bc.bot LIMIT 1`,
+          [channel.server_id, name, wantedBot]
+        ) : null;
+        if (!botCmd) return reply({ error: `There's no /${name.slice(0, 32)} command here.` });
+        return startInteraction(socket, botCmd.bot, { name, args, room, serverId: channel.server_id }, reply);
+      }
       text = cmd.response;
       kind = 'command';
     }
@@ -4383,6 +4627,48 @@ io.on('connection', (socket) => {
       io.to(room).emit('message', msg);
       touchThread(room).catch(err => console.error('touchThread failed:', err.message));
     }
+    reply({ message: 'ok', id: msg.id });
+  });
+
+  // A bot lists its slash commands (replaces the old list).
+  socket.on('bot:setCommands', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (!(await isBotUser(socket.username))) return reply({ error: 'only bots have their own commands' });
+    if (rateLimited('botcommands:' + socket.username, 10, 60 * 1000)) return reply({ error: 'Slow down a little.' });
+    const list = Array.isArray(data.commands) ? data.commands : [];
+    if (list.length > 25) return reply({ error: 'a bot can have up to 25 commands' });
+    const clean = [];
+    for (const c of list) {
+      const name = String((c && c.name) || '').trim().replace(/^\//, '').toLowerCase();
+      if (!COMMAND_NAME_RE.test(name)) return reply({ error: `"${name.slice(0, 40)}": command names are 1-32 lowercase letters, numbers, - or _` });
+      if (BUILTIN_COMMANDS.has(name)) return reply({ error: `/${name} is a built-in command` });
+      if (!clean.some(x => x.name === name)) clean.push({ name, description: cleanText(c.description, 100) });
+    }
+    await pool.query(`DELETE FROM bot_commands WHERE bot = $1`, [socket.username]);
+    for (const c of clean) await pool.query(`INSERT INTO bot_commands (bot, name, description) VALUES ($1, $2, $3)`, [socket.username, c.name, c.description]);
+    const servers = await q(`SELECT server_id FROM server_members WHERE username = $1`, [socket.username]);
+    for (const row of servers) await notifyServerMembers(row.server_id, 'commandsChanged', { serverId: row.server_id });
+    reply({ message: 'ok', commands: clean.map(c => c.name) });
+  });
+
+  // A bot answers a slash command someone used.
+  socket.on('interactionReply', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    if (rateLimited('msg:' + socket.username, 10, 5000)) return reply({ error: 'You are sending messages too fast - slow down a little.' });
+    const it = interactions.get(String(data.id || ''));
+    if (!it || it.bot !== socket.username || it.expires < Date.now()) return reply({ error: 'unknown or expired interaction (answer within 15 minutes)' });
+    if (it.replies >= 5) return reply({ error: 'an interaction can be answered at most 5 times' });
+    const text = cleanText(data.text, 4000);
+    if (!text) return reply({ error: 'empty reply' });
+    if (!(await isAllowedRoom(socket.username, it.room))) return reply({ error: 'the bot can no longer see that channel' });
+    it.replies++;
+    const created = await one(
+      `INSERT INTO messages (room, "user", text, is_group, kind, command_name, invoked_by) VALUES ($1, $2, $3, 0, 'command', $4, $5) RETURNING *`,
+      [it.room, socket.username, text, it.command, it.user]
+    );
+    const msg = await normaliseMessage(created);
+    io.to(it.room).emit('message', msg);
+    touchThread(it.room).catch(err => console.error('touchThread failed:', err.message));
     reply({ message: 'ok', id: msg.id });
   });
 
@@ -4407,6 +4693,10 @@ io.on('connection', (socket) => {
     const block = await blockBetween(socket.username, to);
     if (block) {
       if (typeof ack === 'function') ack({ error: dmBlockedError(block) });
+      return;
+    }
+    if ((await isBotUser(socket.username)) && !(await botMayDM(socket.username, to))) {
+      if (typeof ack === 'function') ack({ error: 'Bots can only message people they share a server with, or who messaged them first.' });
       return;
     }
 
@@ -4595,6 +4885,9 @@ io.on('connection', (socket) => {
         await pool.query(`UPDATE users SET banned = 1 WHERE username = $1`, [user]);
         invalidateUser(user);
         disconnectUser(user, 'You have been banned by admin.');
+        // their bots stop too (and can't sign back in while the owner is banned)
+        for (const b of await q(`SELECT username FROM users WHERE is_bot = 1 AND bot_owner = $1`, [user])) disconnectUser(b.username, 'This bot\'s owner was banned.');
+        botTokenCache.clear();
         broadcastPresence();
         if (typeof ack === 'function') ack({ message: 'user banned' });
       } else if (action === 'unban') {
@@ -4632,6 +4925,7 @@ io.on('connection', (socket) => {
     const reply = typeof ack === 'function' ? ack : () => {};
     const key = String(data.key || '');
     if (rateLimited('voicejoin:' + socket.username, 12, 60 * 1000)) return reply({ error: 'Slow down a little.' });
+    if (await isBotUser(socket.username)) return reply({ error: 'Bots can\'t join calls.' });
     const problem = await callJoinProblem(socket.username, key);
     if (problem) return reply({ error: problem });
     const info = callInfo(key);

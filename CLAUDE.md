@@ -74,6 +74,13 @@ off there (with anything learned) when they ship.
   `SERVER_TEMPLATE_CHOICES` mirrors it for the setup screen - change both.
   Channel names are unique per server and lowercase, so a voice channel
   can't share a text channel's name.
+- Bot accounts are users with `is_bot = 1`: they go through every normal
+  access check, plus `isBotUser()` limits (see ROADMAP item 12). Bot tokens
+  are passwords - store only `sha256Hex(token)`. The open default server is
+  for people only: `isServerMember()`, `readableChannelRooms()`,
+  `serversForUser()` and `serverMemberUsernames()` all leave bots out of it.
+  `public/sdk/chat-bot.js` is the public bot library - keep it in step with
+  the socket events it uses.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

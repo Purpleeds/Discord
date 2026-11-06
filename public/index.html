@@ -1225,6 +1225,24 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus
 .wzChannels{display:flex;flex-wrap:wrap;gap:6px;}
 .wzChip{font-size:13px;padding:3px 9px;border-radius:12px;background:rgba(127,127,127,.13);color:var(--text);}
 .wzChip.voice{color:var(--text-muted);}
+
+/* ---------- bot accounts ---------- */
+.roleBadge.badgeBot{background:var(--brand);}
+.botCard{border:1px solid var(--divider);border-radius:8px;padding:12px;margin-bottom:10px;display:grid;gap:10px;background:rgba(127,127,127,.04);}
+.botTop{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+.botTop .rowTitle{display:flex;align-items:center;gap:6px;}
+.botTop .grow{flex:1 1 220px;min-width:0;}
+.botActions{display:flex;gap:8px;flex-wrap:wrap;}
+.botServers{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.botServers .pcLabel{margin:0 4px 0 0;}
+.pillX{margin-left:2px;color:var(--text-muted);font-size:14px;line-height:1;padding:0 2px;border-radius:50%;}
+.pillX:hover{color:var(--red);}
+.botSteps{margin:4px 0 10px 20px;color:var(--text);line-height:1.7;font-size:14px;}
+.botSteps .inlineCode,.settingsLayer .switchDesc .inlineCode{white-space:normal;overflow-wrap:anywhere;}
+.botCode{position:relative;margin-bottom:10px;}
+.botCode .codeBlock{max-height:320px;overflow:auto;font-size:12.5px;margin:0;}
+.botCode .btn{position:absolute;top:8px;right:8px;padding:4px 10px;}
+.cmdUsed span{color:var(--text-normal, var(--text));font-weight:500;}
 </style>
 </head>
 
@@ -1795,6 +1813,7 @@ function connectSocket(){
     if(data && data.room === currentRoom && $('pinsPopout').classList.contains('open')) renderPins();
   });
   socket.on('serversChanged', async () => {
+    Object.keys(serverCommandLoads).forEach(k => delete serverCommandLoads[k]); // a bot may have joined or left
     await loadServers();
     socket.emit('syncRooms');
     renderRail();
@@ -2888,6 +2907,11 @@ function buildMessageEl(item, grouped){
       author.onclick = e => openProfilePopout(e, data.user, data.room);
       author.oncontextmenu = e => showUserMenu(e, data.user, data.room);
       head.appendChild(author);
+      if(data.botAccount || isBotAccount(data.user)){
+        const tag = chip('BOT', 'bot');
+        tag.title = 'Bot account' + (profiles[data.user] && profiles[data.user].botOwner ? ' made by ' + profiles[data.user].botOwner : '');
+        head.appendChild(tag);
+      }
       const badge = buildRoleBadge(data.user, data.room);
       if(badge) head.appendChild(badge);
     }
@@ -2911,7 +2935,8 @@ function buildMessageEl(item, grouped){
     if(data.kind === 'command' && data.commandName){
       const used = document.createElement('div');
       used.className = 'cmdUsed';
-      used.innerHTML = 'used <b></b>';
+      used.innerHTML = '<span></span>used <b></b>';
+      if(data.invokedBy) used.querySelector('span').textContent = (displayNameFor(data.invokedBy) || data.invokedBy) + ' ';
       used.querySelector('b').textContent = '/' + data.commandName;
       body.appendChild(used);
     }
@@ -3855,7 +3880,9 @@ function memberRow(member, owner, offline, room){
   if(!offline) paintNameColor(name, member.username, room || currentRoom);
   line.appendChild(name);
 
-  const badgeInfo = isAdminUser(member.username)
+  const badgeInfo = member.isBot || isBotAccount(member.username)
+    ? { key:'badgeBot', label:'BOT', title:'Bot account' + (member.botOwner ? ' made by ' + member.botOwner : '') }
+    : isAdminUser(member.username)
     ? { key:'badgeAdmin', label:'ADMIN', title:'Site admin' }
     : (owner && member.username === owner ? { key:'badgeOwner', label:'OWNER', title:'Server owner' }
       : (member.role === 'admin' ? { key:'badgeServerAdmin', label:'ADMIN', title:'Server admin' } : null));
@@ -4469,6 +4496,7 @@ function buildProfileCard(user, opts){
   const name = document.createElement('div');
   name.className = 'pcName';
   name.textContent = p.displayName || user;
+  if(p.isBot) name.appendChild(chip('BOT', 'bot'));
   inner.appendChild(name);
   const line = document.createElement('div');
   line.className = 'pcUser';
@@ -4493,6 +4521,10 @@ function buildProfileCard(user, opts){
     bio.textContent = p.bio;
     censorRenderedElement(bio, currentRoom);
     inner.appendChild(bio);
+  }
+  if(p.isBot){
+    inner.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:'Bot' }));
+    inner.appendChild(Object.assign(document.createElement('div'), { className:'pcText', textContent:'A bot account made by ' + (p.botOwner || 'someone') + '. It\'s run by code, not a person.' }));
   }
   if(p.memberSince){
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:'Member Since' }));
@@ -7023,13 +7055,178 @@ function inlineMessage(el, text, isError){
   el.className = 'inlineMsg' + (isError ? ' err' : '');
 }
 
+/* ============================ my bots (bot accounts you control with code) ============================ */
+function isBotAccount(user){ const p = profiles[user]; return !!(p && p.isBot); }
+function botExampleCode(){
+  return "const { Client } = require('./chat-bot.js');\n" +
+    "const client = new Client({ url: '" + location.origin + "' });\n\n" +
+    "client.on('ready', async () => {\n" +
+    "  console.log(`Logged in as ${client.user.username}`);\n" +
+    "  // slash commands appear in the \"/\" menu of every server the bot is in\n" +
+    "  await client.setCommands([\n" +
+    "    { name: 'hello', description: 'Say hello' },\n" +
+    "    { name: 'd20', description: 'Roll a twenty-sided die' }\n" +
+    "  ]);\n" +
+    "});\n\n" +
+    "client.on('messageCreate', async message => {\n" +
+    "  if (message.author.bot) return; // ignore bots, including yourself\n" +
+    "  if (message.content === '!ping') await message.reply('Pong!');\n" +
+    "});\n\n" +
+    "client.on('interactionCreate', async interaction => {\n" +
+    "  if (interaction.commandName === 'hello') await interaction.reply(`Hello, ${interaction.user.displayName}!`);\n" +
+    "  if (interaction.commandName === 'd20') await interaction.reply(`🎲 ${1 + Math.floor(Math.random() * 20)}`);\n" +
+    "});\n\n" +
+    "client.login(process.env.BOT_TOKEN); // keep the token out of your code\n";
+}
+
+function renderBotsSection(c){
+  c.innerHTML = '<h2 class="settingsTitle">My Bots</h2>' +
+    '<div class="settingsSub">Bots are accounts you control with code, like Discord bots. Add one to your servers and it can read and answer ' +
+    'messages, run its own slash commands and react - it sees only what a normal member sees. Bots always show a BOT tag and say they were made by you.</div>' +
+    section('Create a Bot', '<div class="rowFlex" style="gap:8px;flex-wrap:wrap"><input class="settingsInput" id="botName" maxlength="30" placeholder="bot name, e.g. helper-bot" style="max-width:260px">' +
+      '<button class="btn" id="botCreate">Create Bot</button><span class="inlineMsg" id="botMsg" style="margin:0"></span></div>' +
+      '<div class="switchDesc" style="margin-top:8px">Letters, numbers, dots, hyphens and underscores. You can have up to 5 bots.</div>') +
+    '<div id="botReveal"></div>' +
+    section('Your Bots', '<div id="botList"><div class="panelEmpty">Loading…</div></div>') +
+    section('Write your bot', '<ol class="botSteps">' +
+      '<li>Install <b>Node.js</b> (18 or newer) on the computer that will run the bot.</li>' +
+      '<li>In a new folder, run <code class="inlineCode">npm install socket.io-client</code> and save <a class="msgLink" href="/sdk/chat-bot.js" download="chat-bot.js">chat-bot.js</a> there.</li>' +
+      '<li>Save this as <code class="inlineCode">bot.js</code> in the same folder:</li></ol>' +
+      '<div class="botCode"><button class="btn grey" id="botCopyCode">Copy</button><pre class="codeBlock" id="botCodeBox"></pre></div>' +
+      '<ol class="botSteps" start="4"><li>Run it with your token: <code class="inlineCode">BOT_TOKEN=bot_… node bot.js</code> ' +
+      '(Windows PowerShell: <code class="inlineCode">$env:BOT_TOKEN="bot_…"; node bot.js</code>). The bot is online while that program runs.</li></ol>' +
+      '<div class="switchDesc">Works like discord.js: <code class="inlineCode">messageCreate</code>, <code class="inlineCode">interactionCreate</code>, ' +
+      '<code class="inlineCode">message.reply()</code>, <code class="inlineCode">message.react()</code>, <code class="inlineCode">channel.send()</code>, ' +
+      '<code class="inlineCode">client.sendDM()</code> and more - the full list is at the top of chat-bot.js.</div>');
+  $('botCodeBox').textContent = botExampleCode();
+  $('botCopyCode').onclick = () => copyText(botExampleCode());
+
+  function revealToken(bot, token, isNew){
+    const box = $('botReveal');
+    box.innerHTML = '<div class="whReveal"><div class="rowTitle"></div><div class="switchDesc"></div>' +
+      '<div class="rowFlex" style="gap:8px;margin-top:8px;flex-wrap:nowrap"><input class="settingsInput" readonly style="font-family:monospace;font-size:12px;flex:1;min-width:0"><button class="btn">Copy</button></div></div>';
+    box.querySelector('.rowTitle').textContent = (isNew ? 'Created ' : 'New token for ') + (bot.displayName || bot.username);
+    box.querySelector('.switchDesc').textContent = 'Copy the token now - it won\'t be shown again. It\'s the bot\'s password: anyone who has it controls your bot, so never share it or paste it into code you post. If it leaks, make a new one.';
+    box.querySelector('input').value = token;
+    box.querySelector('button').onclick = () => copyText(token);
+  }
+
+  async function load(){
+    let bots = [];
+    try{ const r = await fetch('/bots', { headers:authHeaders() }); bots = r.ok ? await r.json() : []; }catch(e){}
+    const list = $('botList');
+    if(!list) return;
+    list.innerHTML = bots.length ? '' : '<div class="panelEmpty">No bots yet.</div>';
+    const manageable = servers.filter(s => !s.isDefault && s.canManage);
+    bots.forEach(bot => {
+      profiles[bot.username] = Object.assign({}, profiles[bot.username] || {}, bot);
+      const card = document.createElement('div');
+      card.className = 'botCard';
+      const top = document.createElement('div');
+      top.className = 'botTop';
+      top.appendChild(createAvatar(bot.username, ''));
+      const info = document.createElement('div');
+      info.className = 'grow';
+      info.innerHTML = '<div class="rowTitle"></div><div class="rowSub"></div>';
+      info.querySelector('.rowTitle').textContent = bot.displayName;
+      info.querySelector('.rowTitle').appendChild(chip('BOT', 'bot'));
+      info.querySelector('.rowSub').textContent = '@' + bot.username + ' · ' + (bot.online ? 'online now' : 'offline (start its program to bring it online)');
+      top.appendChild(info);
+      const edit = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Edit' });
+      const reset = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'New Token' });
+      const del = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Delete' });
+      const actions = document.createElement('div');
+      actions.className = 'botActions';
+      actions.append(edit, reset, del);
+      top.appendChild(actions);
+      card.appendChild(top);
+
+      // servers it's in, and adding it to one of yours
+      const where = document.createElement('div');
+      where.className = 'botServers';
+      where.appendChild(Object.assign(document.createElement('span'), { className:'pcLabel', textContent:'In servers' }));
+      if(!bot.servers.length) where.appendChild(Object.assign(document.createElement('span'), { className:'switchDesc', textContent:'Not in any server yet - add it below.' }));
+      bot.servers.forEach(s => {
+        const pill = Object.assign(document.createElement('span'), { className:'wzChip', textContent:s.name + ' ' });
+        const x = Object.assign(document.createElement('button'), { className:'pillX', textContent:'×', title:'Remove from ' + s.name });
+        x.onclick = async () => {
+          if(!confirm('Remove ' + bot.displayName + ' from ' + s.name + '?')) return;
+          try{ await postJSON('/bots/' + encodeURIComponent(bot.username) + '/servers/' + s.id + '/remove'); load(); }catch(err){ toast(err.message); }
+        };
+        pill.appendChild(x);
+        where.appendChild(pill);
+      });
+      card.appendChild(where);
+      const options = manageable.filter(s => !bot.servers.some(b => b.id === s.id));
+      const addRow = document.createElement('div');
+      addRow.className = 'rowFlex';
+      addRow.style.cssText = 'gap:8px;flex-wrap:wrap';
+      if(options.length){
+        const select = document.createElement('select');
+        select.className = 'settingsInput';
+        select.style.maxWidth = '240px';
+        options.forEach(s => select.appendChild(Object.assign(document.createElement('option'), { value:s.id, textContent:s.name })));
+        const add = Object.assign(document.createElement('button'), { className:'btn', textContent:'Add to Server' });
+        add.onclick = async () => {
+          try{ await postJSON('/bots/' + encodeURIComponent(bot.username) + '/servers', { serverId:Number(select.value) }); toast(bot.displayName + ' added'); load(); }
+          catch(err){ toast(err.message); }
+        };
+        addRow.append(select, add);
+      }else{
+        addRow.appendChild(Object.assign(document.createElement('span'), { className:'switchDesc', textContent: manageable.length ? 'It\'s in every server you manage.' : 'Bots can join servers you own or are an admin of - make a server first.' }));
+      }
+      card.appendChild(addRow);
+
+      // edit name / about / picture
+      const editor = document.createElement('div');
+      editor.className = 'channelEditor';
+      editor.style.display = 'none';
+      editor.innerHTML = '<div class="rowFlex" style="gap:8px;flex-wrap:wrap"><input class="settingsInput" data-f="name" maxlength="40" placeholder="Display name" style="max-width:240px">' +
+        '<button class="btn grey" data-a="pic">Upload Picture</button></div>' +
+        '<textarea class="settingsInput" data-f="bio" maxlength="190" rows="2" placeholder="About this bot (shown on its profile)"></textarea>' +
+        '<div class="rowFlex"><button class="btn" data-a="save">Save</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
+      editor.querySelector('[data-f=name]').value = bot.displayName;
+      editor.querySelector('[data-f=bio]').value = bot.bio || '';
+      card.appendChild(editor);
+      let picture = null;
+      edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+      editor.querySelector('[data-a=pic]').onclick = () => pickImageFile(url => { picture = url; inlineMessage(editor.querySelector('[data-f=msg]'), 'Picture ready - click Save'); }, msg => inlineMessage(editor.querySelector('[data-f=msg]'), msg, true));
+      editor.querySelector('[data-a=save]').onclick = async () => {
+        const body = { displayName: editor.querySelector('[data-f=name]').value, bio: editor.querySelector('[data-f=bio]').value };
+        if(picture) body.avatarUrl = picture;
+        try{ await postJSON('/bots/' + encodeURIComponent(bot.username) + '/update', body); toast('Bot saved'); load(); }
+        catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
+      };
+      reset.onclick = async () => {
+        if(!confirm('Make a new token for ' + bot.displayName + '? The old one stops working right away and the bot goes offline until you restart it with the new one.')) return;
+        try{ const data = await postJSON('/bots/' + encodeURIComponent(bot.username) + '/token'); revealToken(bot, data.token, false); load(); }catch(err){ toast(err.message); }
+      };
+      del.onclick = async () => {
+        if(!confirm('Delete ' + bot.displayName + '? It leaves every server, its token stops working, and its name can\'t be used again.')) return;
+        try{ await postJSON('/bots/' + encodeURIComponent(bot.username) + '/delete'); $('botReveal').innerHTML = ''; load(); }catch(err){ toast(err.message); }
+      };
+      list.appendChild(card);
+    });
+  }
+  $('botCreate').onclick = async () => {
+    try{
+      const data = await postJSON('/bots', { username: $('botName').value.trim() });
+      $('botName').value = '';
+      revealToken(data, data.token, true);
+      load();
+    }catch(err){ inlineMessage($('botMsg'), err.message, true); }
+  };
+  load();
+}
+
 /* ============================ user settings ============================ */
 function openSettings(sectionKey){
   openSettingsLayer('user', [
     { title:'User Settings', items:[
       { key:'account', label:'My Account', render:renderAccountSection },
       { key:'profile', label:'Profiles', render:renderProfileSection },
-      { key:'privacy', label:'Privacy & Safety', render:renderPrivacySection }
+      { key:'privacy', label:'Privacy & Safety', render:renderPrivacySection },
+      { key:'bots', label:'My Bots', render:renderBotsSection }
     ]},
     { title:'App Settings', items:[
       { key:'appearance', label:'Appearance', render:renderAppearanceSection },
@@ -8773,7 +8970,8 @@ function slashCandidates(query){
   const q = query.toLowerCase();
   const sid = slashServerId();
   if(sid) loadServerCommands(sid);
-  const custom = sid ? (serverCommands[sid] || []).map(c => ({ name:c.name, usage:'', description:c.description || 'Custom command', custom:true })) : [];
+  const custom = sid ? (serverCommands[sid] || []).map(c => ({ name:c.name, usage:'', bot:c.bot || '',
+    description:(c.description || (c.bot ? 'Bot command' : 'Custom command')) + (c.bot ? ' · @' + c.bot : ''), custom:true })) : [];
   return BUILTIN_SLASH.concat(custom).filter(c => c.name.startsWith(q)).slice(0, 10).map(c => Object.assign({ type:'command' }, c));
 }
 
@@ -8793,10 +8991,10 @@ async function runSlashCommand(text){
   if(name === 'poll'){ openCreatePoll(); if(args && $('pollQuestion')) $('pollQuestion').value = args.slice(0, 300); return true; }
   const sid = slashServerId();
   if(sid) await loadServerCommands(sid); // first use: make sure the list is here
-  const isCustom = !!(sid && (serverCommands[sid] || []).some(c => c.name === name));
-  if(name !== 'roll' && name !== 'flip' && !isCustom) return null;
+  const entry = sid ? (serverCommands[sid] || []).find(c => c.name === name) : null;
+  if(name !== 'roll' && name !== 'flip' && !entry) return null;
   const room = activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom;
-  socket.emit('runCommand', { room, name, args }, result => { if(result && result.error) showError(result.error); });
+  socket.emit('runCommand', { room, name, args, bot: entry && entry.bot ? entry.bot : undefined }, result => { if(result && result.error) showError(result.error); });
   return true;
 }
 

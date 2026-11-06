@@ -2,8 +2,8 @@
 
 A self-hosted, Discord-style chat app: servers and channels, DMs, group
 chats, voice and video calls, voice channels and screen sharing, a
-guided server setup with templates and banners, friends
-and blocking, reactions, replies, file sharing, link previews, webhooks,
+guided server setup with templates and banners, bot accounts with a
+discord.js-style library, friends and blocking, reactions, replies, file sharing, link previews, webhooks,
 slash commands, reaction roles, push notifications and a full settings
 screen.
 
@@ -63,6 +63,30 @@ curl -H "Content-Type: application/json" -d '{"content":"Build passed"}' https:/
 ```
 
 The token is shown once; only its SHA-256 is stored. "New Link" resets it.
+
+### Bots
+
+Anyone can make up to 5 bot accounts in Settings → My Bots and add them to
+servers they own or are an admin of. Bots are written in JavaScript with
+the small discord.js-style library the site serves at `/sdk/chat-bot.js`
+(needs Node.js 18+ and `npm install socket.io-client`):
+
+```js
+const { Client } = require('./chat-bot.js');
+const client = new Client({ url: 'https://<your site>' });
+client.on('ready', () => client.setCommands([{ name: 'hello', description: 'Say hello' }]));
+client.on('messageCreate', msg => { if (!msg.author.bot && msg.content === '!ping') msg.reply('Pong!'); });
+client.on('interactionCreate', i => { if (i.commandName === 'hello') i.reply(`Hello, ${i.user.displayName}!`); });
+client.login(process.env.BOT_TOKEN);
+```
+
+A bot signs in with its token (`Authorization: Bot <token>` over HTTP, or
+`auth: { token: 'Bot <token>' }` for Socket.IO) - only the token's SHA-256
+is stored. It sees exactly what a normal member of its servers sees, and
+can't use invite codes, make servers, be a friend, join group chats or
+calls, be a server admin, or see the open "general" server. It can DM only
+people it shares a server with (or who DMed it first). Bot answers to slash
+commands show who used the command.
 
 ### Link previews
 

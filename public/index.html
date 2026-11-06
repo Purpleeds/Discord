@@ -1120,6 +1120,61 @@ video.mirror{transform:scaleX(-1);}
   .incomingCall{left:16px;right:16px;bottom:16px;width:auto;}
 }
 
+
+/* ---------- hover + motion polish ----------
+   Quick (about 0.15s), small movements, and nothing moves while you're just
+   reading. Lifts and zooms only happen with a real mouse (on a phone a
+   tapped thing would stay "lifted"), and Settings > Appearance > Reduced
+   motion (on by default if the device asks for less motion) turns it all off. */
+:root{--ease-out:cubic-bezier(.2,.8,.2,1);}
+
+/* colour fades for things that used to snap from one colour to the next */
+.headerBtn,.panelBtn,.msgActions button,.contextItem,.friendsTab,.statusOption,.threadListRow,.pcMutual,.roundBtn,.dlBtn,
+.accessPeople label,.voiceMember,.mentionItem,#emojiPicker .emojiGrid button,.sectionTitle button,#userPanelInfo,#sidebarHeader,
+.addReaction,.roleMenuItem,.pollOption,.forumCard,.threadChip,.linkCard,.resultCard,.callCtl,.roundCallBtn,.categoryTitle,
+.searchScope button,.jumpBar button,#attachBtn,#emojiBtn,.imgWrap,.linkCardImg,.btn,.bigBtn,.settingsCloseBtn,.pinCard,.friendRow{
+  transition:background-color .14s ease,color .14s ease,border-color .14s ease,box-shadow .18s ease,filter .14s ease,opacity .14s ease,transform .14s var(--ease-out);
+}
+.railIcon{transition:border-radius .18s var(--ease-out),background .15s ease,transform .1s ease;}
+.reaction{transition:background-color .12s ease,border-color .12s ease,transform .14s var(--ease-out);}
+.callTile{transition:box-shadow .12s ease,filter .14s ease;}
+
+/* the message toolbar fades in instead of popping (and shows for keyboard focus too) */
+.msgActions{display:flex;opacity:0;pointer-events:none;transform:translateY(3px);transition:opacity .12s ease,transform .14s var(--ease-out);}
+.message:hover .msgActions,.msgActions:focus-within{opacity:1;pointer-events:auto;transform:none;}
+.msgActions:empty{display:none;}
+
+/* server-list tooltips slide out from the icon */
+.railTip{transform:translateY(-50%) translateX(-4px);transition:opacity .12s ease,transform .14s var(--ease-out);}
+.railWrap:hover .railTip{transform:translateY(-50%);}
+
+/* menus and the emoji picker ease open */
+@keyframes popIn{from{opacity:0;transform:scale(.96);}to{opacity:1;transform:none;}}
+#contextMenu{transform-origin:top left;animation:popIn .1s var(--ease-out);}
+#emojiPicker{animation:popIn .12s var(--ease-out);}
+
+/* a small press when you click */
+.btn:active,.bigBtn:active,.callCtl:active,.roundCallBtn:active,.headerBtn:active,.panelBtn:active,.msgActions button:active,
+.roundBtn:active,#attachBtn:active,.reaction:active,.addReaction:active,.roleMenuItem:active,.settingsCloseBtn:active{transform:scale(.95);}
+.railWrap:active .railIcon{transform:translateY(1px);}
+
+/* lifts and zooms, mouse only */
+@media (hover:hover) and (pointer:fine){
+  .reaction:hover,.addReaction:hover,.roleMenuItem:hover,.threadChip:hover{transform:translateY(-1px);}
+  .forumCard:hover,.resultCard:hover,.pinCard:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(0,0,0,.2);}
+  .pollOption:not(:disabled):hover{transform:translateY(-1px);}
+  .linkCard:hover{border-color:var(--border-strong);}
+  .linkCardImg:hover{filter:brightness(1.08);}
+  #emojiPicker .emojiGrid button:hover{transform:scale(1.18);}
+  .callTile:hover{filter:brightness(1.06);}
+  .callCtl:hover,.roundCallBtn:hover{transform:translateY(-1px);}
+  #settingsBtn svg{transition:transform .35s var(--ease-out);}
+  #settingsBtn:hover svg{transform:rotate(60deg);}
+  .reaction:active,.addReaction:active,.roleMenuItem:active,.callCtl:active,.roundCallBtn:active{transform:scale(.95);}
+}
+
+/* a clear outline for keyboard users (mouse clicks don't show it) */
+button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus-visible{outline:2px solid var(--link);outline-offset:2px;}
 </style>
 </head>
 
@@ -1399,7 +1454,9 @@ const ACCENTS = [
   { key:'purple', label:'Purple', color:'#9b59b6' },
   { key:'slate', label:'Slate', color:'#5d6b82' }
 ];
-const DEFAULT_APPEARANCE = { theme:'dark', accent:'#5865f2', compact:false, fontSize:16, groupGap:17, reduceMotion:false, underlineLinks:false, clock24:false,
+const DEFAULT_APPEARANCE = { theme:'dark', accent:'#5865f2', compact:false, fontSize:16, groupGap:17,
+  reduceMotion: !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches), // follows the device until changed here
+  underlineLinks:false, clock24:false,
   avatarShape:'circle', wallpaper:'none', wallpaperDim:0.78, linkPreviews:true, showTyping:true };
 const WALLPAPERS = [
   { key:'none', label:'No wallpaper', css:'' },

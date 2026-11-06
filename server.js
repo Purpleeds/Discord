@@ -582,6 +582,29 @@ async function insertServerChannel(serverId, name, room, position, createdBy) {
   );
 }
 
+// The original "general" server was made before voice channels existed:
+// give it a Voice Channels category with a #lounge, once. (If an admin
+// deletes it, it stays deleted - a site_settings flag remembers.)
+async function addDefaultVoiceChannelOnce() {
+  if (await one(`SELECT 1 FROM site_settings WHERE key = 'default_voice_added'`)) return;
+  const serverId = DEFAULT_SERVER.id;
+  const hasVoice = await one(`SELECT 1 FROM server_channels WHERE server_id = $1 AND kind = 'voice'`, [serverId]);
+  if (!hasVoice && !(await getChannelByRoom('lounge')) && !(await one(`SELECT 1 FROM server_channels WHERE server_id = $1 AND name = 'lounge'`, [serverId]))) {
+    let category = await one(`SELECT id FROM server_categories WHERE server_id = $1 AND name = 'Voice Channels'`, [serverId]);
+    if (!category) {
+      category = await one(
+        `INSERT INTO server_categories (server_id, name, position)
+         VALUES ($1, 'Voice Channels', (SELECT COALESCE(max(position), -1) + 1 FROM server_categories WHERE server_id = $1)) RETURNING id`,
+        [serverId]
+      );
+    }
+    const position = (await getChannelsForServer(serverId)).length;
+    const created = await insertServerChannel(serverId, 'lounge', 'lounge', position, 'system');
+    await pool.query(`UPDATE server_channels SET kind = 'voice', category_id = $1 WHERE id = $2`, [category.id, created.id]);
+  }
+  await pool.query(`INSERT INTO site_settings (key, value) VALUES ('default_voice_added', '1') ON CONFLICT (key) DO NOTHING`);
+}
+
 async function ensureDefaultServer() {
   let row = await one(`SELECT * FROM servers WHERE is_default = 1`);
   if (!row) {
@@ -3280,20 +3303,90 @@ app.get('/servers', requireAuth, route(async (req, res) => {
   res.json(await serversForUser(req.username));
 }));
 
+// What a new server starts with (the setup screen's templates). Community
+// servers also get an Information category: rules + announcements, where
+// only admins post. Names follow the channel-name rules (lowercase, -).
+const SERVER_TEMPLATES = {
+  custom: { text: ['general', 'random'], voice: ['lounge'] },
+  gaming: { text: ['general', 'clips-and-highlights', 'looking-for-group'], voice: ['lobby', 'gaming'] },
+  school: { text: ['general', 'homework-help', 'meeting-plans', 'off-topic'], voice: ['lounge', 'meeting-room'] },
+  study: { text: ['general', 'session-planning', 'resources', 'off-topic'], voice: ['lounge', 'study-room-1', 'study-room-2'] },
+  friends: { text: ['general', 'games', 'music', 'memes'], voice: ['lounge', 'gaming', 'stream-room'] },
+  creators: { text: ['general', 'showcase', 'ideas-and-feedback'], voice: ['lounge', 'community-hangout', 'stream-room'] },
+  local: { text: ['general', 'events', 'resources'], voice: ['lounge', 'meeting-room'] }
+};
+const COMMUNITY_CHANNELS = [
+  { name: 'welcome-and-rules', topic: 'Start here: who we are and the rules.' },
+  { name: 'announcements', topic: 'News from the admins.' }
+];
+
+// Sets (or clears) a server's banner colour / image from a request body.
+// Returns an error to show, or null.
+async function applyServerBanner(serverId, body) {
+  if ('bannerColor' in body) {
+    const color = body.bannerColor ? String(body.bannerColor) : '';
+    if (color && !validHexColor(color)) return 'banner colour must be a hex colour like #5865f2';
+    await pool.query(`UPDATE servers SET banner_color = $1 WHERE id = $2`, [color, serverId]);
+  }
+  // "/server-banners/..." is our own cached URL echoed back = unchanged
+  if ('bannerUrl' in body && !String(body.bannerUrl || '').startsWith('/server-banners/')) {
+    const banner = cleanText(body.bannerUrl || '', 2100000);
+    if (banner && !banner.startsWith('data:image/')) return 'banner must be an uploaded image';
+    const version = banner ? crypto.createHash('md5').update(banner).digest('hex').slice(0, 10) : null;
+    await pool.query(`UPDATE servers SET banner_url = $1, banner_version = $2 WHERE id = $3`, [banner, version, serverId]);
+    imageCache.delete('b:' + serverId);
+  }
+  return null;
+}
+
 app.post('/servers', requireAuth, route(async (req, res) => {
+  if (rateLimited('createserver:' + req.username, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'You\'ve made a lot of servers - try again in a while.' });
   const name = cleanText(req.body.name, 60);
   const iconUrl = cleanText(req.body.iconUrl || '', 2100000);
   if (!name) return res.status(400).json({ error: 'server name required' });
+  if (iconUrl && !iconUrl.startsWith('data:image/')) return res.status(400).json({ error: 'icon must be an uploaded image' });
+  const templateKey = Object.prototype.hasOwnProperty.call(SERVER_TEMPLATES, req.body.template) ? req.body.template : 'custom';
+  const template = SERVER_TEMPLATES[templateKey];
+  const community = req.body.audience === 'community';
+  const description = cleanText(req.body.description || '', 300);
+  if (req.body.bannerColor && !validHexColor(String(req.body.bannerColor))) return res.status(400).json({ error: 'banner colour must be a hex colour like #5865f2' });
+  if (req.body.bannerUrl && !String(req.body.bannerUrl).startsWith('data:image/')) return res.status(400).json({ error: 'banner must be an uploaded image' });
   const iconVersion = iconUrl.startsWith('data:') ? crypto.createHash('md5').update(iconUrl).digest('hex').slice(0, 10) : null;
 
   const srv = await one(
-    `INSERT INTO servers (name, owner, icon_url, invite_code, icon_version) VALUES ($1, $2, $3, $4, $5) RETURNING id, invite_code`,
-    [name, req.username, iconUrl, makeInviteCode(), iconVersion]
+    `INSERT INTO servers (name, owner, icon_url, invite_code, icon_version, description) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, invite_code`,
+    [name, req.username, iconUrl, makeInviteCode(), iconVersion, description]
   );
   const serverId = srv.id;
   await pool.query(`INSERT INTO server_members (server_id, username, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`, [serverId, req.username]);
-  await insertServerChannel(serverId, 'general', `ch:${serverId}:general`, 0, req.username);
-  await insertServerChannel(serverId, 'random', `ch:${serverId}:random`, 1, req.username);
+  await applyServerBanner(serverId, req.body);
+
+  // categories + channels from the template
+  let position = 0, categoryPosition = 0, generalId = null;
+  const addCategory = async label => (await one(
+    `INSERT INTO server_categories (server_id, name, position) VALUES ($1, $2, $3) RETURNING id`, [serverId, label, categoryPosition++]
+  )).id;
+  const addChannel = async (channelName, categoryId, extra = {}) => {
+    const created = await insertServerChannel(serverId, channelName, `ch:${serverId}:${channelName}`, position++, req.username);
+    await pool.query(
+      `UPDATE server_channels SET category_id = $1, kind = $2, admins_only = $3, topic = $4 WHERE id = $5`,
+      [categoryId, extra.kind || 'text', extra.adminsOnly ? 1 : 0, extra.topic || null, created.id]
+    );
+    return created;
+  };
+  if (community) {
+    const info = await addCategory('Information');
+    for (const ch of COMMUNITY_CHANNELS) await addChannel(ch.name, info, { adminsOnly: true, topic: ch.topic });
+  }
+  const textCategory = await addCategory('Text Channels');
+  for (const channelName of template.text) {
+    const created = await addChannel(channelName, textCategory);
+    if (channelName === 'general') generalId = created.id;
+  }
+  const voiceCategory = await addCategory('Voice Channels');
+  for (const channelName of template.voice) await addChannel(channelName, voiceCategory, { kind: 'voice' });
+  // "X joined the server" messages go to #general
+  if (generalId) await pool.query(`UPDATE servers SET system_channel_id = $1 WHERE id = $2`, [generalId, serverId]);
 
   sendToUser(req.username, 'serversChanged', {});
   res.status(201).json({ id: serverId, name, inviteCode: srv.invite_code });
@@ -3344,19 +3437,8 @@ app.post('/servers/:id/update', requireAuth, route(async (req, res) => {
   if ('description' in req.body) {
     await pool.query(`UPDATE servers SET description = $1 WHERE id = $2`, [cleanText(req.body.description || '', 300), serverId]);
   }
-  if ('bannerColor' in req.body) {
-    const color = req.body.bannerColor ? String(req.body.bannerColor) : '';
-    if (color && !validHexColor(color)) return res.status(400).json({ error: 'banner colour must be a hex colour like #5865f2' });
-    await pool.query(`UPDATE servers SET banner_color = $1 WHERE id = $2`, [color, serverId]);
-  }
-  // "/server-banners/..." is our own cached URL echoed back = unchanged
-  if ('bannerUrl' in req.body && !String(req.body.bannerUrl || '').startsWith('/server-banners/')) {
-    const banner = cleanText(req.body.bannerUrl || '', 2100000);
-    if (banner && !banner.startsWith('data:image/')) return res.status(400).json({ error: 'banner must be an uploaded image' });
-    const version = banner ? crypto.createHash('md5').update(banner).digest('hex').slice(0, 10) : null;
-    await pool.query(`UPDATE servers SET banner_url = $1, banner_version = $2 WHERE id = $3`, [banner, version, serverId]);
-    imageCache.delete('b:' + serverId);
-  }
+  const bannerProblem = await applyServerBanner(serverId, req.body);
+  if (bannerProblem) return res.status(400).json({ error: bannerProblem });
   if ('systemChannelId' in req.body) {
     const channelId = Number(req.body.systemChannelId) || null;
     if (channelId) {
@@ -4683,6 +4765,7 @@ async function main() {
     await pool.query(`INSERT INTO channels (name, created_by) VALUES ($1, 'system') ON CONFLICT (name) DO NOTHING`, [name]);
   }
   await applySeedAccounts();
+  await addDefaultVoiceChannelOnce().catch(err => console.error('default voice channel failed:', err.message));
   // calls are kept in memory, so none survive a restart - close their logs
   await pool.query(`UPDATE messages SET text = 'ended' WHERE kind = 'call' AND text = 'ongoing'`);
   // every 10 minutes (was every minute): shared files live 6 hours, and a

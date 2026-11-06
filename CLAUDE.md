@@ -70,6 +70,10 @@ off there (with anything learned) when they ship.
   link-preview guards (`resolvePreviewHost()` + `previewRequest()`): public
   addresses only, pinned connection, re-checked redirects, time/size caps.
   Never `fetch()` user URLs directly from the server.
+- New servers are built from `SERVER_TEMPLATES` (server.js); the client's
+  `SERVER_TEMPLATE_CHOICES` mirrors it for the setup screen - change both.
+  Channel names are unique per server and lowercase, so a voice channel
+  can't share a text channel's name.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

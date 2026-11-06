@@ -1082,7 +1082,7 @@ video.mirror{transform:scaleX(-1);}
 .voiceBar.show{display:flex;}
 .voiceBar .vbInfo{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;text-align:left;padding:2px 4px;border-radius:4px;}
 .voiceBar .vbInfo:hover{background:var(--hover);}
-.voiceBar .vbInfo b{color:var(--green);font-size:13px;}
+.voiceBar .vbInfo b{color:var(--green);font-size:13px;white-space:nowrap;}
 .voiceBar .vbInfo b.pending{color:var(--yellow);}
 .voiceBar .vbInfo span{color:var(--text-muted);font-size:12px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .voiceBar .callCtl{width:32px;height:32px;background:transparent;color:var(--icon);}
@@ -1175,6 +1175,56 @@ video.mirror{transform:scaleX(-1);}
 
 /* a clear outline for keyboard users (mouse clicks don't show it) */
 button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus-visible{outline:2px solid var(--link);outline-offset:2px;}
+
+/* ---------- server banner (Discord-style: name on top, folds away on scroll) ---------- */
+#sidebarHeader.hasBanner{
+  height:136px;flex-basis:136px;align-items:flex-start;padding-top:14px;padding-bottom:0;
+  transition:height .22s var(--ease-out),flex-basis .22s var(--ease-out),padding .22s var(--ease-out),filter .14s ease;
+}
+#sidebarHeader.hasBanner.collapsed{height:48px;flex-basis:48px;padding-top:0;align-items:center;}
+.bannerPreview{align-items:flex-start;}
+.channel.voiceConnected,.channel.voiceConnected .hash{color:var(--green);}
+.channel.voiceConnected .channelName{font-weight:600;}
+
+/* ---------- create-a-server setup ---------- */
+.wzHead{text-align:center;}
+.wzDots{display:flex;justify-content:center;gap:6px;margin-bottom:12px;}
+.wzDots i{width:8px;height:8px;border-radius:50%;background:var(--border-strong);transition:background .2s ease;}
+.wzDots i.on{background:var(--brand);}
+.wzBody{max-height:62vh;overflow-y:auto;}
+.wzChoice{
+  display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:10px 14px;margin-bottom:8px;border-radius:8px;
+  border:1px solid var(--divider);background:rgba(127,127,127,.06);color:var(--text);
+  transition:background-color .14s ease,border-color .14s ease,transform .14s var(--ease-out);
+}
+.wzChoice:hover{background:rgba(127,127,127,.13);border-color:var(--border-strong);}
+.wzChoice:active{transform:scale(.99);}
+@media (hover:hover) and (pointer:fine){ .wzChoice:hover{transform:translateY(-1px);} }
+.wzEmoji{font-size:24px;width:42px;height:42px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:rgba(127,127,127,.13);flex:0 0 42px;}
+.wzText{flex:1;min-width:0;display:flex;flex-direction:column;}
+.wzText b{font-size:15px;font-weight:600;color:var(--text-bright);}
+.wzText small{font-size:12.5px;color:var(--text-muted);margin-top:2px;line-height:1.35;}
+.wzChev{font-size:22px;color:var(--text-muted);}
+.wzLabel{font-size:12px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin:14px 0 8px;}
+.wzFoot{justify-content:center;}
+.wzJoin{display:flex;flex-direction:column;align-items:center;gap:8px;width:100%;text-align:center;}
+.wzJoin b{color:var(--text-bright);}
+.wzJoin .btn{width:100%;}
+.wzSkip{text-align:center;color:var(--text-muted);font-size:13px;margin-top:6px;}
+.wzIconRow{display:flex;align-items:center;gap:14px;margin-bottom:14px;}
+.wzIcon{width:80px;height:80px;border-radius:50%;border:2px dashed var(--text-muted);display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:2px;color:var(--text-muted);overflow:hidden;flex:0 0 80px;transition:border-color .14s ease,color .14s ease;}
+.wzIcon span{font-size:22px;}
+.wzIcon small{font-size:10px;font-weight:700;}
+.wzIcon:hover{border-color:var(--text);color:var(--text);}
+.wzIcon.has{border:none;}
+.wzIcon img{width:100%;height:100%;object-fit:cover;}
+.wzSmall{font-weight:600;color:var(--text-bright);}
+.wzOptional{font-weight:400;text-transform:none;color:var(--text-muted);}
+.wzBanner{max-width:none;}
+.wzChannels{display:flex;flex-wrap:wrap;gap:6px;}
+.wzChip{font-size:13px;padding:3px 9px;border-radius:12px;background:rgba(127,127,127,.13);color:var(--text);}
+.wzChip.voice{color:var(--text-muted);}
 </style>
 </head>
 
@@ -2338,7 +2388,8 @@ function renderSidebar(){
       const active = currentRoom === channel.room && view === 'server';
       if(collapsed && !active && !count) return;
       const item = document.createElement('div');
-      item.className = 'channel' + (active ? ' active' : '') + (count ? ' unread' : '') + (levelFor(channel.room) === 'none' ? ' muted' : '');
+      item.className = 'channel' + (active ? ' active' : '') + (count ? ' unread' : '') + (levelFor(channel.room) === 'none' ? ' muted' : '')
+        + (channel.kind === 'voice' && voice.key === 'voice:' + channel.room ? ' voiceConnected' : '');
       item.title = channel.topic || (channel.adminsOnly ? 'Announcement channel' : (channel.isPrivate ? 'Private channel' : ''));
       item.innerHTML = '<span class="hash">' + channelIconHtml(channel) + '</span>';
       const nameEl = document.createElement('span');
@@ -4936,8 +4987,20 @@ function paintSidebarBanner(server){
   header.classList.toggle('hasBanner', has);
   header.style.backgroundColor = has ? (server.bannerColor || 'var(--bg-tertiary)') : '';
   header.style.backgroundImage = has && server.bannerUrl
-    ? 'linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,0) 60%), url("' + server.bannerUrl + '")'
-    : (has ? 'linear-gradient(to top, rgba(0,0,0,.35), rgba(0,0,0,0) 70%)' : '');
+    ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%), url("' + server.bannerUrl + '")'
+    : (has ? 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)' : '');
+  const body = $('sidebarBody');
+  if(!body._bannerScroll){ body._bannerScroll = true; body.addEventListener('scroll', updateBannerCollapse, { passive:true }); }
+  updateBannerCollapse();
+}
+// Like Discord: the big banner folds down to a normal header once you
+// scroll the channel list (only when there's enough list to scroll, so it
+// can't flicker back and forth).
+function updateBannerCollapse(){
+  const header = $('sidebarHeader'), body = $('sidebarBody');
+  if(!header.classList.contains('hasBanner')){ header.classList.remove('collapsed'); return; }
+  if(body.scrollTop > 24 && body.scrollHeight - body.clientHeight > 120) header.classList.add('collapsed');
+  else if(body.scrollTop <= 2) header.classList.remove('collapsed');
 }
 
 function openFriends(){
@@ -7553,7 +7616,7 @@ function renderServerOverview(c, sid){
   function paintBanner(){
     const box = $('ovBannerPreview');
     box.style.backgroundColor = draft.bannerColor || 'var(--bg-tertiary)';
-    box.style.backgroundImage = draft.bannerUrl ? 'linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,0) 60%), url("' + draft.bannerUrl + '")' : '';
+    box.style.backgroundImage = draft.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%), url("' + draft.bannerUrl + '")' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)';
     $('ovBannerName').textContent = draft.name || server.name;
     $('ovBannerRemove').disabled = !canEdit || !draft.bannerUrl;
   }
@@ -8261,53 +8324,135 @@ async function setGlobalCensor(enabled){
   }catch(err){ toast(err.message); }
 }
 
+// ---- create a server: a short setup, like Discord's. Template -> who it's
+// for -> name, icon, description and banner -> invite people.
+// (Mirrors SERVER_TEMPLATES in server.js, which actually builds the channels.)
+const SERVER_TEMPLATE_CHOICES = [
+  { key:'gaming', emoji:'🎮', label:'Gaming', text:['general', 'clips-and-highlights', 'looking-for-group'], voice:['lobby', 'gaming'] },
+  { key:'school', emoji:'🏫', label:'School Club', text:['general', 'homework-help', 'meeting-plans', 'off-topic'], voice:['lounge', 'meeting-room'] },
+  { key:'study', emoji:'📚', label:'Study Group', text:['general', 'session-planning', 'resources', 'off-topic'], voice:['lounge', 'study-room-1', 'study-room-2'] },
+  { key:'friends', emoji:'🫶', label:'Friends', text:['general', 'games', 'music', 'memes'], voice:['lounge', 'gaming', 'stream-room'] },
+  { key:'creators', emoji:'🎨', label:'Artists & Creators', text:['general', 'showcase', 'ideas-and-feedback'], voice:['lounge', 'community-hangout', 'stream-room'] },
+  { key:'local', emoji:'🏡', label:'Local Community', text:['general', 'events', 'resources'], voice:['lounge', 'meeting-room'] }
+];
+const CUSTOM_TEMPLATE = { key:'custom', emoji:'✨', label:'Create My Own', text:['general', 'random'], voice:['lounge'] };
+
 function openCreateServer(){
-  openModal(
-    '<div class="modalHead"><h2>Create a server</h2><p>Your server is where you and your friends hang out. Make yours and start talking.</p></div>' +
-    '<div class="modalBody">' +
-      '<div class="rowFlex" style="margin-bottom:16px"><div id="newServerIcon"></div>' +
-      '<button class="btn grey" id="serverIconBtn">Upload Icon</button></div>' +
-      '<label class="formLabel">Server name</label>' +
-      '<input class="formInput" id="newServerName" placeholder="My server" maxlength="60">' +
-      '<input type="hidden" id="newServerIconUrl">' +
-      '<div class="modalMsg" id="modalMsg"></div>' +
-    '</div>' +
-    '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="createServerBtn">Create</button></div>'
-  );
-  const preview = $('newServerIcon');
-  preview.innerHTML = '<div class="avatar lg" style="border-radius:16px;background:#4e5058">＋</div>';
-  $('serverIconBtn').onclick = () => {
-    const picker = document.createElement('input');
-    picker.type = 'file';
-    picker.accept = 'image/*';
-    picker.onchange = async () => {
-      const file = picker.files && picker.files[0];
-      if(!file) return;
-      modalMessage('Uploading…');
+  const me = myProfile.displayName || username;
+  const setup = { step:1, template:CUSTOM_TEMPLATE, audience:'friends', name:me + '\'s server', description:'', iconUrl:'', bannerColor:'#5865f2', bannerUrl:'', created:null };
+  const choice = (emoji, title, sub) =>
+    '<span class="wzEmoji">' + emoji + '</span><span class="wzText"><b>' + escapeHtml(title) + '</b>' + (sub ? '<small>' + escapeHtml(sub) + '</small>' : '') + '</span><span class="wzChev">›</span>';
+  const dots = () => '<div class="wzDots" aria-label="Step ' + setup.step + ' of 4">' + [1, 2, 3, 4].map(n => '<i class="' + (n <= setup.step ? 'on' : '') + '"></i>').join('') + '</div>';
+
+  function step1(){
+    openModal(
+      '<div class="modalHead wzHead">' + dots() + '<h2>Create Your Server</h2><p>Your server is where you and your friends hang out. Make yours and start talking.</p></div>' +
+      '<div class="modalBody wzBody"><button class="wzChoice" data-t="custom">' + choice(CUSTOM_TEMPLATE.emoji, CUSTOM_TEMPLATE.label, 'Start simple: #general, #random and a voice channel') + '</button>' +
+      '<div class="wzLabel">Start from a template</div>' +
+      SERVER_TEMPLATE_CHOICES.map(t => '<button class="wzChoice" data-t="' + t.key + '">' + choice(t.emoji, t.label) + '</button>').join('') + '</div>' +
+      '<div class="modalFoot wzFoot"><div class="wzJoin"><b>Have an invite already?</b><button class="btn grey" id="wzJoin">Join a Server</button></div></div>'
+    );
+    $('modal').querySelectorAll('.wzChoice').forEach(b => b.onclick = () => {
+      setup.template = b.dataset.t === 'custom' ? CUSTOM_TEMPLATE : SERVER_TEMPLATE_CHOICES.find(t => t.key === b.dataset.t);
+      setup.step = 2; step2();
+    });
+    $('wzJoin').onclick = () => openJoinServer();
+  }
+
+  function step2(){
+    openModal(
+      '<div class="modalHead wzHead">' + dots() + '<h2>Tell us more about your server</h2><p>Is your new server for just a few friends or a bigger community? This decides which channels you start with.</p></div>' +
+      '<div class="modalBody wzBody">' +
+      '<button class="wzChoice" data-a="community">' + choice('🌐', 'For a club or community', 'Adds an Information section: #welcome-and-rules and #announcements, where only admins post') + '</button>' +
+      '<button class="wzChoice" data-a="friends">' + choice('🫂', 'For me and my friends', 'Just the chat and voice channels') + '</button>' +
+      '<div class="wzSkip">Not sure? <button class="linkBtn" data-a="friends">Skip this question</button> for now.</div></div>' +
+      '<div class="modalFoot"><button class="btn ghost" id="wzBack">Back</button></div>'
+    );
+    $('modal').querySelectorAll('[data-a]').forEach(b => b.onclick = () => { setup.audience = b.dataset.a; setup.step = 3; step3(); });
+    $('wzBack').onclick = () => { setup.step = 1; step1(); };
+  }
+
+  function step3(){
+    const t = setup.template;
+    const channels = (setup.audience === 'community' ? ['welcome-and-rules', 'announcements'] : []).concat(t.text);
+    openModal(
+      '<div class="modalHead wzHead">' + dots() + '<h2>Customize your server</h2><p>Give it a personality with a name, an icon and a banner. You can change all of this later in Server Settings.</p></div>' +
+      '<div class="modalBody wzBody">' +
+      '<div class="wzIconRow"><button class="wzIcon" id="wzIcon" title="Upload an icon"></button><div><div class="wzSmall">Server icon</div><div class="switchDesc">Square images look best. Optional.</div></div></div>' +
+      '<label class="formLabel" for="wzName">Server name</label><input class="formInput" id="wzName" maxlength="60">' +
+      '<label class="formLabel" for="wzDesc">Description <span class="wzOptional">(optional)</span></label>' +
+      '<textarea class="formInput" id="wzDesc" maxlength="300" rows="2" placeholder="What\'s this server about?"></textarea>' +
+      '<label class="formLabel">Banner</label>' +
+      '<div class="bannerPreview wzBanner" id="wzBanner"><span id="wzBannerName"></span></div>' +
+      '<div class="rowFlex" style="gap:8px;margin:8px 0 4px;flex-wrap:wrap"><div class="colorRow" id="wzColors"></div></div>' +
+      '<div class="rowFlex" style="gap:8px"><button class="btn grey" id="wzBannerUpload">Upload Banner Image</button><button class="btn ghost" id="wzBannerRemove" style="display:none">Remove image</button></div>' +
+      '<div class="wzStart"><div class="wzLabel" style="margin-top:14px">You\'ll start with</div><div class="wzChannels" id="wzChannels"></div></div>' +
+      '<div class="modalMsg" id="modalMsg"></div></div>' +
+      '<div class="modalFoot"><button class="btn ghost" id="wzBack">Back</button><button class="btn" id="wzCreate">Create Server</button></div>'
+    , true);
+    const chips = $('wzChannels');
+    channels.forEach(n => chips.appendChild(Object.assign(document.createElement('span'), { className:'wzChip', textContent:'# ' + n })));
+    t.voice.forEach(n => chips.appendChild(Object.assign(document.createElement('span'), { className:'wzChip voice', textContent:'🔊 ' + n })));
+    $('wzName').value = setup.name;
+    $('wzDesc').value = setup.description;
+    function paint(){
+      const icon = $('wzIcon');
+      icon.innerHTML = setup.iconUrl ? '<img alt="">' : '<span>📷</span><small>UPLOAD</small>';
+      if(setup.iconUrl) icon.querySelector('img').src = setup.iconUrl;
+      icon.classList.toggle('has', !!setup.iconUrl);
+      const banner = $('wzBanner');
+      banner.style.backgroundColor = setup.bannerColor || 'var(--bg-tertiary)';
+      banner.style.backgroundImage = setup.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.5), rgba(0,0,0,0) 60%), url("' + setup.bannerUrl + '")' : 'linear-gradient(to bottom, rgba(0,0,0,.3), rgba(0,0,0,0) 70%)';
+      $('wzBannerName').textContent = setup.name.trim() || 'Your server';
+      $('wzBannerRemove').style.display = setup.bannerUrl ? '' : 'none';
+    }
+    paintColorChoices($('wzColors'), BANNER_PRESETS, setup.bannerColor, c => { setup.bannerColor = c; paint(); }, 'var(--bg-tertiary)');
+    $('wzName').oninput = e => { setup.name = e.target.value; paint(); };
+    $('wzDesc').oninput = e => { setup.description = e.target.value; };
+    $('wzIcon').onclick = () => { modalMessage('Uploading…'); pickImageFile(url => { setup.iconUrl = url; modalMessage(''); paint(); }, msg => modalMessage(msg, true)); };
+    $('wzBannerUpload').onclick = () => { modalMessage('Uploading…'); pickImageFile(url => { setup.bannerUrl = url; modalMessage(''); paint(); }, msg => modalMessage(msg, true)); };
+    $('wzBannerRemove').onclick = () => { setup.bannerUrl = ''; paint(); };
+    $('wzBack').onclick = () => { setup.step = 2; step2(); };
+    $('wzCreate').onclick = async () => {
+      const name = setup.name.trim();
+      if(!name){ modalMessage('Give your server a name.', true); $('wzName').focus(); return; }
+      $('wzCreate').disabled = true;
+      modalMessage('Setting up your server…');
       try{
-        const url = await uploadImageForProfile(file);
-        $('newServerIconUrl').value = url;
-        preview.innerHTML = '<div class="avatar lg" style="border-radius:16px"><img src="' + url + '" alt="icon"></div>';
-        modalMessage('Icon ready.');
-      }catch(err){ modalMessage(err.message, true); }
+        const data = await postJSON('/servers', {
+          name, iconUrl: setup.iconUrl, description: setup.description.trim(), template: setup.template.key, audience: setup.audience,
+          bannerColor: setup.bannerColor || '', bannerUrl: setup.bannerUrl || ''
+        });
+        setup.created = data;
+        await loadServers();
+        renderRail();
+        switchServer(data.id);
+        // land in #general (not the admins-only rules channel at the top)
+        const general = ((serverById(data.id) || {}).channels || []).find(c => c.name === 'general');
+        if(general) openChannel(general.room);
+        setup.step = 4; step4();
+      }catch(err){ $('wzCreate').disabled = false; modalMessage(err.message, true); }
     };
-    picker.click();
-  };
-  $('createServerBtn').onclick = async () => {
-    const name = $('newServerName').value.trim();
-    const iconUrl = $('newServerIconUrl').value;
-    if(!name){ modalMessage('Give your server a name.', true); return; }
-    try{
-      const response = await fetch('/servers', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name, iconUrl }) });
-      const data = await response.json();
-      if(!response.ok) throw new Error(data.error || 'could not create server');
-      await loadServers();
-      renderRail();
-      switchServer(data.id);
-      closeModal();
-      toast('Server created — invite code ' + data.inviteCode);
-    }catch(err){ modalMessage(err.message, true); }
-  };
+    paint();
+    $('wzName').focus();
+    $('wzName').select();
+  }
+
+  function step4(){
+    const code = setup.created.inviteCode;
+    openModal(
+      '<div class="modalHead wzHead">' + dots() + '<h2>Invite your friends</h2><p>Your server is ready. Friends join with the compass button on the left and this invite code.</p></div>' +
+      '<div class="modalBody wzBody"><label class="formLabel">Invite code</label>' +
+      '<div class="rowFlex" style="gap:8px;flex-wrap:nowrap"><div class="codeBox" id="wzCode" style="font-size:20px;flex:1"></div><button class="btn" id="wzCopy">Copy</button></div>' +
+      '<div class="switchDesc" style="margin-top:12px">You can find it again (or make a new one) in Server Settings → Invites.</div></div>' +
+      '<div class="modalFoot"><button class="btn" id="wzDone">Go to my server</button></div>'
+    );
+    $('wzCode').textContent = code;
+    $('wzCopy').onclick = () => copyText(code);
+    $('wzDone').onclick = () => closeModal();
+  }
+
+  step1();
 }
 
 function openJoinServer(){

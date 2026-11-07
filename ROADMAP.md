@@ -138,6 +138,17 @@ large, new system - also split it over several sessions).
   channel once (site_settings `default_voice_added`, so deleting it sticks).
 - [x] **Discord-style banner** - taller, name on top, folds into a normal
   header when you scroll the channel list. The voice channel you're in is green.
+- [x] **UI overhaul ("After hours")** - ink-blue night room with one warm
+  amber accent (the "lamp", default accent `#ffb648`; old default blue
+  accents migrate once via `appearance.v2`). Bricolage Grotesque for titles,
+  Figtree for everything else. Layout: a floating server dock (with your
+  avatar and settings at its foot) beside one rounded "desk" panel holding
+  the channel list, chat, members and search. Two-line chat header (name +
+  topic), capsule composer with a send button. Phones: chat is full screen,
+  the dock and channel list slide in together (`openNav()` / `closeNav()`),
+  and a bottom bar has Messages, Mentions, Find and You. Themes: After hours,
+  Graphite, Midnight, Daylight. Text on the accent colour uses `--on-brand`
+  (dark or white, worked out from the accent's brightness).
 
 ## Decided against
 

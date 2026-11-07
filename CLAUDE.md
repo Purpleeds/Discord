@@ -10,7 +10,12 @@ off there (with anything learned) when they ship.
 ## Layout
 - `server.js`: the whole backend (Express routes, Socket.IO handlers, schema).
 - `public/index.html`: the whole frontend (CSS, markup and JS in one file).
-  Keep it a single file unless asked otherwise.
+  Keep it a single file unless asked otherwise. The look ("After hours",
+  ROADMAP extras) lives in the design tokens at the top of `<style>` and the
+  big layer at the end of it; JS finds elements by ID, so keep IDs when
+  restyling. On phones close the drawer with `closeNav()`, never by
+  removing the `open` class by hand. Put text on the accent colour in
+  `var(--on-brand)`, not white.
 - `public/sw.js`: Web Push service worker.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
   Calls need a real browser to check audio/video: Playwright's Chromium

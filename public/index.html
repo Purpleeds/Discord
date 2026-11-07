@@ -9,7 +9,12 @@
 <!-- Installable app (PWA). Installing is also what lets iPhones get push
      notifications: iOS only allows web push for home-screen apps. -->
 <link rel="manifest" href="/manifest.webmanifest">
-<meta name="theme-color" content="#1e1f22">
+<meta name="theme-color" content="#121731">
+<!-- Typefaces: Bricolage Grotesque (titles) + Figtree (everything else).
+     If Google Fonts is blocked (some school networks), the system fonts below take over. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Figtree:ital,wght@0,400..800;1,400..600&display=swap">
 <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -17,74 +22,116 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 
 <style>
-/* ---------------- theme tokens ----------------
-   Dark is the default; Ash / Midnight / Light are picked in
-   Settings > Appearance and applied as data-theme on <html>. */
+/* ---------------- design tokens: "After hours" ----------------
+   The app is a group chat that's open late: an ink-blue room lit by one
+   warm desk lamp. The lamp (amber) is the only loud colour - it marks
+   where you are (active channel, unread, primary buttons, focus); the
+   rest stays quiet. Themes are picked in Settings > Appearance and
+   applied as data-theme on <html>; the accent can be changed too
+   (--brand, with --on-brand set to readable text for it). */
 :root{
-  --rail:#1e1f22;
-  --sidebar:#2b2d31;
-  --chat:#313338;
-  --members:#2b2d31;
-  --composer:#383a40;
-  --hover:#35373c;
-  --active:#404249;
-  --msg-hover:rgba(2,2,2,.06);
-  --bg-secondary:#2b2d31;
-  --bg-tertiary:#232428;
-  --bg-input:#1e1f22;
-  --bg-floating:#111214;
-  --card:#232428;
-  --modal:#313338;
-  --icon:#b5bac1;
-  --border-strong:#4e5058;
-  --rail-sep:#35363c;
-  --scroll-thumb:#1a1b1e;
-  --btn-grey:#4e5058;
-  --btn-grey-hover:#6d6f78;
-  --brand:#5865f2;
-  --brand-hover:#4752c4;
-  --green:#23a55a;
-  --red:#f23f43;
-  --yellow:#f0b132;
-  --text:#dbdee1;
-  --text-muted:#949ba4;
-  --text-bright:#f2f3f5;
-  --divider:#3f4147;
-  --link:#00a8fc;
-  --mention:rgba(88,101,242,.3);
-  --mention-text:#c9cdfb;
-  --shadow-high:0 8px 16px rgba(0,0,0,.24);
+  --canvas:#121731;
+  --desk:#1b2140;
+  --margin:#171c37;
+  --raised:#242b4d;
+  --raised-2:#2d355d;
+  --line:rgba(176,190,255,.085);
+  --line-strong:rgba(176,190,255,.16);
+  --lamp-glow:rgba(255,182,72,.15);
+  --canvas-glow:radial-gradient(1100px 680px at 6% -12%, rgba(255,182,72,.13), transparent 62%),
+                radial-gradient(900px 620px at 104% 112%, rgba(120,138,255,.10), transparent 62%);
+  --font-ui:"Figtree", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display:"Bricolage Grotesque", "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  --r-desk:22px; --r-card:16px; --r-ctl:10px;
+  --shadow-float:0 22px 48px -16px rgba(4,7,24,.6), 0 2px 8px rgba(4,7,24,.32);
+  --ease-out:cubic-bezier(.2,.8,.2,1);
+
+  /* the names the components use */
+  --rail:#1b2140;
+  --sidebar:#171c37;
+  --chat:#1b2140;
+  --members:#171c37;
+  --composer:#242b4d;
+  --hover:#232a4a;
+  --active:#2b3359;
+  --msg-hover:rgba(160,176,255,.045);
+  --bg-secondary:#171c37;
+  --bg-tertiary:#141933;
+  --bg-input:#121730;
+  --bg-floating:#232a4c;
+  --card:#161b35;
+  --modal:#1d2344;
+  --icon:#a2aad0;
+  --border-strong:#3b4473;
+  --rail-sep:rgba(176,190,255,.16);
+  --scroll-thumb:#2e365f;
+  --btn-grey:#2f3762;
+  --btn-grey-hover:#3a4377;
+  --brand:#ffb648;
+  --brand-hover:#e89a2c;
+  --on-brand:#1f1500;
+  --green:#3ecf8e;
+  --red:#ff5d6c;
+  --yellow:#ffcc4d;
+  --text:#dfe3f5;
+  --text-muted:#8f97bd;
+  --text-bright:#f6f7fd;
+  --divider:rgba(176,190,255,.10);
+  --link:#a6b2ff;
+  --mention:rgba(166,178,255,.20);
+  --mention-text:#cdd4ff;
+  --shadow-high:var(--shadow-float);
   --chat-font:16px;
   --group-gap:17px;
 }
 html[data-theme="ash"]{
-  --rail:#121214; --sidebar:#1a1a1e; --chat:#202024; --members:#1a1a1e; --composer:#2a2a30;
-  --hover:#2a2a30; --active:#34343b; --bg-secondary:#1a1a1e; --bg-tertiary:#141417; --bg-input:#121214;
-  --bg-floating:#0d0d0f; --card:#141417; --modal:#202024; --divider:#2e2e34; --rail-sep:#2a2a30; --scroll-thumb:#0d0d0f;
+  --canvas:#0f0f12; --desk:#1a1a1f; --margin:#151519; --raised:#25252c; --raised-2:#2e2e36;
+  --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.13);
+  --canvas-glow:radial-gradient(1100px 680px at 6% -12%, rgba(255,182,72,.09), transparent 62%);
+  --rail:#1a1a1f; --sidebar:#151519; --chat:#1a1a1f; --members:#151519; --composer:#25252c;
+  --hover:#222228; --active:#2b2b33; --msg-hover:rgba(255,255,255,.035); --bg-secondary:#151519; --bg-tertiary:#121215;
+  --bg-input:#111114; --bg-floating:#24242b; --card:#141418; --modal:#1c1c21; --icon:#b0b0bd; --border-strong:#3b3b45;
+  --rail-sep:rgba(255,255,255,.12); --scroll-thumb:#34343d; --btn-grey:#2f2f37; --btn-grey-hover:#3b3b45;
+  --text:#e3e3ea; --text-muted:#9a9aa8; --text-bright:#f6f6f9; --divider:rgba(255,255,255,.08);
+  --link:#9fb0ff; --mention:rgba(159,176,255,.16); --mention-text:#cfd6ff;
 }
 html[data-theme="midnight"]{
-  --rail:#000000; --sidebar:#0b0b0d; --chat:#000000; --members:#0b0b0d; --composer:#18181b;
-  --hover:#1a1a1e; --active:#26262b; --msg-hover:rgba(255,255,255,.03); --bg-secondary:#0b0b0d; --bg-tertiary:#060607;
-  --bg-input:#111113; --bg-floating:#0b0b0d; --card:#0b0b0d; --modal:#0b0b0d; --divider:#222226; --rail-sep:#1c1c20;
-  --scroll-thumb:#1c1c20;
+  --canvas:#000000; --desk:#0a0a0d; --margin:#060608; --raised:#16161b; --raised-2:#1e1e25;
+  --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.12);
+  --canvas-glow:radial-gradient(1000px 600px at 6% -12%, rgba(255,182,72,.07), transparent 62%);
+  --rail:#0a0a0d; --sidebar:#060608; --chat:#0a0a0d; --members:#060608; --composer:#16161b;
+  --hover:#141419; --active:#1c1c23; --msg-hover:rgba(255,255,255,.03); --bg-secondary:#060608; --bg-tertiary:#050506;
+  --bg-input:#101014; --bg-floating:#16161c; --card:#0b0b0e; --modal:#0d0d11; --icon:#a9a9b6; --border-strong:#2c2c35;
+  --rail-sep:rgba(255,255,255,.1); --scroll-thumb:#24242c; --btn-grey:#22222a; --btn-grey-hover:#2e2e38;
+  --text:#e4e4ec; --text-muted:#8f8f9e; --text-bright:#f7f7fa; --divider:rgba(255,255,255,.07);
+  --link:#9fb0ff; --mention:rgba(159,176,255,.14); --mention-text:#cfd6ff;
 }
 html[data-theme="light"]{
-  --rail:#e3e5e8; --sidebar:#f2f3f5; --chat:#ffffff; --members:#f2f3f5; --composer:#ebedef;
-  --hover:#e3e5e8; --active:#d4d7dc; --msg-hover:rgba(6,6,7,.03); --bg-secondary:#f2f3f5; --bg-tertiary:#e3e5e8;
-  --bg-input:#e3e5e8; --bg-floating:#ffffff; --card:#ffffff; --modal:#ffffff; --icon:#4e5058; --border-strong:#c4c9ce;
-  --rail-sep:#d4d7dc; --scroll-thumb:#c4c9ce; --btn-grey:#6d6f78; --btn-grey-hover:#80848e;
-  --text:#313338; --text-muted:#5c5e66; --text-bright:#060607; --divider:#e1e2e4; --link:#006ce7;
-  --mention:rgba(88,101,242,.15); --mention-text:#505cdc; --shadow-high:0 8px 16px rgba(0,0,0,.12);
+  --canvas:#e6e9f3; --desk:#ffffff; --margin:#f5f6fb; --raised:#eef0f8; --raised-2:#e3e7f4;
+  --line:rgba(27,33,64,.08); --line-strong:rgba(27,33,64,.14);
+  --lamp-glow:rgba(240,160,40,.18);
+  --canvas-glow:radial-gradient(1100px 680px at 6% -12%, rgba(255,190,90,.28), transparent 62%),
+                radial-gradient(900px 620px at 104% 112%, rgba(120,138,255,.14), transparent 62%);
+  --shadow-float:0 22px 48px -18px rgba(27,33,64,.28), 0 2px 8px rgba(27,33,64,.08);
+  --rail:#ffffff; --sidebar:#f5f6fb; --chat:#ffffff; --members:#f5f6fb; --composer:#eef0f8;
+  --hover:#eceff9; --active:#e1e6f7; --msg-hover:rgba(27,33,64,.028); --bg-secondary:#f5f6fb; --bg-tertiary:#eceff7;
+  --bg-input:#eef0f8; --bg-floating:#ffffff; --card:#ffffff; --modal:#ffffff; --icon:#5a6286; --border-strong:#c8cde2;
+  --rail-sep:rgba(27,33,64,.12); --scroll-thumb:#cdd2e6; --btn-grey:#5f6789; --btn-grey-hover:#4f5679;
+  --text:#262b47; --text-muted:#626a8e; --text-bright:#0f1330; --divider:rgba(27,33,64,.09);
+  --link:#3a54e0; --mention:rgba(58,84,224,.12); --mention-text:#3a54e0;
 }
 *{margin:0;padding:0;box-sizing:border-box;}
 html,body{height:100%;}
 body{
-  background:var(--chat);
+  background:var(--canvas-glow), var(--canvas);
   color:var(--text);
   overflow:hidden;
-  font-family:"gg sans","Noto Sans","Helvetica Neue",Helvetica,Arial,"Segoe UI",sans-serif;
-  font-size:16px;
+  font-family:var(--font-ui);
+  font-size:15px;
+  line-height:1.4;
   -webkit-font-smoothing:antialiased;
+  font-feature-settings:"ss01", "cv11";
 }
 button{font-family:inherit;border:none;cursor:pointer;border-radius:4px;color:inherit;background:none;}
 button:disabled{opacity:.5;cursor:not-allowed;}
@@ -1243,23 +1290,450 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus
 .botCode .codeBlock{max-height:320px;overflow:auto;font-size:12.5px;margin:0;}
 .botCode .btn{position:absolute;top:8px;right:8px;padding:4px 10px;}
 .cmdUsed span{color:var(--text-normal, var(--text));font-weight:500;}
+
+/* =====================================================================
+   "After hours" - layout and components
+   Desktop: a floating dock on the left, and one big "desk" panel that
+   holds the channel list, the conversation and the member list, all
+   sitting in a dark room lit from the top-left by the lamp. Phones: the
+   conversation fills the screen; the dock + channels slide in together
+   as one drawer, with a bottom bar (Messages, Mentions, Find, You).
+   Radii follow hierarchy: desk 22, cards 16, controls 10, chips round.
+   ===================================================================== */
+
+/* ---------- the room ---------- */
+#app.ready{display:flex;gap:10px;padding:10px;height:100%;}
+#desk{
+  flex:1;min-width:0;display:flex;position:relative;overflow:hidden;
+  background:var(--desk);border-radius:var(--r-desk);
+  box-shadow:0 0 0 1px var(--line), var(--shadow-float);
+}
+/* the one orchestrated moment: the dock and desk settle in after login */
+@keyframes dockIn{from{opacity:0;transform:translateX(-14px);}to{opacity:1;transform:none;}}
+@keyframes deskIn{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:none;}}
+#app.ready #serverRail{animation:dockIn .45s var(--ease-out) backwards;}
+#app.ready #desk{animation:deskIn .5s .06s var(--ease-out) backwards;}
+/* the lamp's light falls across the top-left of the desk */
+#desk::after{
+  content:'';position:absolute;inset:0;pointer-events:none;border-radius:inherit;z-index:3;
+  background:radial-gradient(520px 340px at 0% 0%, color-mix(in srgb, var(--brand) 9%, transparent), transparent 70%);
+  mix-blend-mode:screen;
+}
+html[data-theme="light"] #desk::after{mix-blend-mode:multiply;background:radial-gradient(520px 340px at 0% 0%, rgba(255,196,110,.14), transparent 70%);}
+
+/* ---------- dock (servers, then you) ---------- */
+#serverRail{
+  width:68px;flex:0 0 68px;background:var(--rail);border-radius:var(--r-desk);
+  box-shadow:0 0 0 1px var(--line), var(--shadow-float);
+  padding:12px 0 10px;gap:8px;overflow:hidden;
+}
+#serverIcons{display:flex;flex-direction:column;align-items:center;gap:8px;min-height:0;flex:0 1 auto;overflow-y:auto;overflow-x:hidden;scrollbar-width:none;padding:2px 0 4px;width:100%;}
+#serverIcons::-webkit-scrollbar{display:none;}
+.railWrap{width:44px;height:44px;}
+.railIcon{
+  width:44px;height:44px;border-radius:15px;background:var(--raised);color:var(--text);
+  font-family:var(--font-display);font-weight:700;font-size:15px;letter-spacing:-.02em;
+  transition:border-radius .2s var(--ease-out), background .15s ease, color .15s ease, box-shadow .2s ease, transform .1s ease;
+}
+.railWrap:hover .railIcon{border-radius:12px;background:var(--raised-2);color:var(--text-bright);}
+.railWrap.active .railIcon{
+  border-radius:12px;background:var(--brand);color:var(--on-brand);
+  box-shadow:0 0 0 4px var(--lamp-glow), 0 8px 22px -6px var(--brand);
+}
+.railWrap.home .railIcon{background:var(--raised);color:var(--text);}
+.railWrap.home:hover .railIcon{background:var(--raised-2);}
+.railWrap.home.active .railIcon{background:var(--brand);color:var(--on-brand);}
+.railWrap.action .railIcon{background:transparent;color:var(--text-muted);box-shadow:inset 0 0 0 1.5px var(--line-strong);font-family:var(--font-ui);font-weight:400;font-size:24px;}
+.railWrap.action:hover .railIcon{background:var(--raised-2);color:var(--green);box-shadow:none;}
+.railPill{left:-12px;width:5px;background:var(--brand);}
+.railWrap.unread .railPill{height:8px;background:var(--text-bright);}
+.railSep{width:26px;height:2px;border-radius:2px;background:var(--rail-sep);}
+.railBadge{border-color:var(--rail);font-size:11px;min-width:19px;height:19px;}
+.railSpring{flex:1 1 0;min-height:4px;}
+/* tooltips float outside the dock (positioned by JS, so scrolling can't clip them) */
+.railTip{
+  position:fixed;left:0;top:0;transform:translateY(-50%) translateX(-4px);
+  background:var(--bg-floating);color:var(--text-bright);border:1px solid var(--line-strong);
+  border-radius:10px;padding:7px 11px;font-size:13.5px;font-weight:600;z-index:200;
+}
+.railWrap:hover .railTip{transform:translateY(-50%);}
+/* you: avatar (opens your profile) + settings, at the foot of the dock */
+#userPanel{
+  height:auto;flex:0 0 auto;background:none;flex-direction:column;gap:6px;
+  padding:10px 0 0;margin-top:2px;border-top:1px solid var(--line);width:44px;
+}
+#userPanelInfo{padding:0;border-radius:50%;flex:0 0 auto;justify-content:center;}
+#userPanelInfo:hover{background:none;}
+#userPanelInfo > div:last-child{display:none;} /* name + status live in your profile card */
+#userPanelAvatar .avatar{width:40px;height:40px;font-size:16px;}
+#userPanel .panelBtn{width:42px;height:42px;border-radius:13px;color:var(--icon);}
+#userPanel .panelBtn:hover{background:var(--raised-2);color:var(--text-bright);}
+#userPanel .panelBtn[title="Log Out"]{display:none;} /* Log out is in Settings */
+
+/* ---------- channel list ---------- */
+#sidebar{width:264px;flex:0 0 264px;background:var(--margin);border-right:1px solid var(--line);}
+#sidebarHeader{
+  height:64px;flex:0 0 64px;padding:0 18px;box-shadow:none;border-bottom:1px solid var(--line);
+  font-family:var(--font-display);font-size:18px;font-weight:700;letter-spacing:-.015em;color:var(--text-bright);
+}
+#sidebarHeader:hover{background:var(--hover);}
+#sidebarChev{font-family:var(--font-ui);font-size:15px;color:var(--text-muted);transition:transform .2s var(--ease-out);}
+#sidebarHeader:hover #sidebarChev{transform:translateY(1px);}
+#sidebarHeader.hasBanner{height:150px;flex-basis:150px;padding-top:16px;border-bottom:none;}
+#sidebarHeader.hasBanner #sidebarChev{color:#fff;}
+#sidebarHeader.hasBanner.collapsed{height:64px;flex-basis:64px;}
+#sidebarBody{padding:10px 10px 16px;}
+.sectionTitle{
+  text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:var(--text-muted);
+  padding:18px 10px 6px;
+}
+.sectionTitle button{width:24px;height:24px;border-radius:7px;font-size:17px;display:flex;align-items:center;justify-content:center;}
+.sectionTitle button:hover{background:var(--hover);}
+.channel{padding:7px 10px;border-radius:10px;gap:9px;margin-bottom:1px;font-size:15px;}
+.channel .hash{font-size:18px;width:18px;display:flex;justify-content:center;}
+.channel.active{background:var(--active);color:var(--text-bright);}
+.channel.active::before{
+  content:'';position:absolute;left:-10px;top:7px;bottom:7px;width:4px;border-radius:0 4px 4px 0;
+  background:var(--brand);box-shadow:0 0 14px var(--brand);
+}
+.channel.unread:not(.active)::before{
+  content:'';position:absolute;left:-10px;top:50%;width:4px;height:8px;margin-top:-4px;border-radius:0 4px 4px 0;background:var(--text-bright);
+}
+.dmRow{border-radius:10px;padding:6px 10px;}
+.dmRow.active{background:var(--active);}
+.voiceMember{border-radius:9px;}
+.voiceBar{
+  margin:0 10px 10px;border-radius:14px;background:var(--raised);border:1px solid var(--line);
+  padding:8px 8px 8px 10px;
+}
+.emptyHint{padding:10px;}
+
+/* ---------- conversation ---------- */
+#chat{background:transparent;}
+#chatHeader{
+  height:64px;flex:0 0 64px;padding:0 14px 0 22px;gap:10px;box-shadow:none;
+  border-bottom:1px solid var(--line);
+}
+.headerTitle{display:flex;flex-direction:column;justify-content:center;min-width:0;flex:0 1 auto;gap:1px;}
+.headerTitleLine{display:flex;align-items:center;gap:7px;min-width:0;}
+#chatHeader .hash{font-family:var(--font-display);font-size:19px;font-weight:600;color:var(--text-muted);display:flex;}
+#roomTitle{font-family:var(--font-display);font-size:19px;font-weight:700;letter-spacing:-.02em;color:var(--text-bright);}
+#roomTopic{border-left:none;padding-left:0;margin-left:0;font-size:13px;flex:0 1 auto;max-width:72ch;color:var(--text-muted);}
+#roomTopic:empty{display:none;}
+.headerTools{display:flex;align-items:center;gap:2px;padding:3px;border-radius:12px;background:var(--bg-tertiary);box-shadow:inset 0 0 0 1px var(--line);flex:0 0 auto;}
+.headerBtn{width:34px;height:34px;border-radius:9px;}
+.headerBtn:hover{background:var(--raised);}
+.headerBtn.on{background:var(--active);color:var(--text-bright);}
+.headerSearch input{
+  height:36px;width:180px;border-radius:11px;background:var(--bg-tertiary);box-shadow:inset 0 0 0 1px var(--line);
+  padding:0 30px 0 12px;font-size:14px;transition:width .2s var(--ease-out), box-shadow .15s ease;
+}
+.headerSearch input:focus,.headerSearch input.hasValue{width:260px;box-shadow:inset 0 0 0 1px var(--brand), 0 0 0 3px var(--lamp-glow);}
+.headerSearch .searchIcon{right:11px;}
+#messages{padding:10px 0 26px;}
+.welcomeBlock{padding:24px 22px 10px;}
+.welcomeIcon{width:64px;height:64px;border-radius:20px;background:var(--raised);font-family:var(--font-display);font-size:32px;font-weight:700;}
+.welcomeBlock h1{font-family:var(--font-display);font-size:34px;font-weight:800;letter-spacing:-.03em;margin-bottom:6px;}
+.dayDivider{margin:20px 22px 8px;}
+.dayDivider span{padding:3px 11px;border-radius:999px;box-shadow:inset 0 0 0 1px var(--line);font-size:12px;}
+.message{padding:3px 60px 3px 22px;gap:14px;}
+.message.mentioned{
+  background:linear-gradient(90deg, color-mix(in srgb, var(--brand) 13%, transparent), color-mix(in srgb, var(--brand) 3%, transparent));
+  box-shadow:inset 3px 0 0 var(--brand);
+}
+.message.mentioned:hover{background:linear-gradient(90deg, color-mix(in srgb, var(--brand) 18%, transparent), color-mix(in srgb, var(--brand) 5%, transparent));}
+.msgAuthor{font-weight:650;letter-spacing:-.005em;}
+.msgTime{font-size:12px;}
+.msgText{line-height:1.47;}
+.mention{border-radius:6px;padding:0 3px;font-weight:600;}
+.inlineCode{font-family:var(--font-mono);background:var(--bg-tertiary);box-shadow:inset 0 0 0 1px var(--line);border-radius:6px;padding:.1em .38em;font-size:.86em;}
+.codeBlock{font-family:var(--font-mono);background:var(--bg-tertiary);border:1px solid var(--line);border-radius:12px;padding:12px 14px;}
+.replyPreview .replySpine{border-color:var(--line-strong);}
+.msgActions{
+  top:-20px;right:22px;padding:3px;gap:2px;border-radius:12px;background:var(--bg-floating);
+  border:1px solid var(--line-strong);box-shadow:var(--shadow-float);
+}
+.msgActions button{width:31px;height:31px;border-radius:8px;}
+.msgActions button:hover{background:var(--raised-2);}
+.reaction{border-radius:999px;padding:3px 9px;background:var(--raised);}
+.reaction:hover{border-color:var(--line-strong);}
+.reaction.mine{background:color-mix(in srgb, var(--brand) 16%, transparent);border-color:color-mix(in srgb, var(--brand) 60%, transparent);}
+.reaction.mine .count{color:var(--text-bright);}
+.addReaction{border-radius:999px;background:var(--raised);}
+.imgWrap img,.imgWrap{border-radius:12px;}
+.fileCard{border-radius:14px;}
+.tagChip{border-radius:6px;}
+.roleBadge.badgeOwner{background:color-mix(in srgb, var(--brand) 22%, transparent);color:var(--brand);box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--brand) 45%, transparent);}
+.roleBadge.badgeServerAdmin{background:color-mix(in srgb, var(--green) 20%, transparent);color:var(--green);box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--green) 40%, transparent);}
+.roleBadge.badgeAdmin{background:color-mix(in srgb, var(--yellow) 22%, transparent);color:var(--yellow);box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--yellow) 45%, transparent);}
+.roleBadge.badgeBot,.tagChip.bot{background:color-mix(in srgb, var(--link) 20%, transparent);color:var(--link);box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--link) 40%, transparent);}
+html[data-theme="light"] .roleBadge.badgeOwner{color:#9a5a00;}
+html[data-theme="light"] .roleBadge.badgeAdmin{color:#8a6100;}
+#typingIndicator{padding:0 24px;font-size:13px;color:var(--text-muted);}
+.jumpBar{border-radius:999px;}
+
+/* the composer: one capsule, lit by the lamp while you type */
+#composerArea{padding:0 22px 18px;}
+#composerBox{
+  background:var(--raised);border-radius:18px;border:1px solid var(--line-strong);
+  box-shadow:0 12px 32px -20px rgba(4,7,24,.8);transition:border-color .15s ease, box-shadow .2s ease;
+}
+#composerBox:focus-within{
+  border-color:color-mix(in srgb, var(--brand) 65%, transparent);
+  box-shadow:0 0 0 4px var(--lamp-glow), 0 12px 32px -20px rgba(4,7,24,.8);
+}
+#replyBar{background:transparent;border-bottom:1px solid var(--line);border-radius:18px 18px 0 0;padding:8px 14px;}
+#composer{padding:6px 6px 6px 8px;gap:4px;align-items:flex-end;}
+#attachBtn{
+  width:38px;height:38px;margin:0;border-radius:12px;background:var(--raised-2);color:var(--text);
+  font-size:22px;font-weight:300;
+}
+#attachBtn:hover{background:var(--active);color:var(--text-bright);}
+#messageInput{padding:9px 6px;min-height:38px;line-height:1.4;}
+#emojiBtn{width:38px;height:38px;margin:0;border-radius:12px;color:var(--icon);filter:none;opacity:1;display:flex;align-items:center;justify-content:center;}
+#emojiBtn:hover{background:var(--raised-2);color:var(--text-bright);}
+#sendBtn{
+  width:38px;height:38px;border-radius:12px;background:var(--brand);color:var(--on-brand);
+  display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+  transition:transform .12s var(--ease-out), filter .15s ease;
+}
+#sendBtn:hover{filter:brightness(1.07);}
+#sendBtn:active{transform:scale(.94);}
+.mentionAutocomplete{border-radius:16px;border:1px solid var(--line-strong);background:var(--bg-floating);box-shadow:var(--shadow-float);padding:6px;left:22px;right:22px;}
+.mentionItem{border-radius:10px;}
+.mentionItem.active,.mentionItem:hover{background:var(--brand);color:var(--on-brand);}
+.mentionItem.active .slashDesc,.mentionItem:hover .slashDesc,.mentionItem.active .slashUsage,.mentionItem:hover .slashUsage,.mentionItem.active .mentionUsername,.mentionItem:hover .mentionUsername{color:color-mix(in srgb, var(--on-brand) 70%, transparent);}
+.mentionItem.active .slashName,.mentionItem:hover .slashName{color:var(--on-brand);}
+#dropOverlay{border-radius:var(--r-desk);}
+
+/* ---------- people ---------- */
+#members{width:248px;flex:0 0 248px;background:var(--margin);border-left:1px solid var(--line);padding:14px 10px;}
+.memberGroupTitle{text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;padding:14px 10px 6px;display:flex;justify-content:space-between;align-items:baseline;}
+.memberGroupTitle b{font-weight:600;font-size:12px;color:var(--text-muted);opacity:.8;font-variant-numeric:tabular-nums;}
+#friendsTabs{border-left:none;padding-left:6px;gap:4px;}
+.friendsTab{padding:5px 12px;border-radius:999px;font-size:14px;}
+.friendsTab:hover{background:var(--hover);}
+.friendsTab.active{background:var(--active);}
+.friendsTab.add{background:var(--brand);color:var(--on-brand);}
+.friendsTab.add.active{background:transparent;color:var(--brand);box-shadow:inset 0 0 0 1px var(--brand);}
+input[type=checkbox],input[type=radio],input[type=range]{accent-color:var(--brand);}
+.memberRow{border-radius:10px;padding:6px 10px;}
+.sidePanel{background:var(--margin);border-left:1px solid var(--line);}
+.sidePanelHead{height:64px;flex-basis:64px;box-shadow:none;border-bottom:1px solid var(--line);font-family:var(--font-display);font-size:17px;}
+.resultCard{border-radius:14px;background:var(--desk);border:1px solid var(--line);}
+.resultCard:hover{border-color:var(--line-strong);}
+
+/* ---------- calls ---------- */
+.callPanel{background:var(--bg-tertiary);border-bottom:1px solid var(--line);}
+.callTile{border-radius:16px;}
+.callCtl{border-radius:16px;}
+.incomingCall{border-radius:20px;border:1px solid var(--line-strong);box-shadow:var(--shadow-float);}
+
+/* ---------- controls ---------- */
+.btn{border-radius:10px;font-weight:600;padding:10px 18px;color:var(--on-brand);}
+.btn:hover{background:var(--brand-hover);}
+.btn.grey{color:#fff;}
+.btn.danger{color:#fff;}
+.btn.ghost{color:var(--text);}
+.bigBtn{border-radius:12px;color:var(--on-brand);font-weight:700;font-size:15.5px;padding:13px;}
+.formLabel,.fieldLabel{text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:var(--text);}
+.formInput,.settingsInput{border-radius:10px;background:var(--bg-input);box-shadow:inset 0 0 0 1px var(--line);transition:box-shadow .15s ease;}
+.formInput{padding:11px 12px;}
+.formInput:focus,.settingsInput:focus,#switcherInput:focus{box-shadow:inset 0 0 0 1px var(--brand), 0 0 0 3px var(--lamp-glow);}
+input.switch:checked{background:var(--brand);}
+input.switch:checked::after{background:var(--on-brand);}
+.linkBtn{color:var(--link);font-weight:600;}
+.panelEmpty{color:var(--text-muted);}
+
+/* ---------- floating layers ---------- */
+#overlay{background:rgba(6,9,26,.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);}
+html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
+.modal{border-radius:20px;background:var(--modal);border:1px solid var(--line-strong);box-shadow:var(--shadow-float);}
+.modalHead{text-align:left;padding:24px 26px 8px;}
+.modalHead h2{font-family:var(--font-display);font-size:23px;font-weight:700;letter-spacing:-.02em;color:var(--text-bright);}
+.modalHead p{color:var(--text-muted);}
+.modalBody{padding:10px 26px 24px;}
+.modalFoot{background:transparent;border-top:1px solid var(--line);padding:14px 20px;border-radius:0 0 20px 20px;}
+.wzHead{text-align:center;}
+.popout{border-radius:16px;background:var(--bg-floating);border:1px solid var(--line-strong);box-shadow:var(--shadow-float);overflow:hidden;}
+.popout .popHead{font-family:var(--font-display);font-size:16px;font-weight:700;letter-spacing:-.01em;}
+#contextMenu{border-radius:12px;background:var(--bg-floating);border:1px solid var(--line-strong);box-shadow:var(--shadow-float);padding:6px;}
+.contextItem{border-radius:8px;padding:7px 10px;color:var(--text);}
+.contextItem:hover{background:var(--brand);color:var(--on-brand);}
+.contextHeader{text-transform:none;letter-spacing:0;}
+#emojiPicker{border-radius:16px;background:var(--bg-floating);border:1px solid var(--line-strong);box-shadow:var(--shadow-float);}
+#emojiPicker .pickerTitle{text-transform:none;letter-spacing:0;font-size:13px;}
+.switcherLayer{background:rgba(6,9,26,.6);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);}
+.switcherBox{border-radius:20px;border:1px solid var(--line-strong);box-shadow:var(--shadow-float);}
+#switcherInput{border-radius:12px;font-family:var(--font-display);font-weight:600;box-shadow:inset 0 0 0 1px var(--line);}
+.switcherRow{border-radius:10px;}
+.switcherRow.active{background:var(--brand);color:var(--on-brand);}
+#toast{border-radius:999px;background:var(--text-bright);color:var(--canvas);font-weight:600;box-shadow:var(--shadow-float);}
+.unsavedBar{border-radius:16px;border:1px solid var(--line-strong);box-shadow:var(--shadow-float);}
+.profileCard{border-radius:16px;overflow:hidden;}
+.pcName{font-family:var(--font-display);font-weight:700;letter-spacing:-.015em;}
+.pcLabel{text-transform:none;letter-spacing:0;font-size:12.5px;}
+.roleMenuTitle,.wzLabel{text-transform:none;letter-spacing:0;font-size:13px;}
+#lightbox{background:rgba(6,9,26,.88);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);}
+
+/* ---------- settings: a sheet on the desk ---------- */
+.settingsLayer{background:var(--canvas-glow), var(--canvas);padding:10px;gap:10px;}
+.settingsSidebarRegion{background:transparent;}
+.settingsNav{padding-top:40px;}
+.navHeader{text-transform:none;letter-spacing:0;font-size:13px;font-weight:600;color:var(--text-muted);}
+.navItem{border-radius:10px;font-size:15px;padding:7px 12px;position:relative;}
+.navItem.active{background:var(--desk);color:var(--text-bright);box-shadow:0 0 0 1px var(--line);}
+.navItem.active::before{content:'';position:absolute;left:-6px;top:8px;bottom:8px;width:3px;border-radius:3px;background:var(--brand);}
+.settingsContentRegion{background:var(--desk);border-radius:var(--r-desk);box-shadow:0 0 0 1px var(--line), var(--shadow-float);}
+.settingsContent{padding:44px 44px 120px;}
+.settingsCloseCol{padding-top:44px;}
+.settingsTitle{font-family:var(--font-display);font-size:30px;font-weight:800;letter-spacing:-.03em;}
+.sectionHeading{text-transform:none;letter-spacing:0;font-size:14px;font-weight:700;color:var(--text-bright);}
+.settingsCard{border-radius:14px;background:var(--bg-tertiary);border:1px solid var(--line);}
+.manageRow{border-radius:14px;}
+.themeSwatch{border-radius:16px;}
+.choiceCard{border-radius:14px;}
+
+/* ---------- sign in ---------- */
+#loginScreen{
+  background:var(--canvas-glow), var(--canvas);
+  display:grid;grid-template-columns:minmax(0,1.15fr) minmax(340px,440px);
+  gap:clamp(28px,6vw,96px);align-items:center;align-content:center;
+  padding:clamp(20px,6vw,96px);overflow-y:auto;
+}
+.loginBrand{min-width:0;}
+.brandWord{
+  font-family:var(--font-display);font-weight:800;font-size:clamp(88px,13vw,200px);
+  line-height:.84;letter-spacing:-.055em;color:var(--text-bright);
+  text-shadow:0 0 80px color-mix(in srgb, var(--brand) 35%, transparent);
+}
+.brandSub{font-size:clamp(16px,1.4vw,19px);color:var(--text-muted);max-width:32ch;margin:22px 0 34px;line-height:1.45;}
+.brandScene{display:grid;gap:12px;max-width:440px;}
+.sceneMsg{
+  display:flex;gap:12px;align-items:flex-start;background:var(--desk);border:1px solid var(--line);
+  border-radius:16px;padding:12px 14px;box-shadow:var(--shadow-float);
+}
+.sceneMsg:nth-child(2){margin-left:30px;}
+.sceneMsg:nth-child(3){margin-left:12px;}
+.sceneMsg i{width:34px;height:34px;flex:0 0 34px;border-radius:50%;background:var(--c);display:grid;place-items:center;font-style:normal;font-weight:700;color:#14182e;}
+.sceneMsg b{display:block;font-size:13.5px;color:var(--text-bright);margin-bottom:1px;}
+.sceneMsg span{color:var(--text);font-size:14.5px;}
+.sceneMsg em{margin-left:auto;align-self:flex-end;font-style:normal;font-size:12px;background:var(--raised);border-radius:999px;padding:2px 9px;white-space:nowrap;}
+#loginCard{
+  width:auto;max-width:440px;background:var(--desk);border:1px solid var(--line-strong);
+  border-radius:24px;padding:34px;box-shadow:var(--shadow-float);
+}
+#loginCard h2{font-family:var(--font-display);font-size:30px;font-weight:800;letter-spacing:-.03em;text-align:left;}
+#loginCard .sub{text-align:left;margin-bottom:24px;}
+.loginFooter{text-align:left;line-height:1.5;}
+.rememberRow{margin:2px 0 18px;}
+
+/* ---------- desktop only ---------- */
+@media (min-width:901px){
+  #mobileNav,#navScrim{display:none;}
+}
+@media (max-width:1100px) and (min-width:901px){
+  #members{width:220px;flex-basis:220px;}
+  #sidebar{width:236px;flex-basis:236px;}
+  .headerSearch input{width:130px;}
+}
+
+/* ---------- phones ---------- */
+@media (max-width:900px){
+  #app.ready{padding:0;gap:0;}
+  #desk{border-radius:0;box-shadow:none;}
+  #app.ready #serverRail{animation:none;}
+  /* the drawer: dock + channel list, with the bottom bar under them */
+  #serverRail{
+    position:fixed;left:0;top:0;bottom:0;z-index:41;border-radius:0;box-shadow:none;
+    padding-bottom:calc(76px + env(safe-area-inset-bottom));
+    transform:translateX(-110%);transition:transform .26s var(--ease-out);
+  }
+  #app.navOpen #serverRail{transform:none;}
+  #sidebar{
+    position:fixed;left:68px;top:0;bottom:0;z-index:41;width:min(300px, calc(100vw - 108px));flex-basis:auto;
+    border-right:1px solid var(--line);box-shadow:var(--shadow-float);
+    padding-bottom:calc(66px + env(safe-area-inset-bottom));
+    transform:translateX(calc(-100% - 90px));transition:transform .26s var(--ease-out);
+  }
+  #sidebar.open{transform:none;}
+  #navScrim{position:fixed;inset:0;z-index:40;background:rgba(4,7,22,.55);opacity:0;pointer-events:none;transition:opacity .22s ease;}
+  html[data-theme="light"] #navScrim{background:rgba(30,36,70,.3);}
+  #app.navOpen #navScrim{opacity:1;pointer-events:auto;}
+  #mobileNav{
+    display:flex;position:fixed;left:0;right:0;bottom:0;z-index:42;gap:4px;
+    background:var(--rail);border-top:1px solid var(--line);
+    padding:6px 8px calc(6px + env(safe-area-inset-bottom));
+    transform:translateY(110%);transition:transform .26s var(--ease-out);
+  }
+  #app.navOpen #mobileNav{transform:none;}
+  #mobileNav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:12px;color:var(--text-muted);font-size:11.5px;font-weight:600;}
+  #mobileNav button:active{background:var(--hover);color:var(--text-bright);}
+  #chatHeader{height:58px;flex-basis:58px;padding:0 8px 0 6px;gap:6px;}
+  #mobileToggle{width:40px;height:40px;border-radius:12px;color:var(--text);}
+  #roomTitle{font-size:18px;}
+  #roomTopic{font-size:12px;max-width:none;}
+  .headerTools{background:none;box-shadow:none;padding:0;}
+  .headerTitle{flex:1 1 auto;}
+  #chatHeader{position:relative;}
+  .headerSearch{position:static;}
+  .headerSearch input{width:38px;padding:0 0 0 36px;color:transparent;}
+  .headerSearch input::placeholder{color:transparent;}
+  .headerSearch .searchIcon{right:22px;}
+  .headerSearch input:focus,.headerSearch input.hasValue{
+    position:absolute;left:8px;right:8px;top:11px;width:auto;z-index:6;padding:0 34px 0 12px;color:var(--text);background:var(--bg-floating);
+  }
+  .headerSearch input:focus::placeholder,.headerSearch input.hasValue::placeholder{color:var(--text-muted);}
+  .headerSearch input:focus ~ .searchIcon,.headerSearch input.hasValue ~ .searchIcon{display:none;}
+  .headerSearch input.hasValue ~ .searchClear{position:absolute;right:16px;top:20px;z-index:7;}
+  .headerBtn{width:36px;height:36px;}
+  .message{padding-left:14px;padding-right:14px;gap:12px;}
+  .msgActions{right:10px;}
+  #composerArea{padding:0 10px calc(10px + env(safe-area-inset-bottom));}
+  .mentionAutocomplete{left:10px;right:10px;}
+  /* popouts (mentions, pins, threads, profiles) become bottom sheets */
+  .popout{
+    left:8px !important;right:8px !important;top:auto !important;
+    bottom:calc(8px + env(safe-area-inset-bottom)) !important;
+    width:auto !important;max-width:none !important;max-height:75vh;overflow-y:auto;border-radius:20px;
+  }
+  .settingsLayer{padding:0;gap:0;}
+  .settingsContentRegion{border-radius:0;box-shadow:none;}
+  .settingsContent{padding:20px 16px 120px;}
+  .settingsCloseCol{padding:0;}
+  .settingsSidebarRegion{margin-right:58px;} /* the tabs scroll under nothing: the close button sits beside them */
+  #loginScreen{grid-template-columns:1fr;gap:28px;align-content:start;padding:28px 18px;}
+  .brandWord{font-size:84px;}
+  .brandSub{margin:12px 0 0;}
+  .brandScene{display:none;}
+  #loginCard{max-width:none;padding:24px;}
+}
 </style>
 </head>
 
 <body>
 
 <div id="loginScreen">
+  <section class="loginBrand" aria-hidden="true">
+    <div class="brandWord">Chat</div>
+    <p class="brandSub">Servers, DMs and calls with your friends &mdash; on your laptop and your phone.</p>
+    <div class="brandScene">
+      <div class="sceneMsg"><i style="--c:#f472b6">M</i><div><b>Maya</b><span>Revision session tonight at 8 in the study room</span></div></div>
+      <div class="sceneMsg"><i style="--c:#a78bfa">T</i><div><b>Theo</b><span>is it just organic or the whole unit?</span></div></div>
+      <div class="sceneMsg"><i style="--c:#2dd4bf">P</i><div><b>Priya</b><span>Whole unit. I made flashcards, sharing them now</span></div><em>&#128293; 3</em></div>
+    </div>
+  </section>
   <div id="loginCard">
-    <h2>Welcome back!</h2>
-    <div class="sub">We're so excited to see you again</div>
+    <h2>Welcome back</h2>
+    <div class="sub">Log in with your username and password.</div>
     <label class="formLabel" for="username">Username</label>
     <input class="formInput" id="username" placeholder="Username" autocomplete="username">
     <label class="formLabel" for="password">Password</label>
     <input class="formInput" id="password" type="password" placeholder="Password" autocomplete="current-password">
     <label class="rememberRow"><input type="checkbox" id="rememberMe" checked> Keep me signed in on this device</label>
-    <button class="bigBtn" onclick="login()">Log In</button>
+    <button class="bigBtn" onclick="login()">Log in</button>
     <div id="status"></div>
-    <div class="loginFooter">Need an account? <button class="linkBtn" onclick="registerUser()">Register</button></div>
+    <div class="loginFooter">New here? <button class="linkBtn" onclick="registerUser()">Create an account</button> with the username and password above.</div>
   </div>
 </div>
 
@@ -1283,15 +1757,7 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus
       <div class="railIcon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M15.3 8.7l-2 5-5 2 2-5 5-2z" fill="currentColor"/></svg></div>
       <div class="railTip">Join a Server</div>
     </div>
-  </div>
-
-  <div id="sidebar">
-    <div id="sidebarHeader" onclick="openServerMenuFromHeader(event)">
-      <span id="sidebarTitle">general</span>
-      <span id="sidebarChev">⌄</span>
-    </div>
-    <div id="sidebarBody"></div>
-    <div id="voiceBar" class="voiceBar" aria-label="Voice connection"></div>
+    <div class="railSpring"></div>
     <div id="userPanel">
       <div id="userPanelInfo" onclick="openProfilePopout(event, username)" title="View your profile">
         <div id="userPanelAvatar"></div>
@@ -1311,20 +1777,33 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus
     </div>
   </div>
 
+  <div id="desk">
+  <div id="sidebar">
+    <div id="sidebarHeader" onclick="openServerMenuFromHeader(event)">
+      <span id="sidebarTitle">general</span>
+      <span id="sidebarChev">⌄</span>
+    </div>
+    <div id="sidebarBody"></div>
+    <div id="voiceBar" class="voiceBar" aria-label="Voice connection"></div>
+  </div>
+
   <div id="chat">
     <div id="chatHeader">
-      <button class="headerBtn" id="mobileToggle" onclick="toggleSidebar()">☰</button>
-      <span class="hash" id="headerIcon">#</span>
-      <div id="roomTitle">general</div>
-      <div id="roomTopic"></div>
+      <button class="headerBtn" id="mobileToggle" onclick="toggleSidebar()" aria-label="Open servers and channels"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h16"/></svg></button>
+      <div class="headerTitle">
+        <div class="headerTitleLine"><span class="hash" id="headerIcon">#</span><div id="roomTitle">general</div></div>
+        <div id="roomTopic"></div>
+      </div>
       <div id="friendsTabs" role="tablist" aria-label="Friends"></div>
       <div class="headerSpacer"></div>
+      <div class="headerTools">
       <button class="headerBtn" id="callBtn" title="Start a voice call" aria-label="Start a voice call" onclick="startCallHere(false)" style="display:none"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6.6 3.3l2.7 2.7c.5.5.6 1.2.2 1.8l-1.3 1.9a12.6 12.6 0 0 0 6.1 6.1l1.9-1.3c.6-.4 1.3-.3 1.8.2l2.7 2.7c.6.6.6 1.5 0 2.1l-1.2 1.2c-1 1-2.6 1.4-4 .9A18.5 18.5 0 0 1 3.4 9.4c-.5-1.4-.1-3 .9-4l1.2-1.2c.6-.6 1.5-.6 2.1 0z"/></svg></button>
       <button class="headerBtn" id="videoCallBtn" title="Start a video call" aria-label="Start a video call" onclick="startCallHere(true)" style="display:none"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 6h10a2 2 0 0 1 2 2v1.5l4.4-2.6a1 1 0 0 1 1.6.8v8.6a1 1 0 0 1-1.6.8L16 14.5V16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/></svg></button>
       <button class="headerBtn" id="threadsBtn" title="Threads" aria-label="Threads in this channel" onclick="toggleThreadsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5h14v9H11l-4 3v-3H5z"/><path d="M9 9h6"/></svg></button>
       <button class="headerBtn" id="inboxBtn" title="Mentions" aria-label="Mentions inbox" onclick="toggleInbox(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M5.5 5h13L21 13v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5z"/></svg><span class="inboxDot"></span></button>
       <button class="headerBtn" id="pinsBtn" title="Pinned Messages" aria-label="Pinned Messages" onclick="togglePinsPopout(event)"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15.6 2.3a1 1 0 0 1 1.4 0l4.7 4.7a1 1 0 0 1 0 1.4l-.6.6a1.5 1.5 0 0 1-1.6.3l-3.6 3.6.3 3.3a1.5 1.5 0 0 1-.4 1.2l-1 1a1 1 0 0 1-1.4 0l-3.3-3.3-4.6 4.6a1 1 0 1 1-1.4-1.4l4.6-4.6-3.3-3.3a1 1 0 0 1 0-1.4l1-1a1.5 1.5 0 0 1 1.2-.4l3.3.3 3.6-3.6a1.5 1.5 0 0 1 .3-1.6l.6-.6z"/></svg></button>
       <button class="headerBtn" id="membersBtn" title="Show Member List" aria-label="Show Member List" onclick="toggleMembers()"><svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><circle cx="9" cy="8" r="3.6"/><path d="M2.5 19.5c0-3.4 2.9-6 6.5-6s6.5 2.6 6.5 6a.8.8 0 0 1-.8.8H3.3a.8.8 0 0 1-.8-.8z"/><circle cx="16.8" cy="9" r="2.8" opacity=".75"/><path d="M16.5 13.6c3 0 5.2 2 5.2 4.9a.7.7 0 0 1-.7.7h-3.9c0-2.2-.9-4.1-2.5-5.4.6-.1 1.2-.2 1.9-.2z" opacity=".75"/></svg></button>
+      </div>
       <div class="headerSearch">
         <input id="searchInput" placeholder="Search" aria-label="Search messages in this conversation" autocomplete="off">
         <span class="searchIcon">⌕</span>
@@ -1349,7 +1828,8 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus
         <div id="composer">
           <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
-          <button id="emojiBtn" title="Emoji" onclick="openEmojiPicker(event,'composer')">😀</button>
+          <button id="emojiBtn" title="Emoji" aria-label="Emoji" onclick="openEmojiPicker(event,'composer')"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.8 1.2 2 1.9 3.4 1.9s2.6-.7 3.4-1.9"/><circle cx="9.2" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="14.8" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></button>
+          <button id="sendBtn" title="Send (Enter)" aria-label="Send message" onclick="sendMessage()"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.1 6.5L15 12 3.5 13.9z"/></svg></button>
         </div>
       </div>
       <input type="file" id="fileInput" multiple>
@@ -1370,6 +1850,14 @@ button:focus-visible,a:focus-visible,[tabindex]:focus-visible,.contextItem:focus
     </div>
     <div class="sidePanelBody" id="searchResults"></div>
   </div>
+  </div>
+  <div id="navScrim" onclick="closeNav()"></div>
+  <nav id="mobileNav" aria-label="Main">
+    <button onclick="openHome(); openNav()"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9a1.5 1.5 0 0 1-1.5 1.5H10l-4 3.5V16h-.5A1.5 1.5 0 0 1 4 14.5z"/></svg><span>Messages</span></button>
+    <button onclick="toggleInbox(event)"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M4 13h4l1.5 3h5L16 13h4"/><path d="M5.5 5h13L21 13v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5z"/></svg><span>Mentions</span></button>
+    <button onclick="closeNav(); openSwitcher()"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg><span>Find</span></button>
+    <button onclick="closeNav(); openSettings()"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c.8-3.6 3.8-5.6 7.5-5.6s6.7 2 7.5 5.6"/></svg><span>You</span></button>
+  </nav>
 </div>
 
 <div id="pinsPopout" class="popout" role="dialog" aria-label="Pinned messages">
@@ -1507,12 +1995,13 @@ const alertFavicon = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="htt
 // in localStorage rather than the account: a phone and a laptop can use
 // different font sizes without fighting each other.
 const THEMES = [
-  { key:'dark', label:'Dark', swatch:'#313338' },
-  { key:'ash', label:'Ash', swatch:'#202024' },
+  { key:'dark', label:'After hours', swatch:'#1b2140' },
+  { key:'ash', label:'Graphite', swatch:'#1d1d22' },
   { key:'midnight', label:'Midnight', swatch:'#000000' },
-  { key:'light', label:'Light', swatch:'#ffffff' }
+  { key:'light', label:'Daylight', swatch:'#f4f5fa' }
 ];
 const ACCENTS = [
+  { key:'lamp', label:'Lamp', color:'#ffb648' },
   { key:'blurple', label:'Blurple', color:'#5865f2' },
   { key:'green', label:'Green', color:'#23a55a' },
   { key:'teal', label:'Teal', color:'#1a9e8f' },
@@ -1522,7 +2011,7 @@ const ACCENTS = [
   { key:'purple', label:'Purple', color:'#9b59b6' },
   { key:'slate', label:'Slate', color:'#5d6b82' }
 ];
-const DEFAULT_APPEARANCE = { theme:'dark', accent:'#5865f2', compact:false, fontSize:16, groupGap:17,
+const DEFAULT_APPEARANCE = { theme:'dark', accent:'#ffb648', compact:false, fontSize:16, groupGap:17,
   reduceMotion: !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches), // follows the device until changed here
   underlineLinks:false, clock24:false,
   avatarShape:'circle', wallpaper:'none', wallpaperDim:0.78, linkPreviews:true, showTyping:true };
@@ -1539,11 +2028,19 @@ let wallpaperImage = '';
 try{ wallpaperImage = localStorage.getItem('wallpaperImage') || ''; }catch(e){}
 let appearance = Object.assign({}, DEFAULT_APPEARANCE);
 try{ appearance = Object.assign({}, DEFAULT_APPEARANCE, JSON.parse(localStorage.getItem('appearance') || '{}')); }catch(e){}
+// the redesign's default accent replaces the old default (blurple) once
+if(!appearance.v2){ if(appearance.accent === '#5865f2') appearance.accent = DEFAULT_APPEARANCE.accent; appearance.v2 = true; }
 
 function shadeHex(hex, amount){
   const n = parseInt(String(hex).slice(1), 16);
   const ch = shift => Math.max(0, Math.min(255, Math.round(((n >> shift) & 255) * (1 + amount))));
   return '#' + [16, 8, 0].map(s => ch(s).toString(16).padStart(2, '0')).join('');
+}
+// Dark text on light accents (like the default amber), white on dark ones.
+function textOnColour(hex){
+  const n = parseInt(String(hex).replace('#', ''), 16) || 0;
+  const lum = (0.299 * ((n >> 16) & 255) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
+  return lum > 0.6 ? '#1f1500' : '#ffffff';
 }
 function applyAppearance(){
   const root = document.documentElement;
@@ -1555,6 +2052,7 @@ function applyAppearance(){
   const accent = /^#[0-9a-f]{6}$/i.test(appearance.accent) ? appearance.accent : DEFAULT_APPEARANCE.accent;
   root.style.setProperty('--brand', accent);
   root.style.setProperty('--brand-hover', shadeHex(accent, -0.18));
+  root.style.setProperty('--on-brand', textOnColour(accent));
   root.style.setProperty('--chat-font', Math.max(12, Math.min(24, Number(appearance.fontSize) || 16)) + 'px');
   root.style.setProperty('--group-gap', Math.max(0, Math.min(24, Number(appearance.groupGap))) + 'px');
   root.classList.toggle('avatar-rounded', appearance.avatarShape === 'rounded');
@@ -2216,6 +2714,16 @@ function renderRail(){
   $('homeRail').classList.toggle('active', view === 'dm');
 }
 
+// Dock tooltips are position:fixed so the dock's scrolling can't clip them.
+document.addEventListener('mouseover', e => {
+  const wrap = e.target && e.target.closest ? e.target.closest('.railWrap') : null;
+  const tip = wrap && wrap.querySelector('.railTip');
+  if(!tip) return;
+  const r = wrap.getBoundingClientRect();
+  tip.style.left = (r.right + 14) + 'px';
+  tip.style.top = (r.top + r.height / 2) + 'px';
+});
+
 function serverInitials(name){
   return String(name || '?').trim().split(/\s+/).map(w => w.charAt(0).toUpperCase()).join('').slice(0,2) || '?';
 }
@@ -2499,7 +3007,10 @@ function renderUserPanel(){
   $('userPanelTag').title = myProfile.customStatus || '';
 }
 
-function toggleSidebar(){ $('sidebar').classList.toggle('open'); }
+// Phones: the dock + channel list slide in together as one drawer.
+function toggleSidebar(){ if($('sidebar').classList.contains('open')) closeNav(); else openNav(); }
+function openNav(){ $('sidebar').classList.add('open'); $('app').classList.add('navOpen'); }
+function closeNav(){ $('sidebar').classList.remove('open'); $('app').classList.remove('navOpen'); }
 function toggleMembers(){
   membersVisible = !membersVisible;
   $('members').classList.toggle('hidden', !membersVisible);
@@ -2521,7 +3032,7 @@ function openChannel(room, silent){
   if(found && channelIconHtml(found.channel) !== '#') $('headerIcon').innerHTML = channelIconHtml(found.channel).replace('width="18" height="18"', 'width="22" height="22"');
   setComposerPlaceholder(found ? channelPlaceholder(found) : 'Message #' + name);
   enterRoom(room);
-  if(!silent) $('sidebar').classList.remove('open');
+  if(!silent) closeNav();
 }
 
 function openGroup(room){
@@ -2534,7 +3045,7 @@ function openGroup(room){
   setHeader('@', group ? group.name : 'Group', 'Group chat');
   setComposerPlaceholder('Message ' + (group ? group.name : 'group'));
   enterRoom(room);
-  $('sidebar').classList.remove('open');
+  closeNav();
 }
 
 function openDM(user){
@@ -2546,7 +3057,7 @@ function openDM(user){
   setHeader('@', displayNameFor(user), '');
   setComposerPlaceholder('Message @' + displayNameFor(user));
   enterRoom(currentRoom);
-  $('sidebar').classList.remove('open');
+  closeNav();
 }
 
 function setHeader(icon, title, topic){
@@ -3847,7 +4358,10 @@ function paintMemberGroups(holder, online, offline, owner, serverId){
     if(!list.length) return;
     const title = document.createElement('div');
     title.className = 'memberGroupTitle';
-    title.textContent = label + ' — ' + list.length;
+    title.innerHTML = '<span></span><b></b>';
+    title.querySelector('span').textContent = label;
+    title.querySelector('b').textContent = list.length;
+    title.setAttribute('aria-label', label + ', ' + list.length);
     holder.appendChild(title);
     list.forEach(m => holder.appendChild(memberRow(m, owner, isOffline)));
   };
@@ -4667,7 +5181,7 @@ function buildMutualSection(user){
   if(!mutual) return holder;
   const addGroup = (label, items, build) => {
     if(!items.length) return;
-    holder.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:label + ' — ' + items.length }));
+    holder.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:label + ' (' + items.length + ')' }));
     const list = document.createElement('div');
     list.className = 'pcMutualList';
     items.slice(0, 8).forEach(item => list.appendChild(build(item)));
@@ -5056,7 +5570,7 @@ function openFriends(){
   renderMembers();
   renderFriendsView();
   renderCallUI();
-  $('sidebar').classList.remove('open');
+  closeNav();
 }
 function closeFriends(){
   if(!friendsOpen) return;
@@ -5132,7 +5646,7 @@ function renderFriendsView(){
       const label = { online:'Online', all:'All friends', pending:'Pending', blocked:'Blocked' }[friendsTab];
       const count = document.createElement('div');
       count.className = 'friendsCount';
-      count.textContent = label + ' — ' + rows.length;
+      count.textContent = label + ' (' + rows.length + ')';
       scroll.appendChild(count);
       rows.forEach(r => scroll.appendChild(friendListRow(r)));
     }
@@ -5680,7 +6194,7 @@ async function openThread(id){
   paintThreadHeader(thread, parent);
   setComposerPlaceholder('Message ' + shortName(thread.name));
   enterRoom(thread.room);
-  $('sidebar').classList.remove('open');
+  closeNav();
 }
 function paintThreadHeader(thread, parent){
   setHeader('#', thread.name, '');
@@ -7989,7 +8503,7 @@ function renderServerChannels(c, sid){
     const box = document.createElement('div');
     box.className = 'formSection';
     box.innerHTML = '<div class="sectionHeading"></div>';
-    box.querySelector('.sectionHeading').textContent = (group.id ? group.name : (cats.length ? 'No category' : 'Text Channels')) + ' — ' + group.list.length;
+    box.querySelector('.sectionHeading').textContent = (group.id ? group.name : (cats.length ? 'No category' : 'Text Channels')) + ' (' + group.list.length + ')';
     if(!group.list.length) box.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'No channels in this category yet.' }));
     holder.appendChild(box);
     group.list.forEach((channel, index) => {
@@ -8139,7 +8653,7 @@ function renderServerRoles(c, sid){
     'and can unlock private channels. Admin powers still come only from Owner and Admin (under Members). ' +
     'Members can also pick roles themselves through reaction roles (hover a message → the tag button).</div>' +
     (server.canManage ? '<div class="rowFlex" style="margin-bottom:20px"><button class="btn" id="newRoleBtn">Create Role</button><span class="inlineMsg" id="newRoleMsg" style="margin:0"></span></div>' : '') +
-    section('Roles — ' + roles.length, '<div id="roleList"></div>');
+    section('Roles (' + roles.length + ')', '<div id="roleList"></div>');
   const list = $('roleList');
   if(!roles.length) list.innerHTML = '<div class="panelEmpty">No roles yet.' + (server.canManage ? ' Create one to give members a coloured name.' : '') + '</div>';
   roles.forEach((role, index) => {

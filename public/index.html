@@ -1389,6 +1389,7 @@ html[data-theme="light"] #desk::after{mix-blend-mode:multiply;background:radial-
 }
 .sectionTitle button{width:24px;height:24px;border-radius:7px;font-size:17px;display:flex;align-items:center;justify-content:center;}
 .sectionTitle button:hover{background:var(--hover);}
+.sectionTitle.headless{height:6px;padding:0;overflow:hidden;visibility:hidden;}
 .channel{padding:7px 10px;border-radius:10px;gap:9px;margin-bottom:1px;font-size:15px;}
 .channel .hash{font-size:18px;width:18px;display:flex;justify-content:center;}
 .channel.active{background:var(--active);color:var(--text-bright);}
@@ -2893,8 +2894,10 @@ function renderSidebar(){
     if(group.id && !group.list.length && !server.canManage) return; // nothing you can see in it
     if(!group.id && !group.list.length && (server.categories || []).length) return;
     const collapsed = group.id && collapsedCategories.has(group.id);
+    // channels outside any category sit at the top with no heading (like Discord)
+    const headless = !group.id && (server.categories || []).length > 0;
     const title = document.createElement('div');
-    title.className = 'sectionTitle' + (group.id ? ' categoryTitle' : '') + (collapsed ? ' collapsed' : '');
+    title.className = 'sectionTitle' + (group.id ? ' categoryTitle' : '') + (collapsed ? ' collapsed' : '') + (headless ? ' headless' : '');
     title.innerHTML = '<span></span>';
     title.querySelector('span').textContent = group.name;
     if(group.id){

@@ -93,8 +93,11 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(PUBLIC_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-if (!process.env.DATABASE_URL) {
-  console.error('DATABASE_URL is not set. This app needs a Postgres database - see the deployment notes.');
+// The database: DATABASE_URL, or the standard PGHOST / PGUSER / PGPASSWORD /
+// PGDATABASE / PGPORT settings (handy in a compose file, where a password
+// then only has to be written once).
+if (!process.env.DATABASE_URL && !process.env.PGHOST) {
+  console.error('DATABASE_URL (or PGHOST and friends) is not set. This app needs a Postgres database - see the deployment notes.');
   process.exit(1);
 }
 
@@ -104,10 +107,10 @@ if (!process.env.DATABASE_URL) {
 // you're talking to). Asking for verify-full explicitly keeps today's
 // behaviour after that upgrade, and silences the warning. An sslmode in the
 // URL overrides the `ssl` option below.
-const DATABASE_URL = process.env.DATABASE_URL.replace(/([?&]sslmode=)(?:prefer|require|verify-ca)(?=&|$)/, '$1verify-full');
+const DATABASE_URL = (process.env.DATABASE_URL || '').replace(/([?&]sslmode=)(?:prefer|require|verify-ca)(?=&|$)/, '$1verify-full');
 
 const pool = new Pool({
-  connectionString: DATABASE_URL,
+  connectionString: DATABASE_URL || undefined, // undefined: pg reads PGHOST, PGUSER, PGPASSWORD...
   // For URLs without an sslmode: Render's managed Postgres requires SSL;
   // local/self-hosted Postgres usually doesn't offer it. This accepts
   // either without extra config.

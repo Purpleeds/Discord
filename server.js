@@ -34,7 +34,10 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024; // 10GB
 // they must stay small - 1.5MB of raw image data (before it grows ~33%
 // larger as base64 text) keeps each row a sane size.
 const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
-const FILE_EXPIRY_HOURS = 6;
+// How long files over KEEP_FILE_MB live. Render's disk is wiped on every
+// restart anyway, so 6 hours there; on a server with a real disk (a NAS)
+// set FILE_EXPIRY_HOURS much higher.
+const FILE_EXPIRY_HOURS = Math.max(1, Number(process.env.FILE_EXPIRY_HOURS) || 6);
 // Attachments up to KEEP_FILE_MB are kept: they are stored in Postgres
 // (file_blobs), so pictures and small files in a chat survive restarts and
 // stay put. All kept files together may use MEDIA_BUDGET_MB; when that
@@ -131,6 +134,19 @@ async function one(text, params) {
   return rows[0] || null;
 }
 
+// MOVED_TO=https://new.address - for an old copy of the app (e.g. on Render)
+// after the chat has moved: every page visit is sent to the same path on the
+// new address, and the old copy takes no more messages, so nobody keeps
+// chatting into a database that's no longer used.
+const MOVED_TO = (process.env.MOVED_TO || '').replace(/\/+$/, '');
+if (MOVED_TO) {
+  app.use((req, res, next) => {
+    if (req.path === '/healthz') return next();
+    if (req.method === 'GET' || req.method === 'HEAD') return res.redirect(302, MOVED_TO + req.originalUrl);
+    res.status(410).json({ error: `This chat has moved to ${MOVED_TO}`, movedTo: MOVED_TO });
+  });
+  io.use((socket, next) => next(new Error(`This chat has moved to ${MOVED_TO}`)));
+}
 app.set('trust proxy', 1); // Render sits in front of us - lets req.ip be the real visitor (used for rate limits)
 app.use(compression()); // gzip responses: index.html and JSON shrink ~70-80%
 app.use(express.json({ limit: '5mb' })); // room for a 1.5MB server icon AND banner (as base64) in one save
@@ -3651,7 +3667,7 @@ app.post('/polls', requireAuth, route(async (req, res) => {
     sendToUser(toUser, 'dmMessage', msg);
   } else {
     io.to(room).emit('message', msg);
-    touchThread(room).catch(err => console.error('touchThread failed:', err.message));
+    await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
   }
   res.status(201).json(msg);
 }));
@@ -4895,7 +4911,7 @@ app.post('/upload', requireAuth, route(async (req, res) => {
       sendToUser(toUser, 'dmFile', fileMsg);
     } else {
       io.to(finalRoom).emit('file', fileMsg);
-      touchThread(finalRoom).catch(err => console.error('touchThread failed:', err.message));
+      await touchThread(finalRoom).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
     }
 
     res.status(201).json(fileMsg);
@@ -5117,7 +5133,7 @@ io.on('connection', (socket) => {
     const created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
-    touchThread(room).catch(err => console.error('touchThread failed:', err.message));
+    await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
     pushMentions(room, text, socket.username, mentions).catch(err => console.error('pushMentions failed:', err.message));
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });
   });
@@ -5175,7 +5191,7 @@ io.on('connection', (socket) => {
       sendToUser(toUser, 'dmMessage', msg);
     } else {
       io.to(room).emit('message', msg);
-      touchThread(room).catch(err => console.error('touchThread failed:', err.message));
+      await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
     }
     reply({ message: 'ok', id: msg.id });
   });
@@ -5218,7 +5234,7 @@ io.on('connection', (socket) => {
     );
     const msg = await normaliseMessage(created);
     io.to(it.room).emit('message', msg);
-    touchThread(it.room).catch(err => console.error('touchThread failed:', err.message));
+    await touchThread(it.room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
     reply({ message: 'ok', id: msg.id });
   });
 

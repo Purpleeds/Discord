@@ -35,6 +35,16 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024; // 10GB
 // larger as base64 text) keeps each row a sane size.
 const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
 const FILE_EXPIRY_HOURS = 6;
+// Attachments up to KEEP_FILE_MB are kept: they are stored in Postgres
+// (file_blobs), so pictures and small files in a chat survive restarts and
+// stay put. All kept files together may use MEDIA_BUDGET_MB; when that
+// fills up, the oldest are removed to make room (size it to your database
+// plan - Neon's free tier is 0.5 GB for everything). Anything bigger than
+// KEEP_FILE_MB is still a temporary share on local disk, gone after
+// FILE_EXPIRY_HOURS or a restart, and the app says so on the file.
+const KEEP_FILE_BYTES = Math.max(0, Number(process.env.KEEP_FILE_MB || 8)) * 1024 * 1024;
+const MEDIA_BUDGET_BYTES = Math.max(1, Number(process.env.MEDIA_BUDGET_MB || 250)) * 1024 * 1024;
+const HISTORY_PAGE = 75; // messages per page of /history
 const DEFAULT_CHANNELS = ['general', 'gaming', 'coding'];
 const DEFAULT_SERVER_NAME = 'general';
 
@@ -624,6 +634,29 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS unread_base_at TIMESTAMPTZ`);
   await pool.query(`UPDATE users SET unread_base_id = (SELECT COALESCE(MAX(id), 0) FROM messages), unread_base_at = NOW() WHERE unread_base_id IS NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_read_receipts_user ON read_receipts (username)`);
+  // ---- v3: attachments that last ----
+  // files.storage: 'disk' (temporary, expires_at set) or 'db' (kept; bytes
+  // in file_blobs, served by /media/<key>/<name>). Rows from before this
+  // existed are all 'disk' and keep their original 6-hour life.
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS storage TEXT DEFAULT 'disk'`);
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
+  await pool.query(`UPDATE files SET expires_at = created_at + INTERVAL '${FILE_EXPIRY_HOURS} hours' WHERE COALESCE(storage, 'disk') = 'disk' AND expires_at IS NULL`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS file_blobs (
+      file_id INTEGER PRIMARY KEY,
+      key TEXT NOT NULL UNIQUE,
+      data BYTEA NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_file_blobs_created ON file_blobs (created_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_files_room_created ON files (room, created_at)`);
+  // Search uses ILIKE '%words%', which without this index reads every
+  // message ever sent. pg_trgm ships with Postgres (and Neon); if a host
+  // doesn't allow it, search still works, just slower.
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
+    .then(() => pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_text_trgm ON messages USING gin (text gin_trgm_ops)`))
+    .catch(err => console.warn('Search index not created (pg_trgm unavailable?):', err.message));
   // Two accounts whose names differ only by capitals ("Purple" / "purple")
   // are an impersonation tool. New names are checked in usernameTaken(); the
   // index backs that up, but can't be built if such a pair already exists.
@@ -850,13 +883,13 @@ async function getMessageById(id) {
 // "ORDER BY id ASC LIMIT 300", which is the OLDEST 300 - so once a channel
 // passed 300 messages, reloading it showed ancient history and every newer
 // message vanished until it scrolled in live again.
-async function getMessagesForRoom(room) {
+async function getMessagesForRoom(room, limit = 300) {
   return q(
     `SELECT * FROM (
        SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, created_at
-       FROM messages WHERE room = $1 ORDER BY id DESC LIMIT 300
+       FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2
      ) recent ORDER BY id ASC`,
-    [room]
+    [room, limit]
   );
 }
 async function getMessagesBefore(room, beforeId, limit) {
@@ -904,13 +937,26 @@ async function insertFile(room, user, toUser, isGroup, fileName, fileType, fileU
 async function getFileById(id) {
   return one(`SELECT * FROM files WHERE id = $1`, [id]);
 }
+const FILE_COLUMNS = `id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, created_at`;
 async function getFilesForRoom(room) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, created_at
+       SELECT ${FILE_COLUMNS}
        FROM files WHERE room = $1 ORDER BY id DESC LIMIT 120
      ) recent ORDER BY id ASC`,
     [room]
+  );
+}
+// Files sent between two moments (either end may be null = open), newest
+// 200, oldest first - the files that belong beside one page of messages.
+async function getFilesBetween(room, from, until) {
+  return q(
+    `SELECT * FROM (
+       SELECT ${FILE_COLUMNS} FROM files
+       WHERE room = $1 AND ($2::timestamptz IS NULL OR created_at >= $2) AND ($3::timestamptz IS NULL OR created_at < $3)
+       ORDER BY id DESC LIMIT 200
+     ) page ORDER BY id ASC`,
+    [room, from, until]
   );
 }
 
@@ -1724,6 +1770,8 @@ async function normaliseFiles(rows) {
       fileUrl: row.file_url,
       fileSize: Number(row.file_size || 0),
       caption: row.caption || '',
+      kept: row.storage === 'db',
+      expiresAt: row.storage === 'db' ? null : (row.expires_at || null),
       createdAt: row.created_at
     };
   });
@@ -1739,22 +1787,85 @@ function emitRoomOrDM(room, toUser, event, payload) {
   }
 }
 
-async function removeOldFiles() {
-  const oldFiles = await q(
-    `SELECT id, file_url FROM files WHERE created_at <= NOW() - INTERVAL '${FILE_EXPIRY_HOURS} hours'`
-  );
-
-  for (const file of oldFiles) {
-    if (!file.file_url) continue;
-    if (!file.file_url.startsWith('/uploads/')) continue;
-    const rel = file.file_url.replace(/^\/uploads\//, '');
-    const filePath = path.join(UPLOAD_DIR, rel);
-    if (filePath.startsWith(UPLOAD_DIR)) {
-      try { fs.unlinkSync(filePath); } catch (_) {}
+function diskPathForUpload(fileUrl) {
+  if (!fileUrl || !fileUrl.startsWith('/uploads/')) return null;
+  const filePath = path.join(UPLOAD_DIR, fileUrl.replace(/^\/uploads\//, ''));
+  return filePath.startsWith(UPLOAD_DIR + path.sep) ? filePath : null;
+}
+// Temporary (on-disk) files past their time, plus - with `missingToo` - ones
+// whose file is simply gone (the disk doesn't survive a restart on hosts
+// like Render's free tier), so chats don't keep broken attachments.
+async function removeOldFiles(missingToo) {
+  const rows = await q(`SELECT id, room, to_user, file_url, (expires_at <= NOW()) AS expired FROM files WHERE COALESCE(storage, 'disk') = 'disk'`);
+  const gone = [];
+  for (const file of rows) {
+    const filePath = diskPathForUpload(file.file_url);
+    if (file.expired) {
+      if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
+      gone.push(file);
+    } else if (missingToo && (!filePath || !fs.existsSync(filePath))) {
+      gone.push(file);
     }
   }
+  if (!gone.length) return;
+  await pool.query(`DELETE FROM files WHERE id = ANY($1)`, [gone.map(f => f.id)]);
+  for (const file of gone) emitRoomOrDM(file.room, file.to_user, 'fileDeleted', { id: file.id, room: file.room });
+}
 
-  await pool.query(`DELETE FROM files WHERE created_at <= NOW() - INTERVAL '${FILE_EXPIRY_HOURS} hours'`);
+// ---- kept files (file_blobs) ----
+const blobCache = new Map(); // key -> { buffer, name, type } (small LRU, saves a database read per view)
+const BLOB_CACHE_BYTES = 48 * 1024 * 1024;
+let blobCacheSize = 0;
+function cacheBlob(key, entry) {
+  if (entry.buffer.length > BLOB_CACHE_BYTES / 4) return;
+  blobCache.set(key, entry);
+  blobCacheSize += entry.buffer.length;
+  for (const [oldKey, old] of blobCache) {
+    if (blobCacheSize <= BLOB_CACHE_BYTES) break;
+    blobCache.delete(oldKey);
+    blobCacheSize -= old.buffer.length;
+  }
+}
+function forgetBlob(key) {
+  const hit = blobCache.get(key);
+  if (hit) { blobCache.delete(key); blobCacheSize -= hit.buffer.length; }
+}
+// Removes files (rows + stored bytes) and tells everyone looking at them.
+async function deleteFiles(rows) {
+  if (!rows.length) return;
+  const ids = rows.map(r => r.id);
+  const blobs = await q(`DELETE FROM file_blobs WHERE file_id = ANY($1) RETURNING key`, [ids]);
+  blobs.forEach(b => forgetBlob(b.key));
+  await pool.query(`DELETE FROM files WHERE id = ANY($1)`, [ids]);
+  for (const row of rows) {
+    const filePath = (row.storage || 'disk') === 'disk' ? diskPathForUpload(row.file_url) : null;
+    if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
+    emitRoomOrDM(row.room, row.to_user, 'fileDeleted', { id: row.id, room: row.room });
+  }
+}
+// Keeps stored attachments inside MEDIA_BUDGET_BYTES by dropping the oldest.
+async function enforceMediaBudget() {
+  const used = Number((await one(`SELECT COALESCE(SUM(size), 0) AS n FROM file_blobs`)).n);
+  if (used <= MEDIA_BUDGET_BYTES) return;
+  // first anything nobody can reach any more (its channel, thread or group is gone)
+  const orphans = await q(
+    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage FROM files f
+     WHERE f.storage = 'db' AND f.room NOT LIKE 'dm:%'
+       AND NOT EXISTS (SELECT 1 FROM server_channels c WHERE c.room = f.room)
+       AND NOT EXISTS (SELECT 1 FROM threads t WHERE 'thread:' || t.id = f.room)
+       AND NOT EXISTS (SELECT 1 FROM chat_groups g WHERE 'group:' || g.id = f.room)`
+  );
+  await deleteFiles(orphans);
+  const over = await q(
+    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage FROM files f JOIN (
+       SELECT file_id, SUM(size) OVER (ORDER BY created_at DESC, file_id DESC) AS running FROM file_blobs
+     ) b ON b.file_id = f.id WHERE b.running > $1`,
+    [MEDIA_BUDGET_BYTES]
+  );
+  if (over.length) {
+    console.log(`Attachment storage is over its ${Math.round(MEDIA_BUDGET_BYTES / 1048576)} MB budget - removing the ${over.length} oldest file(s)`);
+    await deleteFiles(over);
+  }
 }
 
 function safeFileName(originalName) {
@@ -3632,7 +3743,7 @@ async function getGlobalCensor() {
 }
 
 app.get('/site-settings', requireAuth, route(async (req, res) => {
-  res.json({ globalCensor: await getGlobalCensor() });
+  res.json({ globalCensor: await getGlobalCensor(), keepFileBytes: KEEP_FILE_BYTES, tempFileHours: FILE_EXPIRY_HOURS });
 }));
 
 app.post('/site-settings/global-censor', requireAuth, route(async (req, res) => {
@@ -4736,14 +4847,45 @@ app.post('/upload', requireAuth, route(async (req, res) => {
     if (blocked) return res.status(403).json({ error: blocked });
   }
 
+  if (rateLimited('upload:' + req.username, 30, 5 * 60 * 1000)) return res.status(429).json({ error: 'You\'re sending files very quickly - wait a few minutes and try again.' });
+
   const ext = path.extname(originalName).slice(0, 16);
   const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
   const fullPath = path.join(UPLOAD_DIR, storedName);
+  // Small enough to keep (see KEEP_FILE_BYTES)? Then it goes in the
+  // database and stays. The size has to be known up front to decide.
+  const keep = contentLength > 0 && contentLength <= KEEP_FILE_BYTES;
 
   try {
-    const size = await saveUploadStream(req, fullPath, MAX_FILE_BYTES);
-    const fileUrl = `/uploads/${storedName}`;
-    const created = await insertFile(finalRoom, req.username, toUser || null, isGroup, originalName, fileType, fileUrl, size, caption || null);
+    let created;
+    if (keep) {
+      const buffer = await bufferUploadStream(req, KEEP_FILE_BYTES);
+      const key = crypto.randomBytes(18).toString('base64url');
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        created = (await client.query(
+          `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'db') RETURNING id`,
+          [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/media/${key}/${encodeURIComponent(originalName)}`, buffer.length, caption || null]
+        )).rows[0];
+        await client.query(`INSERT INTO file_blobs (file_id, key, data, size) VALUES ($1, $2, $3, $4)`, [created.id, key, buffer, buffer.length]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+      enforceMediaBudget().catch(err => console.error('enforceMediaBudget failed:', err.message));
+    } else {
+      const size = await saveUploadStream(req, fullPath, MAX_FILE_BYTES);
+      created = await one(
+        `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'disk', NOW() + INTERVAL '${FILE_EXPIRY_HOURS} hours') RETURNING id`,
+        [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/uploads/${storedName}`, size, caption || null]
+      );
+    }
     const fileMsg = await normaliseFile(await getFileById(created.id));
 
     if (toUser) {
@@ -4759,6 +4901,100 @@ app.post('/upload', requireAuth, route(async (req, res) => {
   } catch (err) {
     if (!res.headersSent) res.status(err.message === 'file is too large' ? 413 : 400).json({ error: err.message || 'upload failed' });
   }
+}));
+
+// ---------------- KEPT FILES (/media) ----------------
+// Kept attachments are served straight from Postgres. The key in the URL is
+// 18 random bytes, so (like the old /uploads names) a link works for anyone
+// who was given it and can't be guessed - <img> and <video> can't send a
+// login token. The same safety rules as /uploads apply: the type comes from
+// the file's extension, never from what the uploader claimed; anything a
+// browser could run as a page is download-only; SVGs get the no-scripts
+// sandbox.
+const INLINE_MEDIA_TYPE = /^(image\/(png|jpeg|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)|video\/|audio\/|application\/pdf$|text\/plain$)/;
+app.get('/media/:key/:name?', route(async (req, res) => {
+  const key = String(req.params.key || '');
+  if (!/^[A-Za-z0-9_-]{16,40}$/.test(key)) return res.status(404).end();
+  let entry = blobCache.get(key);
+  if (!entry) {
+    const row = await one(`SELECT b.data, f.file_name FROM file_blobs b JOIN files f ON f.id = b.file_id WHERE b.key = $1`, [key]);
+    if (!row) return res.status(404).json({ error: 'This file is no longer available.' });
+    entry = { buffer: row.data, name: row.file_name || 'file' };
+    cacheBlob(key, entry);
+  }
+  const ext = path.extname(entry.name).toLowerCase();
+  let type = express.static.mime.lookup(entry.name) || 'application/octet-stream';
+  const active = ACTIVE_UPLOAD_EXT.has(ext);
+  if (ext === '.svg') {
+    res.setHeader('Content-Security-Policy', SVG_UPLOAD_CSP);
+  } else if (active || !INLINE_MEDIA_TYPE.test(type)) {
+    // never opened in the page: downloaded, and sandboxed even if something does open it
+    if (active) type = 'application/octet-stream';
+    res.setHeader('Content-Disposition', 'attachment');
+    res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+  }
+  if (/^text\//.test(type)) type += '; charset=utf-8';
+  res.setHeader('Content-Type', type);
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('ETag', `"${key}"`);
+  if (req.headers['if-none-match'] === `"${key}"`) return res.status(304).end();
+  // byte ranges: Safari won't play audio/video without them, and seeking needs them
+  const total = entry.buffer.length;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+  if (range && (range[1] || range[2])) {
+    let start = range[1] ? Number(range[1]) : Math.max(0, total - Number(range[2]));
+    let end = range[1] && range[2] ? Number(range[2]) : total - 1;
+    end = Math.min(end, total - 1);
+    if (!(start >= 0) || start > end) {
+      res.setHeader('Content-Range', `bytes */${total}`);
+      return res.status(416).end();
+    }
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+    return res.end(entry.buffer.subarray(start, end + 1));
+  }
+  res.end(entry.buffer);
+}));
+
+// The uploader can delete their own file; so can whoever moderates the
+// room (server owner/admins, site admins).
+app.post('/files/:id/delete', requireAuth, route(async (req, res) => {
+  const file = await getFileById(Number(req.params.id));
+  if (!file || !(await isAllowedRoom(req.username, file.room))) return res.status(404).json({ error: 'file not found' });
+  if (file.user !== req.username && !(await canModerateRoom(req.username, file.room))) return res.status(403).json({ error: 'you can only delete your own files' });
+  await deleteFiles([file]);
+  res.json({ message: 'ok' });
+}));
+
+// ---------------- HISTORY ----------------
+// One page of a room: HISTORY_PAGE messages plus the files sent in the same
+// stretch of time, so the two always line up (they used to be fetched
+// separately, each with its own cut-off). ?before=<message id> pages back.
+// The first page also says where this person had read up to, for the "new
+// messages" line.
+app.get('/history', requireAuth, route(async (req, res) => {
+  const room = String(req.query.room || '');
+  if (!room || !(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
+  const before = Math.max(0, Math.floor(Number(req.query.before) || 0));
+  const rows = before ? await getMessagesBefore(room, before, HISTORY_PAGE) : await getMessagesForRoom(room, HISTORY_PAGE);
+  const hasMore = rows.length >= HISTORY_PAGE;
+  let until = null;
+  if (before) {
+    const edge = await one(`SELECT created_at FROM messages WHERE id = $1 AND room = $2`, [before, room]);
+    until = edge ? edge.created_at : null;
+  }
+  const files = await getFilesBetween(room, hasMore ? rows[0].created_at : null, until);
+  const out = { messages: await normaliseMessages(rows), files: await normaliseFiles(files), hasMore };
+  if (!before) {
+    const receipt = await one(`SELECT last_message_id, updated_at FROM read_receipts WHERE room = $1 AND username = $2`, [room, req.username]);
+    const base = await one(`SELECT unread_base_id, unread_base_at FROM users WHERE username = $1`, [req.username]);
+    out.lastRead = {
+      id: Math.max(receipt ? receipt.last_message_id : 0, (base && base.unread_base_id) || 0),
+      at: receipt ? receipt.updated_at : ((base && base.unread_base_at) || null)
+    };
+  }
+  res.json(out);
 }));
 
 app.set('io', io);
@@ -5386,7 +5622,9 @@ async function main() {
   setInterval(() => { removeExpiredSessions().catch(err => console.error('removeExpiredSessions failed:', err)); }, 60 * 60 * 1000);
   await removeExpiredSessions();
   setTimeout(() => { hashLegacySessions().catch(err => console.error('hashLegacySessions failed:', err.message)); }, Number(process.env.SESSION_HASH_DELAY_MS || 5 * 60 * 1000)).unref();
-  await removeOldFiles();
+  await removeOldFiles(true);
+  // a kept file whose message row is gone (e.g. its room was deleted) is just wasted space
+  await pool.query(`DELETE FROM file_blobs WHERE file_id NOT IN (SELECT id FROM files)`);
   await scheduleEventReminders();
 
   server.listen(PORT, '0.0.0.0', () => {

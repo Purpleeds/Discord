@@ -1,4 +1,9 @@
-# Moving the chat to a Synology NAS
+# Moving the chat to a NAS (Synology, UGREEN or any Docker host)
+
+Written for Synology; on UGREEN (UGOS Pro) use the **Files** app instead of
+File Station, the **Docker** app instead of Container Manager, and enable
+SSH under Control Panel > Terminal. For the outside address use option A or
+C below (UGREEN has no built-in reverse proxy like option B).
 
 The app runs as a Docker container next to the Postgres you already have
 on the NAS. Its data goes in its own database (`chat`) inside that
@@ -57,6 +62,24 @@ for the web app only, never the database):
 4. On your router, forward TCP port 443 to the NAS. **Don't** forward
    55432 (the database).
 
+**C. Tailscale Funnel** (free; no domain, no router ports; visitors don't
+need Tailscale):
+1. Make a free account at tailscale.com.
+2. Admin console > **DNS**: under HTTPS Certificates click **Enable HTTPS**.
+   Note your tailnet name on that page (like `tail1234.ts.net`).
+3. Admin console > **Access controls**: make sure the policy lets you use
+   Funnel. New accounts already have it; if not, add
+   `"nodeAttrs": [{"target": ["autogroup:member"], "attr": ["funnel"]}]`.
+4. Admin console > **Settings > Keys > Generate auth key** (defaults are
+   fine). Put it in `TS_AUTHKEY` in `.env`.
+5. In step 5, start with `--profile funnel` (shown below).
+6. Once it's running, the NAS appears as **chat** under Machines: open its
+   **...** menu and choose **Disable key expiry**, or the address stops
+   working after a few months.
+
+The address is `https://chat.<your tailnet name>`, for example
+`https://chat.tail1234.ts.net`.
+
 Either way you now have the new address, e.g. `https://chat.yourdomain.com`.
 
 ## 3. Pause the old site
@@ -89,6 +112,7 @@ rather than overwrite anything.
 ```sh
 sudo docker compose up -d --build                    # option B (reverse proxy)
 sudo docker compose --profile tunnel up -d --build   # option A (Cloudflare Tunnel)
+sudo docker compose --profile funnel up -d --build   # option C (Tailscale Funnel)
 ```
 
 The first build takes a few minutes. Check it with

@@ -1627,6 +1627,8 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 #loginCard h2{font-family:var(--font-display);font-size:30px;font-weight:800;letter-spacing:-.03em;text-align:left;}
 #loginCard .sub{text-align:left;margin-bottom:24px;}
 .loginFooter{text-align:left;line-height:1.5;}
+.formHint{font-size:13px;color:var(--text-muted);margin:-8px 0 14px;line-height:1.45;}
+#signupOnly[hidden]{display:none;}
 .rememberRow{margin:2px 0 18px;}
 
 /* ---------- desktop only ---------- */
@@ -1709,6 +1711,35 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
   .brandScene{display:none;}
   #loginCard{max-width:none;padding:24px;}
 }
+
+/* ---- v3: devices ---- */
+.deviceList{display:flex;flex-direction:column;gap:8px;}
+.deviceRow{display:flex;align-items:center;gap:14px;padding:14px 16px;background:var(--raised);border:1px solid var(--line);border-radius:var(--r-card);}
+.deviceRow.current{border-color:color-mix(in srgb,var(--brand) 55%,transparent);}
+.deviceIcon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--raised-2);color:var(--text-muted);}
+.deviceRow.current .deviceIcon{color:var(--brand);}
+.deviceInfo{flex:1;min-width:0;}
+.deviceName{font-weight:650;color:var(--text-bright);display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.deviceTag{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--brand);color:var(--on-brand);}
+.deviceSub{font-size:13px;color:var(--text-muted);margin-top:2px;}
+
+/* ---- v3: attachments, new-messages line ---- */
+.fileExpiry{font-size:12.5px;color:var(--text-muted);margin-top:4px;}
+.attachChip.temporary .chipSize{color:var(--yellow);}
+.newMessagesLine{display:flex;align-items:center;gap:10px;margin:10px 16px 2px 16px;color:var(--brand);font-size:12.5px;font-weight:700;}
+.newMessagesLine::before{content:"";flex:1;height:1px;background:color-mix(in srgb,var(--brand) 60%,transparent);}
+.newMessagesLine span{padding:1px 9px;border-radius:999px;background:var(--brand);color:var(--on-brand);}
+
+/* ---- v3: connection banner, failed sends ---- */
+.connBanner{display:none;align-items:center;gap:10px;padding:8px 18px;font-size:13.5px;font-weight:600;color:var(--text-bright);background:color-mix(in srgb,var(--yellow) 16%,var(--desk));border-bottom:1px solid color-mix(in srgb,var(--yellow) 40%,transparent);}
+.connBanner.show{display:flex;}
+.connDot{width:8px;height:8px;border-radius:50%;background:var(--yellow);flex:none;animation:connPulse 1.4s ease-in-out infinite;}
+@keyframes connPulse{50%{opacity:.25;}}
+@media (prefers-reduced-motion: reduce){.connDot{animation:none;}}
+.message.failed .msgText{color:var(--text-muted);}
+.failNote{display:block;font-size:12.5px;color:#fa777c;margin-top:2px;}
+.failRetry{font-size:12.5px;margin-right:12px;}
+#loginCard #status{text-align:left;}
 </style>
 </head>
 
@@ -1725,16 +1756,21 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
     </div>
   </section>
   <div id="loginCard">
-    <h2>Welcome back</h2>
-    <div class="sub">Log in with your username and password.</div>
+    <h2 id="loginTitle">Welcome back</h2>
+    <div class="sub" id="loginSub">Log in with your username and password.</div>
     <label class="formLabel" for="username">Username</label>
-    <input class="formInput" id="username" placeholder="Username" autocomplete="username">
+    <input class="formInput" id="username" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false">
     <label class="formLabel" for="password">Password</label>
     <input class="formInput" id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <div id="signupOnly" hidden>
+      <label class="formLabel" for="passwordAgain">Password again</label>
+      <input class="formInput" id="passwordAgain" type="password" placeholder="Type it once more" autocomplete="new-password">
+      <div class="formHint">At least 8 characters. There is no password reset, so pick one you will remember.</div>
+    </div>
     <label class="rememberRow"><input type="checkbox" id="rememberMe" checked> Keep me signed in on this device</label>
-    <button class="bigBtn" onclick="login()">Log in</button>
-    <div id="status"></div>
-    <div class="loginFooter">New here? <button class="linkBtn" onclick="registerUser()">Create an account</button> with the username and password above.</div>
+    <button class="bigBtn" id="loginSubmit" onclick="submitLogin()">Log in</button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div class="loginFooter"><span id="loginSwitchText">New here?</span> <button class="linkBtn" id="loginSwitch" onclick="setLoginMode(loginMode === 'login' ? 'signup' : 'login')">Create an account</button></div>
   </div>
 </div>
 
@@ -1811,6 +1847,7 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
         <button class="searchClear" aria-label="Clear search" onclick="clearSearch()">✕</button>
       </div>
     </div>
+    <div id="connBanner" class="connBanner" role="status" aria-live="polite"><span class="connDot"></span><span id="connText">Reconnecting…</span></div>
     <div id="callPanel" class="callPanel" aria-label="Call"></div>
     <div id="messages"><div id="messagesInner"></div></div>
     <div id="friendsView"></div>
@@ -1953,6 +1990,8 @@ let profiles = {};              // username -> profile
 let pendingProfileFetches = new Set();
 
 let pendingFiles = [];
+let keepFileBytes = 8 * 1024 * 1024; // files up to this size are kept; bigger ones are temporary (the server says)
+let tempFileHours = 6;
 let replyTo = null;
 let lastItem = null;            // last rendered timeline entry (for grouping)
 let lastDayKey = '';
@@ -2173,29 +2212,65 @@ function toast(text){
 }
 
 /* ============================ auth ============================ */
+// The login card has two modes. Logging in never creates an account: a
+// username nobody has gets "no account called that" and an offer to make
+// one, which asks for the password twice (there's no password reset).
+let loginMode = 'login';
+function setLoginMode(mode, keepStatus){
+  loginMode = mode === 'signup' ? 'signup' : 'login';
+  const signup = loginMode === 'signup';
+  $('loginTitle').textContent = signup ? 'Create your account' : 'Welcome back';
+  $('loginSub').textContent = signup ? 'Pick a username and a password to get started.' : 'Log in with your username and password.';
+  $('signupOnly').hidden = !signup;
+  $('password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('loginSubmit').textContent = signup ? 'Create account' : 'Log in';
+  $('loginSwitchText').textContent = signup ? 'Already have an account?' : 'New here?';
+  $('loginSwitch').textContent = signup ? 'Log in' : 'Create an account';
+  if(!signup) $('passwordAgain').value = '';
+  if(!keepStatus) setStatus('');
+}
+function submitLogin(){ return loginMode === 'signup' ? registerUser() : login(); }
+
+async function postAuth(path, body){
+  let response;
+  try{
+    response = await fetch(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+  }catch(e){ throw new Error('Can\'t reach the server. Check your connection and try again.'); }
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok){ const err = new Error(data.error || 'Something went wrong. Try again.'); err.code = data.code; throw err; }
+  return data;
+}
+
 async function registerUser(){
   const name = $('username').value.trim();
   const password = $('password').value;
-  setStatus('Creating account...');
+  if(!name || !password){ setStatus('Enter a username and a password.'); return; }
+  if(password.length < 8){ setStatus('Use a password of at least 8 characters.'); return; }
+  if(password !== $('passwordAgain').value){ setStatus('The two passwords don\'t match.'); $('passwordAgain').focus(); return; }
+  setStatus('Creating your account…');
   try{
-    const response = await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:name,password})});
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'register failed');
+    const data = await postAuth('/register', { username:name, password });
     completeLogin(data.username, data.token, data.profile);
-  }catch(err){ setStatus(err.message); }
+  }catch(err){
+    setStatus(err.message === 'user exists' ? 'That username is taken. Pick another, or log in if it\'s yours.' : capitalise(err.message));
+  }
 }
 
 async function login(){
   const name = $('username').value.trim();
   const password = $('password').value;
-  setStatus('Logging in...');
+  if(!name || !password){ setStatus('Enter your username and password.'); return; }
+  setStatus('Logging in…');
   try{
-    const response = await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:name,password})});
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'login failed');
+    const data = await postAuth('/login', { username:name, password, create:false });
     completeLogin(data.username, data.token, data.profile);
-  }catch(err){ setStatus(err.message); }
+  }catch(err){
+    if(err.code === 'no_account') setStatus('There\'s no account called "' + name + '". Check the spelling, or create it below.');
+    else if(err.message === 'invalid username or password') setStatus('That password isn\'t right for this account.');
+    else setStatus(capitalise(err.message));
+  }
 }
+function capitalise(text){ text = String(text || ''); return text ? text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?…]$/.test(text) ? '' : '.') : ''; }
 
 function completeLogin(returnedUsername, returnedToken, profile){
   username = returnedUsername;
@@ -2203,6 +2278,8 @@ function completeLogin(returnedUsername, returnedToken, profile){
   if(profile) cacheProfile(username, profile);
   myProfile = profile || { username, displayName:username, avatarUrl:'', isAdmin:false };
   $('loginScreen').style.display = 'none';
+  $('password').value = ''; $('passwordAgain').value = '';
+  setLoginMode('login');
   $('app').classList.add('ready');
   rememberSession();
   renderUserPanel();
@@ -2224,6 +2301,10 @@ function resetToLoginScreen(message){
   servers=[]; groups=[]; groupByRoom={}; unread={}; pendingFiles=[]; replyTo=null;
   stopTabAlert();
   forgetSession();
+  failedSends = [];
+  drafts = {}; draftRoom = ''; try{ localStorage.removeItem('drafts'); }catch(e){}
+  $('messageInput').value = '';
+  clearTimeout(connLostTimer); connLostTimer = null; connBannerShown = false; $('connBanner').classList.remove('show');
   closeSettings(true);
   closePopouts();
   clearSearch();
@@ -2234,6 +2315,7 @@ function resetToLoginScreen(message){
   innerEl().innerHTML='';
   $('app').classList.remove('ready');
   $('loginScreen').style.display = 'flex';
+  setLoginMode('login');
   setStatus(message);
 }
 
@@ -2260,15 +2342,80 @@ window.fetch = async function(input, init){
   return response;
 };
 
+/* ============================ connection state ============================ */
+// A thin bar over the chat whenever the live connection is down, so a
+// message that hasn't gone anywhere is never a mystery. It waits a moment
+// before showing: most drops (a wifi blip) heal faster than you can read it.
+let connLostTimer = null;
+let connBannerShown = false;
+function connectionLost(){
+  if(connLostTimer || connBannerShown || !token) return;
+  connLostTimer = setTimeout(() => {
+    connLostTimer = null;
+    if(!token || (socket && socket.connected)) return;
+    connBannerShown = true;
+    paintConnBanner();
+    $('connBanner').classList.add('show');
+  }, 1500);
+}
+function paintConnBanner(){
+  $('connText').textContent = navigator.onLine === false
+    ? 'You\'re offline. Messages you send will go out when you\'re back.'
+    : 'Reconnecting… Messages you send will go out once you\'re connected.';
+}
+function connectionBack(){
+  clearTimeout(connLostTimer);
+  connLostTimer = null;
+  if(connBannerShown){ connBannerShown = false; $('connBanner').classList.remove('show'); toast('Back online'); }
+  // anything still shown as "sending" is about to be redrawn from the
+  // server's copy; forget the placeholders so the real messages aren't
+  // mistaken for their echoes and dropped
+  pendingSends.clear();
+}
+window.addEventListener('online', () => { if(connBannerShown) paintConnBanner(); });
+window.addEventListener('offline', () => { if(token){ if(connBannerShown) paintConnBanner(); else connectionLost(); } });
+
+/* ============================ drafts ============================ */
+// What you'd typed in a channel is still there when you come back to it,
+// including after a reload. Kept on this device only.
+let drafts = {};
+let draftRoom = '';
+try{ drafts = JSON.parse(localStorage.getItem('drafts') || '{}') || {}; }catch(e){ drafts = {}; }
+function saveDrafts(){
+  const keys = Object.keys(drafts);
+  if(keys.length > 60) keys.slice(0, keys.length - 60).forEach(k => delete drafts[k]);
+  try{ localStorage.setItem('drafts', JSON.stringify(drafts)); }catch(e){}
+}
+function stashDraft(){
+  if(!draftRoom) return;
+  const text = $('messageInput').value;
+  if(text.trim()) drafts[draftRoom] = text.slice(0, 4000);
+  else delete drafts[draftRoom];
+  saveDrafts();
+}
+function switchDraftTo(room){
+  if(room === draftRoom) return;
+  stashDraft();
+  draftRoom = room;
+  $('messageInput').value = drafts[room] || '';
+  autoResize();
+}
+function clearDraft(){ if(draftRoom && drafts[draftRoom]){ delete drafts[draftRoom]; saveDrafts(); } }
+let draftSaveTimer = null;
+function draftChanged(){ clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(stashDraft, 600); }
+window.addEventListener('pagehide', stashDraft);
+
 /* ============================ sockets ============================ */
 function connectSocket(){
   socket = io({ auth:{ token } });
   setupVoiceSocket();
 
   socket.on('connect', async () => {
+    connectionBack();
     reportedIdle = false;
     await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends()]);
     socket.emit('syncRooms');
+    loadUnread(); // badges for everything that arrived while this device was away
     // a REconnect (phone waking up, wifi blip, server redeploy) keeps you
     // where you were - it used to throw everyone back to #general
     if(!everConnected || !restoreViewAfterReconnect()){
@@ -2281,7 +2428,23 @@ function connectSocket(){
   });
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
-    setStatus(err.message || 'socket connection failed');
+    connectionLost();
+    // the server refused for now (busy database): socket.io doesn't retry that by itself
+    if(socket && !socket.active) setTimeout(() => { if(socket && token && !socket.connected) socket.connect(); }, 3000);
+  });
+  socket.on('disconnect', reason => {
+    connectionLost();
+    if(reason === 'io server disconnect'){
+      // The server closed this connection on purpose: signed out from another
+      // device, kicked, banned... or it is just restarting. Ask who we are -
+      // a 401 ends the session (the fetch wrapper handles that); anything
+      // else means we're still welcome, so connect again.
+      setTimeout(async () => {
+        if(!token || !socket || socket.connected) return;
+        try{ await fetch('/profile', { headers: bearer() }); }catch(e){}
+        if(token && socket && !socket.connected) socket.connect();
+      }, 800);
+    }
   });
   socket.on('users', async users => {
     onlineUserList = Array.isArray(users) ? users : [];
@@ -2343,6 +2506,13 @@ function connectSocket(){
     if(settingsState.mode === 'server' && settingsState.section === 'members' && data && settingsState.ctx.serverId === data.serverId) rerenderSettingsSection();
   });
   socket.on('adminNotice', data => toast(data && data.message ? data.message : 'Admin notice'));
+  // read somewhere else (another tab, your phone): clear the same badges here
+  socket.on('readSync', data => {
+    if(!data || data.from === socket.id) return;
+    let changed = false;
+    (data.rooms || []).forEach(room => { if(unread[room]){ unread[room] = 0; changed = true; } });
+    if(changed){ renderSidebar(); renderRail(); if(forumRoom) renderForum(forumRoom); }
+  });
 
   socket.on('globalCensorChanged', data => {
     globalCensorEnabled = !!(data && data.enabled);
@@ -2371,6 +2541,16 @@ function connectSocket(){
 
   socket.on('messageUpdated', msg => { cacheFromPayload(msg); applyUpdatedMessage(msg); });
   socket.on('messageDeleted', msg => applyDeletedMessage(msg));
+  socket.on('fileDeleted', data => {
+    if(!data) return;
+    timelineItems = timelineItems.filter(item => !(item.kind === 'file' && item.data.id === data.id));
+    const el = document.querySelector('.message[data-file-id="' + data.id + '"]');
+    if(el && data.room === currentRoom){
+      const savedScroll = messagesEl().scrollTop;
+      renderTimeline(); // regroups the neighbours and day dividers properly
+      messagesEl().scrollTop = savedScroll;
+    }
+  });
   socket.on('reactionUpdated', payload => applyReactions(payload));
   socket.on('pollUpdated', payload => applyPollUpdate(payload));
   socket.on('threadsChanged', async data => {
@@ -2450,6 +2630,13 @@ function cacheFromPayload(msg){
   }
 }
 
+// A live message that's already on screen (it also came with the history
+// that was loading as it arrived - common right after a reconnect).
+function alreadyShown(msg, kind){
+  const attr = kind === 'file' ? 'data-file-id' : 'data-message-id';
+  return !!document.querySelector('#messagesInner .message[' + attr + '="' + msg.id + '"]');
+}
+
 function handleIncoming(msg, kind){
   cacheFromPayload(msg);
   if(isThreadRoom(msg.room) && !threadIndex[threadIdOf(msg.room)]) ensureThread(threadIdOf(msg.room)).then(() => { renderSidebar(); renderRail(); });
@@ -2458,6 +2645,7 @@ function handleIncoming(msg, kind){
   // optimistically when we sent it - if so, just upgrade that element in
   // place (grey -> full color) instead of appending a duplicate.
   if(kind === 'message' && msg.user === username && confirmPendingSendData(msg)) return;
+  if(alreadyShown(msg, kind)) return;
   if(isBlocked(msg.user)){
     // still added (collapsed) so the timeline stays complete, but no pings
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
@@ -2481,6 +2669,7 @@ function handleIncoming(msg, kind){
 function handleIncomingDM(msg, kind){
   cacheFromPayload(msg);
   if(kind === 'message' && msg.user === username && confirmPendingSendData(msg)) return;
+  if(alreadyShown(msg, kind)) return;
   const other = msg.user === username ? (msg.to || msg.dmTo) : msg.user;
   const room = msg.room || roomNameForDM(username, other);
   if(isBlocked(msg.user)){
@@ -2536,6 +2725,55 @@ function bumpUnread(room, msg){
   if(!isFocused && shouldAlert(msg, room)) startTabAlert(label);
 }
 
+/* ============================ unread ============================ */
+// The server works out what's unread from read receipts, so badges are
+// right the moment the app opens - not only for what arrived while this
+// tab was open. Muted rooms stay quiet, same as for live messages.
+async function loadUnread(){
+  try{
+    const response = await fetch('/unread', { headers: bearer() });
+    if(!response.ok) return;
+    const rooms = (await response.json()).rooms || {};
+    const next = {};
+    Object.keys(rooms).forEach(room => {
+      if(levelFor(room) === 'none') return;
+      if(room === currentRoom && canSeeChat() && !forumRoom) return; // looking at it right now
+      if(rooms[room].count > 0) next[room] = rooms[room].count;
+    });
+    unread = next;
+    renderSidebar();
+    renderRail();
+    if(forumRoom) renderForum(forumRoom);
+  }catch(e){}
+}
+
+// "Read" means someone actually looked: a tab left open in the background
+// no longer marks a channel read (which would hide those messages from
+// your phone). The receipt is sent when the tab is looked at again.
+let newestMessageId = 0;   // newest real message id in the open room
+let readDebt = false;      // something arrived while nobody was looking
+function canSeeChat(){ return !document.hidden && isFocused; }
+function markCurrentRead(){
+  if(!socket || !currentRoom || !username) return;
+  if(!canSeeChat()){ readDebt = true; return; }
+  readDebt = false;
+  socket.emit('markRead', { room: currentRoom, lastMessageId: newestMessageId || 0 });
+}
+function settleReadDebt(){ if(readDebt && canSeeChat()) markCurrentRead(); }
+
+async function markServerRead(server){
+  try{
+    const response = await fetch('/read-all', { method:'POST', headers:authHeaders(), body: JSON.stringify(server ? { serverId: server.id } : { all:true }) });
+    if(!response.ok) throw new Error();
+    if(server){
+      (server.channels || []).forEach(c => { unread[c.room] = 0; });
+      Object.values(threadIndex).forEach(t => { if((server.channels || []).some(c => c.room === t.parentRoom)) unread[t.room] = 0; });
+    }else unread = {};
+    renderSidebar(); renderRail();
+    toast(server ? 'Marked ' + server.name + ' as read' : 'Marked everything as read');
+  }catch(e){ toast('Could not mark as read. Try again.'); }
+}
+
 /* ============================ data loading ============================ */
 async function loadServers(){
   if(!token) return;
@@ -2574,6 +2812,8 @@ async function loadSiteSettings(){
     if(!response.ok) return;
     const data = await response.json();
     globalCensorEnabled = !!data.globalCensor;
+    if(data.keepFileBytes != null) keepFileBytes = Number(data.keepFileBytes);
+    if(data.tempFileHours) tempFileHours = Number(data.tempFileHours);
   }catch(e){}
 }
 
@@ -2837,9 +3077,12 @@ function renderSidebar(){
 
     const people = directoryUsers.filter(p => p.username !== username && !isBlocked(p.username));
     people.sort((a,b) => {
+      // conversations with something new come first, then whoever is online
+      const ua = unread[roomNameForDM(username, a.username)] ? 0 : 1;
+      const ub = unread[roomNameForDM(username, b.username)] ? 0 : 1;
       const oa = onlineUserList.includes(a.username) ? 0 : 1;
       const ob = onlineUserList.includes(b.username) ? 0 : 1;
-      return oa - ob || a.username.localeCompare(b.username);
+      return ua - ub || oa - ob || a.username.localeCompare(b.username);
     });
     if(!people.length){
       const hint = document.createElement('div');
@@ -3079,10 +3322,12 @@ function setComposerEnabled(on){
 function enterRoom(room){
   closeFriends();
   closeForum();
+  switchDraftTo(room);
   unread[room] = 0;
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
   timelineItems = [];
+  newestMessageId = 0; readDebt = false; newMarker = null;
   historyState = { room, oldestId:null, hasMore:false, loading:false };
   cancelReply();
   clearAttachments();
@@ -3114,32 +3359,53 @@ function resetTimeline(){
 
 async function loadHistory(room){
   try{
-    const [messagesRes, filesRes] = await Promise.all([
-      fetch('/messages?room=' + encodeURIComponent(room), { headers: bearer() }),
-      fetch('/files?room=' + encodeURIComponent(room), { headers: bearer() })
-    ]);
-    if(!messagesRes.ok) throw new Error('Could not load messages');
-    const messages = await messagesRes.json();
-    const files = filesRes.ok ? await filesRes.json() : [];
+    const response = await fetch('/history?room=' + encodeURIComponent(room), { headers: bearer() });
+    if(!response.ok) throw new Error('Could not load messages. Check your connection and try again.');
+    const page = await response.json();
     if(room !== currentRoom) return;
-
-    const combined = [
-      ...messages.filter(m => !m.deleted).map(item => ({ kind:'message', data:item })),
-      ...files.map(item => ({ kind:'file', data:item }))
-    ];
-    combined.sort((a,b) => parseTime(a.data.createdAt) - parseTime(b.data.createdAt) || a.data.id - b.data.id);
+    const messages = page.messages || [];
+    const combined = mergeHistoryPage(page);
     combined.forEach(item => cacheFromPayload(item.data));
-    // the server sends the newest 300; if it sent a full 300 there may be
-    // older history to page in when you scroll up
     timelineItems = combined;
-    historyState = { room, oldestId: messages.length ? messages[0].id : null, hasMore: messages.length >= 300, loading:false };
+    historyState = { room, oldestId: messages.length ? messages[0].id : null, hasMore: !!page.hasMore, loading:false };
+    newMarker = firstUnreadItem(combined, page.lastRead);
     renderTimeline();
+    failedSends.filter(item => item.data.room === room).forEach(item => {
+      appendItem(item);
+      markSendFailed(item.data.id, item.data.failedInfo.again, item.data.failedInfo.reason);
+    });
     scrollToBottom();
+    // open at the "new messages" line when what's new doesn't fit on screen
+    const line = $('newMessagesLine');
+    if(line && line.offsetTop < messagesEl().scrollTop) messagesEl().scrollTop = Math.max(0, line.offsetTop - 60);
     updateJumpBar();
     if(pendingJump && pendingJump.room === room){ const id = pendingJump.id; pendingJump = null; goToMessage(id); }
     const lastMessage = messages[messages.length - 1];
-    if(lastMessage && socket) socket.emit('markRead', { room, lastMessageId: lastMessage.id });
+    newestMessageId = lastMessage ? lastMessage.id : 0;
+    if(combined.length) markCurrentRead();
   }catch(err){ showError(err.message); }
+}
+
+// Messages and files arrive as two lists covering the same stretch of time;
+// the timeline shows them as one, oldest first.
+function mergeHistoryPage(page){
+  const combined = [
+    ...(page.messages || []).filter(m => !m.deleted).map(item => ({ kind:'message', data:item })),
+    ...(page.files || []).map(item => ({ kind:'file', data:item }))
+  ];
+  combined.sort((a,b) => parseTime(a.data.createdAt) - parseTime(b.data.createdAt) || a.data.id - b.data.id);
+  return combined;
+}
+
+// The first thing in the room this person hasn't seen (from someone else),
+// which is where the "new messages" line goes. null if they're caught up.
+let newMarker = null; // { kind, id }
+function firstUnreadItem(items, lastRead){
+  if(!lastRead) return null;
+  const readAt = lastRead.at ? parseTime(lastRead.at) : 0;
+  const first = items.find(item => item.data.user !== username && !isBlocked(item.data.user) &&
+    (item.kind === 'message' ? item.data.id > (lastRead.id || 0) : parseTime(item.data.createdAt) > readAt));
+  return first ? { kind:first.kind, id:first.data.id } : null;
 }
 
 function renderChannelIntro(){
@@ -3213,8 +3479,9 @@ function appendItem(item, bulk){
   else blockedRun = null;
   lastItem = item;
   if(!bulk && atBottom) scrollToBottom();
-  if(!bulk && item.kind === 'message' && socket && item.data.id){
-    socket.emit('markRead', { room: currentRoom, lastMessageId: item.data.id });
+  if(!bulk && socket && item.data.id && !item.data.pending){
+    if(item.kind === 'message' && typeof item.data.id === 'number') newestMessageId = Math.max(newestMessageId, item.data.id);
+    markCurrentRead();
   }
   return el;
 }
@@ -3483,12 +3750,29 @@ function buildMessageEl(item, grouped){
       body.appendChild(caption);
     }
     body.appendChild(buildAttachment(data));
+    if(data.expiresAt){
+      // big files are temporary shares - say so, rather than letting them quietly vanish
+      const note = document.createElement('div');
+      note.className = 'fileExpiry';
+      const left = parseTime(data.expiresAt) - Date.now();
+      note.textContent = left <= 0 ? 'This file has expired.' : 'Temporary file: removed in ' + (left > 3600000 ? Math.round(left / 3600000) + ' h' : Math.max(1, Math.round(left / 60000)) + ' min');
+      note.title = 'Files over ' + formatBytes(keepFileBytes) + ' are kept for ' + tempFileHours + ' hours. Smaller files stay.';
+      body.appendChild(note);
+    }
   }
 
   if(item.kind === 'message' && data.thread) body.appendChild(buildThreadChip(data));
   wrap.appendChild(body);
   wrap.appendChild(buildActions(item));
   return wrap;
+}
+
+async function deleteFile(data){
+  if(!confirm('Delete "' + (data.fileName || 'this file') + '"? It will be removed for everyone.')) return;
+  try{
+    const response = await fetch('/files/' + data.id + '/delete', { method:'POST', headers:authHeaders(), body:'{}' });
+    if(!response.ok && response.status !== 404) throw new Error((await response.json().catch(() => ({}))).error || 'Could not delete the file.');
+  }catch(err){ toast(capitalise(err.message)); }
 }
 
 function pinMarker(){
@@ -3577,7 +3861,11 @@ function buildActions(item){
       bar.appendChild(toolbarButton(ICONS.trash, 'Delete', e => deleteMessage(liveData(e.currentTarget, data).id), true));
     }
   }else{
-    bar.appendChild(toolbarButton(ICONS.download, 'Open file', () => window.open(data.fileUrl, '_blank')));
+    bar.appendChild(toolbarButton(ICONS.download, 'Open file', () => window.open(data.fileUrl, '_blank', 'noopener')));
+    bar.appendChild(toolbarButton(ICONS.link, 'Copy File Link', () => copyText(new URL(data.fileUrl, location.origin).href)));
+    if(data.user === username || canModerateHere(data.room)){
+      bar.appendChild(toolbarButton(ICONS.trash, 'Delete File', () => deleteFile(data), true));
+    }
   }
   return bar;
 }
@@ -3965,15 +4253,17 @@ function sendReaction(id, emoji){
 }
 
 async function sendMessage(){
-  if(!socket || !socket.connected) return;
+  if(!socket) return;
   closeMentionAutocomplete();
   const input = $('messageInput');
   const text = input.value.trim();
 
   if(pendingFiles.length){
+    if(!socket.connected){ toast('Files can\'t be sent until you\'re back online.'); return; }
     const files = pendingFiles.slice();
     clearAttachments();
     input.value = '';
+    clearDraft();
     autoResize();
     for(let i = 0; i < files.length; i++){
       await uploadFile(files[i], i === 0 ? text : '');
@@ -3986,21 +4276,34 @@ async function sendMessage(){
   if(!text) return;
   let sendText = text;
   if(text.startsWith('/')){
+    if(!socket.connected){ toast('Commands need a connection. Try again once you\'re back online.'); return; }
     const handled = await runSlashCommand(text);
-    if(handled === true){ input.value = ''; autoResize(); cancelReply(); stopTyping(); return; }
+    if(handled === true){ input.value = ''; clearDraft(); autoResize(); cancelReply(); stopTyping(); return; }
     if(typeof handled === 'string') sendText = handled;
   }
-  const payload = { text: sendText, replyTo: replyTo ? replyTo.id : null };
-  const room = activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom;
+  postChatMessage(sendText, replyTo);
+  input.value = '';
+  clearDraft();
+  autoResize();
+  input.focus();
+  cancelReply();
+  stopTyping();
+}
 
-  // Show it right away, greyed out, instead of waiting for the round trip.
+// Shows the message right away (greyed out) and sends it. While the
+// connection is down socket.io holds it and sends it on reconnect; the
+// banner over the chat says so. `reply` is the message being replied to.
+function postChatMessage(sendText, reply){
+  const dmUser = activeDMUser;
+  const payload = { text: sendText, replyTo: reply ? reply.id : null };
+  const room = dmUser ? roomNameForDM(username, dmUser) : currentRoom;
   const tempId = 'pending:' + (++pendingSendSeq);
   const pendingItem = {
     kind: 'message',
     data: {
       id: tempId, room, user: username, displayName: displayNameFor(username),
-      avatarUrl: avatarUrlFor(username), text: sendText, to: activeDMUser || '', dmTo: activeDMUser || '',
-      isGroup: !!currentGroupRoom, replyTo: replyTo ? { id:replyTo.id, user:replyTo.user, displayName:replyTo.displayName, text:replyTo.text } : null,
+      avatarUrl: avatarUrlFor(username), text: sendText, to: dmUser || '', dmTo: dmUser || '',
+      isGroup: !!currentGroupRoom, replyTo: reply ? { id:reply.id, user:reply.user, displayName:reply.displayName, text:reply.text } : null,
       editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true
     }
   };
@@ -4010,25 +4313,17 @@ async function sendMessage(){
   // broadcast) so a stale entry can't wrongly latch onto some unrelated
   // later message in the same room.
   setTimeout(() => pendingSends.delete(tempId), 15000);
-
-  if(activeDMUser){
-    payload.to = activeDMUser;
-    socket.emit('dmMessage', payload, result => {
-      if(result && result.error){ markSendFailed(tempId); showError(result.error); pendingSends.delete(tempId); return; }
-      if(result && result.id) confirmPendingSendId(tempId, result.id);
-    });
+  const onResult = result => {
+    if(result && result.error){ markSendFailed(tempId, { text: sendText, reply, room, dmUser }, result.error); pendingSends.delete(tempId); return; }
+    if(result && result.id) confirmPendingSendId(tempId, result.id);
+  };
+  if(dmUser){
+    payload.to = dmUser;
+    socket.emit('dmMessage', payload, onResult);
   }else{
-    payload.room = currentRoom;
-    socket.emit('message', payload, result => {
-      if(result && result.error){ markSendFailed(tempId); showError(result.error); pendingSends.delete(tempId); return; }
-      if(result && result.id) confirmPendingSendId(tempId, result.id);
-    });
+    payload.room = room;
+    socket.emit('message', payload, onResult);
   }
-  input.value = '';
-  autoResize();
-  input.focus();
-  cancelReply();
-  stopTyping();
 }
 
 // The ack (an id) usually arrives after the server's own broadcast of the
@@ -4098,13 +4393,48 @@ function confirmPendingSendData(msg){
   return true;
 }
 
-function markSendFailed(tempId){
+// A send the server refused (slowmode, muted, blocked...). It stays in
+// place with the reason and a way to try again, instead of a dead grey line.
+let failedSends = []; // messages that weren't sent, kept so a channel refresh doesn't quietly drop them
+function forgetFailedSend(tempId){
+  failedSends = failedSends.filter(item => item.data.id !== tempId);
+  timelineItems = timelineItems.filter(item => item.data.id !== tempId);
+}
+function markSendFailed(tempId, again, reason){
   const el = document.querySelector('.message[data-message-id="' + tempId + '"]');
-  if(!el) return;
+  if(!el){ if(reason) showError(reason); return; }
+  if(el._item && again && !failedSends.includes(el._item)){
+    el._item.data.failedInfo = { again, reason };
+    failedSends.push(el._item);
+    if(failedSends.length > 20) failedSends.shift();
+  }
   el.classList.remove('pending');
   el.classList.add('failed');
   const text = el.querySelector('.msgText');
-  if(text) text.appendChild(Object.assign(document.createElement('span'), { className:'failNote', textContent:'Not delivered' }));
+  if(text){
+    const note = document.createElement('span');
+    note.className = 'failNote';
+    note.textContent = 'Not sent' + (reason ? ': ' + reason : '');
+    text.appendChild(note);
+    if(again){
+      const retry = document.createElement('button');
+      retry.className = 'linkBtn failRetry';
+      retry.textContent = 'Try again';
+      retry.onclick = () => {
+        const stillThere = again.dmUser ? activeDMUser === again.dmUser : currentRoom === again.room;
+        if(!stillThere){ toast('Go back to that conversation to send it again.'); return; }
+        forgetFailedSend(tempId);
+        el.remove();
+        postChatMessage(again.text, again.reply);
+      };
+      text.appendChild(retry);
+      const drop = document.createElement('button');
+      drop.className = 'linkBtn failRetry';
+      drop.textContent = 'Discard';
+      drop.onclick = () => { forgetFailedSend(tempId); el.remove(); };
+      text.appendChild(drop);
+    }
+  }
   const actions = el.querySelector('.msgActions');
   if(actions) actions.remove(); // nothing to edit/react to - it was never saved
 }
@@ -4117,9 +4447,54 @@ function addFiles(files){
   incoming.forEach(file => {
     if(file.size > maxFileBytes){ showError('File is too large. Maximum is 10GB.'); return; }
     pendingFiles.push(file);
+    // phone photos are several MB each; a screen-sized copy looks the same
+    // in chat, uploads in a fraction of the time and is small enough to keep
+    if(shouldShrink(file)){
+      shrinkImage(file).then(small => {
+        const at = pendingFiles.indexOf(file);
+        if(small && at !== -1){ pendingFiles[at] = small; renderAttachments(); }
+      });
+    }
   });
   renderAttachments();
   $('messageInput').focus();
+}
+
+const SHRINK_OVER_BYTES = 1.2 * 1024 * 1024;
+const SHRINK_MAX_SIDE = 2560;
+function shouldShrink(file){
+  return appearance.shrinkPhotos !== false && /^image\/(jpeg|jpg)$/.test(file.type) && file.size > SHRINK_OVER_BYTES;
+}
+// Returns a smaller JPEG copy of a photo, or null to keep the original
+// (couldn't decode it, or the copy didn't come out smaller).
+async function shrinkImage(file){
+  try{
+    let source;
+    if(window.createImageBitmap){
+      source = await createImageBitmap(file, { imageOrientation:'from-image' }).catch(() => null);
+    }
+    if(!source){
+      source = await new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode failed')); };
+        img.src = url;
+      });
+    }
+    const w = source.width, h = source.height;
+    const scale = Math.min(1, SHRINK_MAX_SIDE / Math.max(w, h));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(w * scale));
+    canvas.height = Math.max(1, Math.round(h * scale));
+    canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+    if(source.close) source.close();
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.86));
+    if(!blob || blob.size >= file.size * 0.9) return null;
+    const small = new File([blob], file.name.replace(/\.(jpe?g)$/i, '') + '.jpg', { type:'image/jpeg', lastModified: file.lastModified });
+    small.shrunkFrom = file.size;
+    return small;
+  }catch(e){ return null; }
 }
 
 function renderAttachments(){
@@ -4154,6 +4529,13 @@ function renderAttachments(){
     const size = document.createElement('div');
     size.className = 'chipSize';
     size.textContent = formatBytes(file.size);
+    if(file.size > keepFileBytes){
+      size.textContent += ' · temporary';
+      size.title = 'Files over ' + formatBytes(keepFileBytes) + ' are removed after ' + tempFileHours + ' hours. Smaller files stay.';
+      chip.classList.add('temporary');
+    }else if(file.shrunkFrom){
+      size.title = 'Resized from ' + formatBytes(file.shrunkFrom) + ' to send faster. You can turn this off in Settings > Chat.';
+    }
     chip.appendChild(size);
 
     const remove = document.createElement('button');
@@ -4658,6 +5040,7 @@ function showServerMenu(event, server){
     { label:'Open server', action:() => switchServer(server.id) },
     { label:'Copy invite code', action:() => copyText(server.inviteCode || '') }
   ];
+  if(serverUnreadCount(server)) items.push({ label:'Mark as read', action:() => markServerRead(server) });
   items.push(...levelMenuItems('server:' + server.id, 'Server notifications'));
   if(server.canManage){
     items.push({ sep:true });
@@ -5296,7 +5679,7 @@ function highlightIn(el, term){
 
 // Jump to a message - loading older history first if it isn't on screen yet.
 async function goToMessage(id){
-  for(let tries = 0; tries < 12; tries++){
+  for(let tries = 0; tries < 40; tries++){
     if(document.querySelector('.message[data-message-id="' + id + '"]')){ jumpToMessage(id); return; }
     if(!historyState.hasMore) break;
     const loaded = await loadOlderMessages(true);
@@ -7407,7 +7790,17 @@ function renderTimeline(){
   }else{
     renderChannelIntro();
   }
-  timelineItems.forEach(item => appendItem(item, true));
+  timelineItems.forEach(item => {
+    if(newMarker && item.kind === newMarker.kind && item.data.id === newMarker.id){
+      const line = document.createElement('div');
+      line.className = 'newMessagesLine';
+      line.id = 'newMessagesLine';
+      line.innerHTML = '<span>New</span>';
+      innerEl().appendChild(line);
+      lastItem = null; // the first new message starts a fresh group under the line
+    }
+    appendItem(item, true);
+  });
 }
 
 async function loadOlderMessages(silent){
@@ -7417,20 +7810,21 @@ async function loadOlderMessages(silent){
   const hint = $('loadOlderHint');
   if(hint) hint.textContent = 'Loading older messages…';
   try{
-    const response = await fetch('/messages?room=' + encodeURIComponent(room) + '&before=' + historyState.oldestId, { headers: bearer() });
-    if(!response.ok) throw new Error('could not load older messages');
-    const older = await response.json();
+    const response = await fetch('/history?room=' + encodeURIComponent(room) + '&before=' + historyState.oldestId, { headers: bearer() });
+    if(!response.ok) throw new Error('Could not load older messages.');
+    const page = await response.json();
     if(room !== currentRoom) return false;
-    historyState.hasMore = older.length >= 50;
+    const older = page.messages || [];
+    historyState.hasMore = !!page.hasMore;
     if(older.length) historyState.oldestId = older[0].id;
-    const items = older.filter(m => !m.deleted).map(data => ({ kind:'message', data }));
+    const items = mergeHistoryPage(page);
     items.forEach(item => cacheFromPayload(item.data));
     const el = messagesEl();
     const fromBottom = el.scrollHeight - el.scrollTop;
     timelineItems = items.concat(timelineItems);
     renderTimeline();
     el.scrollTop = el.scrollHeight - fromBottom;
-    return items.length > 0;
+    return older.length > 0;
   }catch(err){
     if(!silent) toast(err.message);
     return false;
@@ -7741,6 +8135,7 @@ function openSettings(sectionKey){
   openSettingsLayer('user', [
     { title:'User Settings', items:[
       { key:'account', label:'My Account', render:renderAccountSection },
+      { key:'devices', label:'Devices', render:renderDevicesSection },
       { key:'profile', label:'Profiles', render:renderProfileSection },
       { key:'privacy', label:'Privacy & Safety', render:renderPrivacySection },
       { key:'bots', label:'My Bots', render:renderBotsSection }
@@ -7787,7 +8182,7 @@ function renderAccountSection(c){
       '<button class="btn" id="pwSave" style="margin-top:14px">Change Password</button>' +
       '<div class="inlineMsg" id="pwMsg"></div>' +
       '<div class="switchDesc">Changing your password signs you out on every other device.</div>') +
-    section('Sign Out', '<div class="switchDesc" style="margin-bottom:12px">This device stays signed in until you log out (for up to 90 days).</div><button class="btn danger" id="accLogout">Log Out</button>');
+    section('Sign Out', '<div class="switchDesc" style="margin-bottom:12px">This device stays signed in until you log out, or until it has gone 90 days without being used. <button class="linkBtn" id="accDevices">See every device</button></div><button class="btn danger" id="accLogout">Log Out</button>');
 
   $('accBanner').style.background = myProfile.bannerColor || avatarColour(username);
   $('accAvatar').appendChild(createAvatar(username, 'lg'));
@@ -7798,10 +8193,12 @@ function renderAccountSection(c){
   $('accEditProfile').onclick = () => showSettingsSection('profile');
   $('accEditName').onclick = () => { showSettingsSection('profile'); setTimeout(() => { const i = $('profDisplayName'); if(i) i.focus(); }, 50); };
   $('accLogout').onclick = () => { closeSettings(true); logout(); };
+  $('accDevices').onclick = () => showSettingsSection('devices');
   $('pwSave').onclick = async () => {
     const current = $('pwCurrent').value, next = $('pwNew').value, confirmValue = $('pwConfirm').value;
     if(!current || !next){ inlineMessage($('pwMsg'), 'Fill in your current and new password.', true); return; }
     if(next !== confirmValue){ inlineMessage($('pwMsg'), 'The new passwords don\'t match.', true); return; }
+    if(next.length < 8){ inlineMessage($('pwMsg'), 'Use a new password of at least 8 characters.', true); return; }
     try{
       const response = await fetch('/settings/password', { method:'POST', headers:authHeaders(), body:JSON.stringify({ currentPassword:current, newPassword:next }) });
       const data = await response.json();
@@ -7810,6 +8207,76 @@ function renderAccountSection(c){
       inlineMessage($('pwMsg'), 'Password changed' + (data.signedOutSessions ? ' — signed out ' + data.signedOutSessions + ' other session' + (data.signedOutSessions === 1 ? '' : 's') : '') + '.');
     }catch(err){ inlineMessage($('pwMsg'), err.message, true); }
   };
+}
+
+// Settings > Devices: everywhere this account is logged in, with a way to
+// sign any of them out.
+async function renderDevicesSection(c){
+  c.innerHTML =
+    '<h2 class="settingsTitle">Devices</h2>' +
+    '<div class="settingsSub">Every browser and phone where you are logged in. If you don\'t recognise one, sign it out and change your password.</div>' +
+    '<div id="deviceList" class="deviceList"><div class="switchDesc">Loading…</div></div>' +
+    '<div class="rowFlex" style="margin-top:18px"><button class="btn danger" id="devSignOutOthers" hidden>Sign out all other devices</button></div>' +
+    '<div class="inlineMsg" id="devMsg"></div>';
+  const list = $('deviceList');
+  async function load(){
+    let rows;
+    try{
+      const response = await fetch('/sessions', { headers: bearer() });
+      if(!response.ok) throw new Error('Could not load your devices.');
+      rows = await response.json();
+    }catch(err){ list.innerHTML = ''; list.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: err.message })); return; }
+    if(!$('deviceList')) return; // settings closed while loading
+    list.innerHTML = '';
+    rows.forEach(row => {
+      const item = document.createElement('div');
+      item.className = 'deviceRow' + (row.current ? ' current' : '');
+      const icon = document.createElement('div');
+      icon.className = 'deviceIcon';
+      icon.innerHTML = /iPhone|Android|iPad/.test(row.device)
+        ? '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+      const info = document.createElement('div');
+      info.className = 'deviceInfo';
+      const name = document.createElement('div');
+      name.className = 'deviceName';
+      name.textContent = row.device;
+      if(row.current) name.appendChild(Object.assign(document.createElement('span'), { className:'deviceTag', textContent:'This device' }));
+      const sub = document.createElement('div');
+      sub.className = 'deviceSub';
+      sub.textContent = (row.current || row.online ? 'Active now' : 'Last used ' + timeAgo(row.lastSeenAt)) + ' · Logged in ' + parseTime(row.createdAt).toLocaleDateString([], { day:'numeric', month:'short', year:'numeric' });
+      info.appendChild(name); info.appendChild(sub);
+      item.appendChild(icon); item.appendChild(info);
+      if(!row.current){
+        const out = document.createElement('button');
+        out.className = 'btn grey';
+        out.textContent = 'Sign out';
+        out.onclick = async () => {
+          out.disabled = true;
+          try{
+            const response = await fetch('/sessions/' + encodeURIComponent(row.id) + '/revoke', { method:'POST', headers:authHeaders(), body:'{}' });
+            if(!response.ok && response.status !== 404) throw new Error('Could not sign that device out. Try again.');
+            inlineMessage($('devMsg'), 'Signed out ' + row.device + '.');
+            load();
+          }catch(err){ out.disabled = false; inlineMessage($('devMsg'), err.message, true); }
+        };
+        item.appendChild(out);
+      }
+      list.appendChild(item);
+    });
+    $('devSignOutOthers').hidden = rows.filter(r => !r.current).length < 1;
+  }
+  $('devSignOutOthers').onclick = async () => {
+    if(!confirm('Sign out every device except this one?')) return;
+    try{
+      const response = await fetch('/sessions/revoke-others', { method:'POST', headers:authHeaders(), body:'{}' });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'Could not sign the other devices out.');
+      inlineMessage($('devMsg'), 'Signed out ' + data.signedOutSessions + ' other device' + (data.signedOutSessions === 1 ? '' : 's') + '.');
+      load();
+    }catch(err){ inlineMessage($('devMsg'), err.message, true); }
+  };
+  load();
 }
 
 const BANNER_PRESETS = ['', '#5865f2', '#eb459e', '#23a55a', '#f0b132', '#ed4245', '#1abc9c', '#9b59b6', '#e67e22', '#4e5058'];
@@ -8130,7 +8597,9 @@ function renderChatSection(c){
   c.innerHTML =
     '<h2 class="settingsTitle">Chat</h2>' +
     section('Display', switchRow('chLinkImages', 'Show link previews', 'Show a preview card under links (title, description, picture) and the picture for image links. The chat server fetches the page, so the site doesn\'t see who\'s reading; pictures are loaded from the site.', appearance.linkPreviews !== false)) +
-    section('Typing', switchRow('chTyping', 'Show when people are typing', 'The "… is typing" line above the message box.', appearance.showTyping !== false));
+    section('Typing', switchRow('chTyping', 'Show when people are typing', 'The "… is typing" line above the message box.', appearance.showTyping !== false)) +
+    section('Sending photos', switchRow('chShrink', 'Resize large photos before sending', 'Photos over about 1 MB are sent as a screen-sized copy, which uploads much faster. Turn this off to always send the original file.', appearance.shrinkPhotos !== false));
+  $('chShrink').onchange = e => setAppearance({ shrinkPhotos:e.target.checked });
   $('chLinkImages').onchange = e => setAppearance({ linkPreviews:e.target.checked }, true);
   $('chTyping').onchange = e => { setAppearance({ showTyping:e.target.checked }); renderTyping(); };
 }
@@ -9790,7 +10259,7 @@ function selectMention(candidate){
 }
 
 const input = $('messageInput');
-input.addEventListener('input', () => { autoResize(); sendTyping(); updateMentionState(); });
+input.addEventListener('input', () => { autoResize(); sendTyping(); updateMentionState(); draftChanged(); });
 input.addEventListener('keydown', e => {
   if(mentionState){
     const box = $('mentionAutocomplete');
@@ -9873,7 +10342,8 @@ document.addEventListener('click', e => {
 });
 ['pinsPopout','profilePopout','inboxPopout','threadsPopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
 window.addEventListener('resize', () => { hideContextMenu(); hideEmojiPicker(); });
-window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); });
+window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); settleReadDebt(); });
+document.addEventListener('visibilitychange', () => { if(!document.hidden) settleReadDebt(); });
 window.addEventListener('blur', () => { isFocused = false; });
 window.addEventListener('beforeunload', stopTyping);
 
@@ -9913,7 +10383,8 @@ document.addEventListener('keydown', e => {
 });
 
 $('switcherInput').addEventListener('input', renderSwitcher);
-$('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); login(); } });
+$('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); if(loginMode === 'signup') $('passwordAgain').focus(); else login(); } });
+$('passwordAgain').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); registerUser(); } });
 $('username').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('password').focus(); } });
 
 // The service worker is needed for the app to be installable (and for

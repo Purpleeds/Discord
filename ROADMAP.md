@@ -150,6 +150,14 @@ large, new system - also split it over several sessions).
   Graphite, Midnight, Daylight. Text on the accent colour uses `--on-brand`
   (dark or white, worked out from the accent's brightness).
 
+## Version 3 (Nov 2026)
+
+- [x] **A chat you can rely on** - kept attachments, server-side unread,
+  hashed sessions with a Devices page, a safer login screen, connection
+  banner with queued sends, drafts, paged history and a search index. The
+  full list, what to check after deploying, and the ideas for version 4 are
+  in [UPGRADES.md](UPGRADES.md).
+
 ## Decided against
 
 - Game detection / Rich Presence, game overlays, PlayStation/Xbox linking -

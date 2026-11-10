@@ -7,6 +7,9 @@ deployment (Render web service from `main`, Postgres on Neon).
 features, work through it in order unless asked otherwise, and tick items
 off there (with anything learned) when they ship.
 
+**UPGRADES.md** logs each major version (what changed, what to check, what
+to do next) - read it before a big upgrade and add an entry after one.
+
 ## Layout
 - `server.js`: the whole backend (Express routes, Socket.IO handlers, schema).
 - `public/index.html`: the whole frontend (CSS, markup and JS in one file).
@@ -20,6 +23,9 @@ off there (with anything learned) when they ship.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
   Calls need a real browser to check audio/video: Playwright's Chromium
   with `--use-fake-ui-for-media-stream --use-fake-device-for-media-stream`.
+- `regression/`: the bigger suites (API and real-browser), run against a
+  fresh server that `regression/run.sh` starts - see `regression/README.md`. Run them all
+  before merging anything broad; add to them when you add a feature.
 
 ## Rules
 - **Never assume a fresh database.** `setupSchema()` runs on every boot
@@ -86,6 +92,35 @@ off there (with anything learned) when they ship.
   `serversForUser()` and `serverMemberUsernames()` all leave bots out of it.
   `public/sdk/chat-bot.js` is the public bot library - keep it in step with
   the socket events it uses.
+- Login tokens are passwords: `sessions.token` holds only `sessionKey(token)`
+  (`sha256:<hex>`). Never store, log or return a raw token or its hash; the
+  Devices page uses `public_id`. End sessions with `endSessions()` (it also
+  drops their live sockets). The app's login sends `create:false`, so it
+  never auto-creates an account; `AUTO_REGISTER_ON_LOGIN` only applies to
+  callers that leave it out. Check new names with `usernameTaken()` (it
+  ignores capitals).
+- Unread is server-side: `unreadFor()` counts messages newer than the
+  person's read receipt (and their `unread_base_id`). Anything that gives
+  someone a room that already has history (joining a server, being added to
+  a group) must call `markRoomsRead()` so old history isn't "unread". The
+  client marks read only through `markCurrentRead()` (not while the tab is
+  in the background) and never emits `markRead` directly.
+- Attachments: `files.storage` is `'db'` (kept; bytes in `file_blobs`, served
+  by `/media`) or `'disk'` (temporary, has `expires_at`). `/media` must keep
+  the `/uploads` safety rules (type from the extension, `ACTIVE_UPLOAD_EXT`
+  download-only, `SVG_UPLOAD_CSP`). Delete files with `deleteFiles()` so the
+  bytes, the disk file and everyone's screen go together. File queries list
+  `FILE_COLUMNS` explicitly, like messages.
+- The client loads a room with `GET /history` (messages + the files from the
+  same stretch of time, `HISTORY_PAGE` at a time). `/messages` and `/files`
+  remain for bots and older clients.
+- The client sends chat through `postChatMessage()`; it works while
+  disconnected (socket.io holds the emit) and failed sends stay on screen
+  via `markSendFailed()`. Don't add an "if not connected, return" in front
+  of sending.
+- The app page is served with `APP_CSP`. Anything new the page loads from
+  another origin (a script, a font, a frame) has to be allowed there, and
+  the browser regression suite fails on CSP violations.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

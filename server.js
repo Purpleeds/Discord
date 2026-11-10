@@ -35,6 +35,16 @@ const MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024; // 10GB
 // larger as base64 text) keeps each row a sane size.
 const MAX_IMAGE_BYTES = 1.5 * 1024 * 1024;
 const FILE_EXPIRY_HOURS = 6;
+// Attachments up to KEEP_FILE_MB are kept: they are stored in Postgres
+// (file_blobs), so pictures and small files in a chat survive restarts and
+// stay put. All kept files together may use MEDIA_BUDGET_MB; when that
+// fills up, the oldest are removed to make room (size it to your database
+// plan - Neon's free tier is 0.5 GB for everything). Anything bigger than
+// KEEP_FILE_MB is still a temporary share on local disk, gone after
+// FILE_EXPIRY_HOURS or a restart, and the app says so on the file.
+const KEEP_FILE_BYTES = Math.max(0, Number(process.env.KEEP_FILE_MB || 8)) * 1024 * 1024;
+const MEDIA_BUDGET_BYTES = Math.max(1, Number(process.env.MEDIA_BUDGET_MB || 250)) * 1024 * 1024;
+const HISTORY_PAGE = 75; // messages per page of /history
 const DEFAULT_CHANNELS = ['general', 'gaming', 'coding'];
 const DEFAULT_SERVER_NAME = 'general';
 
@@ -124,14 +134,48 @@ async function one(text, params) {
 app.set('trust proxy', 1); // Render sits in front of us - lets req.ip be the real visitor (used for rate limits)
 app.use(compression()); // gzip responses: index.html and JSON shrink ~70-80%
 app.use(express.json({ limit: '5mb' })); // room for a 1.5MB server icon AND banner (as base64) in one save
+// What the app's own page may load. The page is one file of inline script
+// and inline handlers, so script-src has to allow 'unsafe-inline' - this is
+// not a full XSS shield. What it does stop: the app being framed by another
+// site (clickjacking), plugins, <base> hijacking, forms posting elsewhere,
+// and scripts loaded from anywhere but this server. Images and media stay
+// open because people paste picture links and avatars from any site.
+const APP_CSP = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob: https: http:",
+  "media-src 'self' data: blob: https: http:",
+  "connect-src 'self' ws: wss:",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'self'"
+].join('; ');
 app.use((req, res, next) => {
   // Browsers must trust the Content-Type we send rather than guessing one
   // from the bytes (a "guessed" HTML page is how uploads turn into XSS).
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()');
+  // once someone has reached us over HTTPS, their browser should never try plain HTTP again
+  if (req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   next();
 });
-app.use(express.static(PUBLIC_DIR));
+app.use(express.static(PUBLIC_DIR, {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Content-Security-Policy', APP_CSP);
+      // always re-check the page itself (a cheap 304), so a new release
+      // shows up on the next visit instead of whenever a cache expires
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  }
+}));
 
 // Uploaded files are served from this same origin, where the login token
 // lives in localStorage - so a file that a browser would run as a page
@@ -570,6 +614,54 @@ async function setupSchema() {
   `);
   // a bot's answer to a slash command shows "<invoked_by> used /name"
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS invoked_by TEXT`);
+
+  // ---- v3: sessions ----
+  // sessions.token now holds 'sha256:<hex>' (see sessionKey()). Old rows are
+  // hashed lazily / by hashLegacySessions(), not here - see that function.
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS public_id TEXT`);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS device TEXT`);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ`);
+  await pool.query(`UPDATE sessions SET public_id = substr(md5(random()::text || token), 1, 16) WHERE public_id IS NULL`);
+  await pool.query(`UPDATE sessions SET last_seen_at = created_at WHERE last_seen_at IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_username ON sessions (username)`);
+  // ---- v3: unread that survives a reload ----
+  // What counts as unread is "newer than your read receipt for that room".
+  // A room you've never opened has no receipt, so each account also has a
+  // baseline: nothing older than it is ever unread. Existing accounts get
+  // "now" the first time this runs (so the upgrade doesn't mark years of
+  // history unread); new accounts get it when they're created.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS unread_base_id INTEGER`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS unread_base_at TIMESTAMPTZ`);
+  await pool.query(`UPDATE users SET unread_base_id = (SELECT COALESCE(MAX(id), 0) FROM messages), unread_base_at = NOW() WHERE unread_base_id IS NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_read_receipts_user ON read_receipts (username)`);
+  // ---- v3: attachments that last ----
+  // files.storage: 'disk' (temporary, expires_at set) or 'db' (kept; bytes
+  // in file_blobs, served by /media/<key>/<name>). Rows from before this
+  // existed are all 'disk' and keep their original 6-hour life.
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS storage TEXT DEFAULT 'disk'`);
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ`);
+  await pool.query(`UPDATE files SET expires_at = created_at + INTERVAL '${FILE_EXPIRY_HOURS} hours' WHERE COALESCE(storage, 'disk') = 'disk' AND expires_at IS NULL`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS file_blobs (
+      file_id INTEGER PRIMARY KEY,
+      key TEXT NOT NULL UNIQUE,
+      data BYTEA NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_file_blobs_created ON file_blobs (created_at)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_files_room_created ON files (room, created_at)`);
+  // Search uses ILIKE '%words%', which without this index reads every
+  // message ever sent. pg_trgm ships with Postgres (and Neon); if a host
+  // doesn't allow it, search still works, just slower.
+  await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
+    .then(() => pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_text_trgm ON messages USING gin (text gin_trgm_ops)`))
+    .catch(err => console.warn('Search index not created (pg_trgm unavailable?):', err.message));
+  // Two accounts whose names differ only by capitals ("Purple" / "purple")
+  // are an impersonation tool. New names are checked in usernameTaken(); the
+  // index backs that up, but can't be built if such a pair already exists.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users (LOWER(username))`)
+    .catch(err => console.warn('Skipped the case-insensitive username index (existing look-alike names?):', err.message));
 }
 
 // ---------------- SERVERS (guilds) ----------------
@@ -711,9 +803,23 @@ function avatarUrlOf(row) {
 }
 async function createUser(username, passwordHash, displayName) {
   return one(
-    `INSERT INTO users (username, password_hash, display_name) VALUES ($1, $2, $3) RETURNING *`,
+    `INSERT INTO users (username, password_hash, display_name, unread_base_id, unread_base_at)
+     VALUES ($1, $2, $3, (SELECT COALESCE(MAX(id), 0) FROM messages), NOW()) RETURNING *`,
     [username, passwordHash, displayName]
   );
+}
+// True if the name is taken, ignoring capitals ("purple" can't be registered
+// next to "Purple").
+async function usernameTaken(username) {
+  return !!(await one(`SELECT 1 FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1`, [username]));
+}
+// The account someone means when they type a username at login: an exact
+// match, or failing that the single account that matches ignoring capitals.
+async function userForLogin(typed) {
+  const exact = await getUser(typed);
+  if (exact) return exact;
+  const rows = await q(`SELECT username FROM users WHERE LOWER(username) = LOWER($1) LIMIT 2`, [typed]);
+  return rows.length === 1 ? getUser(rows[0].username) : null;
 }
 async function setAdminFlag(username, isAdminValue) {
   await pool.query(`UPDATE users SET is_admin = $1 WHERE username = $2`, [isAdminValue ? 1 : 0, username]);
@@ -777,13 +883,13 @@ async function getMessageById(id) {
 // "ORDER BY id ASC LIMIT 300", which is the OLDEST 300 - so once a channel
 // passed 300 messages, reloading it showed ancient history and every newer
 // message vanished until it scrolled in live again.
-async function getMessagesForRoom(room) {
+async function getMessagesForRoom(room, limit = 300) {
   return q(
     `SELECT * FROM (
        SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, created_at
-       FROM messages WHERE room = $1 ORDER BY id DESC LIMIT 300
+       FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2
      ) recent ORDER BY id ASC`,
-    [room]
+    [room, limit]
   );
 }
 async function getMessagesBefore(room, beforeId, limit) {
@@ -831,13 +937,26 @@ async function insertFile(room, user, toUser, isGroup, fileName, fileType, fileU
 async function getFileById(id) {
   return one(`SELECT * FROM files WHERE id = $1`, [id]);
 }
+const FILE_COLUMNS = `id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, created_at`;
 async function getFilesForRoom(room) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, created_at
+       SELECT ${FILE_COLUMNS}
        FROM files WHERE room = $1 ORDER BY id DESC LIMIT 120
      ) recent ORDER BY id ASC`,
     [room]
+  );
+}
+// Files sent between two moments (either end may be null = open), newest
+// 200, oldest first - the files that belong beside one page of messages.
+async function getFilesBetween(room, from, until) {
+  return q(
+    `SELECT * FROM (
+       SELECT ${FILE_COLUMNS} FROM files
+       WHERE room = $1 AND ($2::timestamptz IS NULL OR created_at >= $2) AND ($3::timestamptz IS NULL OR created_at < $3)
+       ORDER BY id DESC LIMIT 200
+     ) page ORDER BY id ASC`,
+    [room, from, until]
   );
 }
 
@@ -878,55 +997,152 @@ async function isAdmin(username) {
   return !!(user && user.is_admin);
 }
 
-async function createToken(username) {
+// ---- Sessions ----
+// A login token is a password for as long as it lives, so the database only
+// ever holds its SHA-256 ("sha256:<hex>" in sessions.token) - a leaked
+// backup or a peek at the table can't be used to log in as anyone. The
+// browser keeps the real token; we hash whatever it sends and look that up.
+// Sessions also carry a public id (safe to show in Settings > Devices), a
+// short "Chrome on Windows" style label, and when they were last used.
+// They expire after SESSION_DAYS without use (not SESSION_DAYS after login,
+// which used to sign active people out every three months).
+function sessionKey(token) {
+  return 'sha256:' + sha256Hex(String(token));
+}
+const SESSION_TOUCH_MS = 15 * 60 * 1000; // how often "last used" is written back
+function deviceLabel(userAgent) {
+  const ua = String(userAgent || '');
+  if (!ua) return 'Unknown device';
+  let browser = 'Browser';
+  if (/Edg(e|A|iOS)?\//.test(ua)) browser = 'Edge';
+  else if (/OPR\/|Opera/.test(ua)) browser = 'Opera';
+  else if (/SamsungBrowser\//.test(ua)) browser = 'Samsung Internet';
+  else if (/Firefox\/|FxiOS\//.test(ua)) browser = 'Firefox';
+  else if (/Chrome\/|CriOS\//.test(ua)) browser = 'Chrome';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+  else if (/node|undici|axios|curl|python/i.test(ua)) browser = 'A script';
+  let os = '';
+  if (/iPhone|iPod/.test(ua)) os = 'iPhone';
+  else if (/iPad/.test(ua)) os = 'iPad';
+  else if (/Android/.test(ua)) os = 'Android';
+  else if (/CrOS/.test(ua)) os = 'Chromebook';
+  else if (/Windows/.test(ua)) os = 'Windows';
+  else if (/Mac OS X|Macintosh/.test(ua)) os = 'Mac';
+  else if (/Linux/.test(ua)) os = 'Linux';
+  return os ? `${browser} on ${os}` : browser;
+}
+
+async function createToken(username, req) {
   const token = crypto.randomBytes(32).toString('hex');
-  tokens.set(token, { username, createdAt: Date.now() });
-  await pool.query(`INSERT INTO sessions (token, username) VALUES ($1, $2) ON CONFLICT (token) DO NOTHING`, [token, username]);
+  const key = sessionKey(token);
+  const publicId = crypto.randomBytes(8).toString('hex');
+  const device = deviceLabel(req && req.headers && req.headers['user-agent']);
+  tokens.set(key, { username, publicId, seenAt: Date.now(), savedAt: Date.now() });
+  await pool.query(
+    `INSERT INTO sessions (token, username, public_id, device, last_seen_at) VALUES ($1, $2, $3, $4, NOW()) ON CONFLICT (token) DO NOTHING`,
+    [key, username, publicId, device]
+  );
   return token;
 }
 
-// Checks the in-memory cache first (fast path for the common case), and
-// falls back to the sessions table on a miss - this is what lets a token
-// keep working after the server process restarts, since the in-memory
-// cache is empty right after a restart but the database isn't.
-async function usernameForToken(token) {
-  if (!token) return null;
-  let entry = tokens.get(token);
+// Tokens made before sessions were hashed are still stored as-is. They are
+// hashed in place the first time they're used, and in one sweep a few
+// minutes after boot (not AT boot: during a deploy the previous version is
+// still running for a moment and looks tokens up the old way).
+async function hashLegacySessions() {
+  await pool.query(`UPDATE sessions SET token = 'sha256:' || encode(sha256(convert_to(token, 'UTF8')), 'hex') WHERE token NOT LIKE 'sha256:%'`);
+}
+
+// Looks a token up: memory first (the common case), then the sessions
+// table - which is what keeps people logged in across restarts. Returns
+// { username, key, publicId } or null.
+async function sessionForToken(token) {
+  if (!token || typeof token !== 'string' || token.length > 200) return null;
+  const key = sessionKey(token);
+  let entry = tokens.get(key);
   if (!entry) {
-    const row = await one(`SELECT username, created_at FROM sessions WHERE token = $1`, [token]);
+    let row = await one(`SELECT username, public_id, created_at, last_seen_at FROM sessions WHERE token = $1`, [key]);
+    if (!row) {
+      row = await one(
+        `UPDATE sessions SET token = $2 WHERE token = $1 AND token NOT LIKE 'sha256:%' RETURNING username, public_id, created_at, last_seen_at`,
+        [token, key]
+      );
+    }
     if (!row) return null;
-    entry = { username: row.username, createdAt: new Date(row.created_at).getTime() };
-    tokens.set(token, entry);
+    const seen = new Date(row.last_seen_at || row.created_at).getTime();
+    entry = { username: row.username, publicId: row.public_id, seenAt: seen, savedAt: seen };
+    tokens.set(key, entry);
   }
-  if (Date.now() - entry.createdAt > SESSION_MS) {
-    await deleteToken(token);
+  const now = Date.now();
+  if (now - entry.seenAt > SESSION_MS) {
+    await deleteSession(key);
     return null;
   }
-  return entry.username;
+  entry.seenAt = now;
+  if (now - entry.savedAt > SESSION_TOUCH_MS) {
+    entry.savedAt = now;
+    pool.query(`UPDATE sessions SET last_seen_at = NOW() WHERE token = $1`, [key]).catch(err => console.error('session touch failed:', err.message));
+  }
+  return { username: entry.username, key, publicId: entry.publicId };
+}
+async function usernameForToken(token) {
+  const session = await sessionForToken(token);
+  return session ? session.username : null;
 }
 
 async function removeExpiredSessions() {
-  await pool.query(`DELETE FROM sessions WHERE created_at < NOW() - INTERVAL '${SESSION_DAYS} days'`);
-  for (const [token, entry] of tokens) if (Date.now() - entry.createdAt > SESSION_MS) tokens.delete(token);
+  await pool.query(`DELETE FROM sessions WHERE COALESCE(last_seen_at, created_at) < NOW() - INTERVAL '${SESSION_DAYS} days'`);
+  for (const [key, entry] of tokens) if (Date.now() - entry.seenAt > SESSION_MS) tokens.delete(key);
 }
 
+async function deleteSession(key) {
+  tokens.delete(key);
+  await pool.query(`DELETE FROM sessions WHERE token = $1`, [key]);
+}
 async function deleteToken(token) {
-  tokens.delete(token);
-  await pool.query(`DELETE FROM sessions WHERE token = $1`, [token]);
+  await deleteSession(sessionKey(token));
+}
+// Ends sessions by key: forgets them, deletes them, and disconnects any
+// live socket that was opened with one of them.
+async function endSessions(username, keys, notice) {
+  if (!keys.length) return;
+  for (const key of keys) tokens.delete(key);
+  await pool.query(`DELETE FROM sessions WHERE username = $1 AND token = ANY($2)`, [username, keys]);
+  const gone = new Set(keys);
+  for (const id of [...(onlineUsers.get(username) || [])]) {
+    const s = io.sockets.sockets.get(id);
+    if (s && gone.has(s.sessionKey)) {
+      s.emit('adminNotice', { message: notice });
+      s.disconnect(true);
+    }
+  }
 }
 
 async function authFromRequest(req) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : (header.startsWith('Bot ') ? header.slice(4) : '');
-  const username = isBotToken(token) ? await usernameForBotToken(token) : await usernameForToken(token);
+  let username = null;
+  if (isBotToken(token)) username = await usernameForBotToken(token);
+  else {
+    const session = await sessionForToken(token);
+    if (session) { username = session.username; req.sessionKey = session.key; req.sessionId = session.publicId; }
+  }
   if (!username) return null;
   const user = await getUser(username);
   if (!user || user.banned) return null;
   return username;
 }
 
+// Express 4 doesn't catch a rejected async middleware, so a database blip
+// here used to leave the request hanging until the browser gave up.
 async function requireAuth(req, res, next) {
-  const username = await authFromRequest(req);
+  let username;
+  try {
+    username = await authFromRequest(req);
+  } catch (err) {
+    console.error('auth check failed:', err.message);
+    return res.status(503).json({ error: 'server is busy - try again in a moment' });
+  }
   if (!username) return res.status(401).json({ error: 'not authenticated' });
   req.username = username;
   next();
@@ -1554,6 +1770,8 @@ async function normaliseFiles(rows) {
       fileUrl: row.file_url,
       fileSize: Number(row.file_size || 0),
       caption: row.caption || '',
+      kept: row.storage === 'db',
+      expiresAt: row.storage === 'db' ? null : (row.expires_at || null),
       createdAt: row.created_at
     };
   });
@@ -1569,22 +1787,85 @@ function emitRoomOrDM(room, toUser, event, payload) {
   }
 }
 
-async function removeOldFiles() {
-  const oldFiles = await q(
-    `SELECT id, file_url FROM files WHERE created_at <= NOW() - INTERVAL '${FILE_EXPIRY_HOURS} hours'`
-  );
-
-  for (const file of oldFiles) {
-    if (!file.file_url) continue;
-    if (!file.file_url.startsWith('/uploads/')) continue;
-    const rel = file.file_url.replace(/^\/uploads\//, '');
-    const filePath = path.join(UPLOAD_DIR, rel);
-    if (filePath.startsWith(UPLOAD_DIR)) {
-      try { fs.unlinkSync(filePath); } catch (_) {}
+function diskPathForUpload(fileUrl) {
+  if (!fileUrl || !fileUrl.startsWith('/uploads/')) return null;
+  const filePath = path.join(UPLOAD_DIR, fileUrl.replace(/^\/uploads\//, ''));
+  return filePath.startsWith(UPLOAD_DIR + path.sep) ? filePath : null;
+}
+// Temporary (on-disk) files past their time, plus - with `missingToo` - ones
+// whose file is simply gone (the disk doesn't survive a restart on hosts
+// like Render's free tier), so chats don't keep broken attachments.
+async function removeOldFiles(missingToo) {
+  const rows = await q(`SELECT id, room, to_user, file_url, (expires_at <= NOW()) AS expired FROM files WHERE COALESCE(storage, 'disk') = 'disk'`);
+  const gone = [];
+  for (const file of rows) {
+    const filePath = diskPathForUpload(file.file_url);
+    if (file.expired) {
+      if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
+      gone.push(file);
+    } else if (missingToo && (!filePath || !fs.existsSync(filePath))) {
+      gone.push(file);
     }
   }
+  if (!gone.length) return;
+  await pool.query(`DELETE FROM files WHERE id = ANY($1)`, [gone.map(f => f.id)]);
+  for (const file of gone) emitRoomOrDM(file.room, file.to_user, 'fileDeleted', { id: file.id, room: file.room });
+}
 
-  await pool.query(`DELETE FROM files WHERE created_at <= NOW() - INTERVAL '${FILE_EXPIRY_HOURS} hours'`);
+// ---- kept files (file_blobs) ----
+const blobCache = new Map(); // key -> { buffer, name, type } (small LRU, saves a database read per view)
+const BLOB_CACHE_BYTES = 48 * 1024 * 1024;
+let blobCacheSize = 0;
+function cacheBlob(key, entry) {
+  if (entry.buffer.length > BLOB_CACHE_BYTES / 4) return;
+  blobCache.set(key, entry);
+  blobCacheSize += entry.buffer.length;
+  for (const [oldKey, old] of blobCache) {
+    if (blobCacheSize <= BLOB_CACHE_BYTES) break;
+    blobCache.delete(oldKey);
+    blobCacheSize -= old.buffer.length;
+  }
+}
+function forgetBlob(key) {
+  const hit = blobCache.get(key);
+  if (hit) { blobCache.delete(key); blobCacheSize -= hit.buffer.length; }
+}
+// Removes files (rows + stored bytes) and tells everyone looking at them.
+async function deleteFiles(rows) {
+  if (!rows.length) return;
+  const ids = rows.map(r => r.id);
+  const blobs = await q(`DELETE FROM file_blobs WHERE file_id = ANY($1) RETURNING key`, [ids]);
+  blobs.forEach(b => forgetBlob(b.key));
+  await pool.query(`DELETE FROM files WHERE id = ANY($1)`, [ids]);
+  for (const row of rows) {
+    const filePath = (row.storage || 'disk') === 'disk' ? diskPathForUpload(row.file_url) : null;
+    if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
+    emitRoomOrDM(row.room, row.to_user, 'fileDeleted', { id: row.id, room: row.room });
+  }
+}
+// Keeps stored attachments inside MEDIA_BUDGET_BYTES by dropping the oldest.
+async function enforceMediaBudget() {
+  const used = Number((await one(`SELECT COALESCE(SUM(size), 0) AS n FROM file_blobs`)).n);
+  if (used <= MEDIA_BUDGET_BYTES) return;
+  // first anything nobody can reach any more (its channel, thread or group is gone)
+  const orphans = await q(
+    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage FROM files f
+     WHERE f.storage = 'db' AND f.room NOT LIKE 'dm:%'
+       AND NOT EXISTS (SELECT 1 FROM server_channels c WHERE c.room = f.room)
+       AND NOT EXISTS (SELECT 1 FROM threads t WHERE 'thread:' || t.id = f.room)
+       AND NOT EXISTS (SELECT 1 FROM chat_groups g WHERE 'group:' || g.id = f.room)`
+  );
+  await deleteFiles(orphans);
+  const over = await q(
+    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage FROM files f JOIN (
+       SELECT file_id, SUM(size) OVER (ORDER BY created_at DESC, file_id DESC) AS running FROM file_blobs
+     ) b ON b.file_id = f.id WHERE b.running > $1`,
+    [MEDIA_BUDGET_BYTES]
+  );
+  if (over.length) {
+    console.log(`Attachment storage is over its ${Math.round(MEDIA_BUDGET_BYTES / 1048576)} MB budget - removing the ${over.length} oldest file(s)`);
+    await deleteFiles(over);
+  }
 }
 
 function safeFileName(originalName) {
@@ -1755,51 +2036,63 @@ app.get('/healthz', route(async (req, res) => {
 }));
 
 // ---------------- HTTP ROUTES ----------------
+const MIN_PASSWORD = 8; // for NEW passwords; older, shorter ones still log in
+const PASSWORD_RULE = `password must be at least ${MIN_PASSWORD} characters`;
+const USERNAME_RULE = 'username must be 2-30 letters, numbers, dots, hyphens or underscores';
+
 app.post('/register', route(async (req, res) => {
   if (rateLimited('register:' + req.ip, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'too many new accounts from this network - try again later' });
   const username = cleanUsername(req.body.username);
   const password = String(req.body.password || '');
   if (!username || !password) return res.status(400).json({ error: 'missing fields' });
-  if (!validUsername(username)) return res.status(400).json({ error: 'username must be 2-30 letters, numbers, dots, hyphens or underscores' });
-  if (password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+  if (!validUsername(username)) return res.status(400).json({ error: USERNAME_RULE });
+  if (password.length < MIN_PASSWORD) return res.status(400).json({ error: PASSWORD_RULE });
+  if (password.length > 200) return res.status(400).json({ error: 'password is too long' });
+  if (await usernameTaken(username)) return res.status(409).json({ error: 'user exists' });
 
   try {
     const hash = await bcrypt.hash(password, 10);
     await createUser(username, hash, username);
-    const token = await createToken(username);
-    res.status(201).json({ message: 'ok', username, token, profile: await selfProfile(username) });
   } catch (_) {
-    res.status(409).json({ error: 'user exists' });
+    return res.status(409).json({ error: 'user exists' });
   }
+  const token = await createToken(username, req);
+  res.status(201).json({ message: 'ok', username, token, profile: await selfProfile(username) });
 }));
 
 app.post('/login', route(async (req, res) => {
-  const username = cleanUsername(req.body.username);
+  const typed = cleanUsername(req.body.username);
   const password = String(req.body.password || '');
-  if (!username || !password) return res.status(400).json({ error: 'missing fields' });
+  if (!typed || !password) return res.status(400).json({ error: 'missing fields' });
+  if (password.length > 200) return res.status(401).json({ error: 'invalid username or password' });
   // stops password guessing: per account and per network
-  if (rateLimited('login-user:' + username.toLowerCase(), 10, 10 * 60 * 1000) || rateLimited('login-ip:' + req.ip, 40, 10 * 60 * 1000)) {
+  if (rateLimited('login-user:' + typed.toLowerCase(), 10, 10 * 60 * 1000) || rateLimited('login-ip:' + req.ip, 40, 10 * 60 * 1000)) {
     return res.status(429).json({ error: 'too many login attempts - wait a few minutes and try again' });
   }
 
-  let user = await getUser(username);
+  // "purple" finds "Purple" when that's the only account it could mean
+  let user = await userForLogin(typed);
 
-  // No account with this username yet: create one on the spot instead of
-  // rejecting the login, as long as AUTO_REGISTER_ON_LOGIN is turned on
-  // and the username/password would have passed /register's own rules.
-  if (!user && AUTO_REGISTER_ON_LOGIN) {
+  // No account with this username yet. The app's own login screen sends
+  // create:false, so a mistyped name gets "no such account" and an offer
+  // to create one - it used to quietly make a brand-new account. Callers
+  // that don't say (scripts, older clients) keep the original behaviour:
+  // AUTO_REGISTER_ON_LOGIN creates the account on the spot.
+  if (!user) {
+    if (req.body.create === false || !AUTO_REGISTER_ON_LOGIN) {
+      return res.status(404).json({ error: 'no account with that username', code: 'no_account' });
+    }
     if (rateLimited('register:' + req.ip, 10, 60 * 60 * 1000)) return res.status(429).json({ error: 'too many new accounts from this network - try again later' });
-    if (!validUsername(username)) return res.status(400).json({ error: 'username must be 2-30 letters, numbers, dots, hyphens or underscores' });
-    if (password.length < 6) return res.status(400).json({ error: 'password must be at least 6 characters' });
+    if (!validUsername(typed)) return res.status(400).json({ error: USERNAME_RULE });
+    if (password.length < MIN_PASSWORD) return res.status(400).json({ error: PASSWORD_RULE });
     try {
       const hash = await bcrypt.hash(password, 10);
-      await createUser(username, hash, username);
-      user = await getUser(username);
+      await createUser(typed, hash, typed);
     } catch (_) {
       // Someone else raced us to create the same username - fall through
       // to the normal login check below using whatever now exists.
-      user = await getUser(username);
     }
+    user = await userForLogin(typed);
   }
 
   if (!user || user.banned) return res.status(401).json({ error: 'invalid username or password' });
@@ -1809,16 +2102,58 @@ app.post('/login', route(async (req, res) => {
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'invalid username or password' });
 
-  const token = await createToken(username);
-  res.json({ message: 'ok', username, token, profile: await selfProfile(username) });
+  const token = await createToken(user.username, req);
+  res.json({ message: 'ok', username: user.username, token, profile: await selfProfile(user.username) });
 }));
 
 app.post('/logout', requireAuth, route(async (req, res) => {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (token) await deleteToken(token);
+  if (req.sessionKey) await endSessions(req.username, [req.sessionKey], 'You logged out.');
   res.json({ message: 'ok' });
 }));
+
+// ---------------- DEVICES (Settings > Devices) ----------------
+// Everywhere this account is logged in. Only the public id ever leaves the
+// server - never the token or its hash.
+app.get('/sessions', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  const rows = await q(
+    `SELECT token, public_id, device, created_at, last_seen_at FROM sessions WHERE username = $1
+     ORDER BY (token = $2) DESC, COALESCE(last_seen_at, created_at) DESC LIMIT 100`,
+    [req.username, req.sessionKey || '']
+  );
+  const live = new Set();
+  for (const id of onlineUsers.get(req.username) || []) {
+    const s = io.sockets.sockets.get(id);
+    if (s && s.sessionKey) live.add(s.sessionKey);
+  }
+  res.json(rows.map(r => {
+    const cached = tokens.get(r.token);
+    return {
+      id: r.public_id,
+      device: r.device || 'Unknown device',
+      createdAt: r.created_at,
+      lastSeenAt: cached ? new Date(cached.seenAt).toISOString() : (r.last_seen_at || r.created_at),
+      current: r.token === req.sessionKey,
+      online: live.has(r.token)
+    };
+  }));
+}));
+
+app.post('/sessions/revoke-others', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  const others = (await q(`SELECT token FROM sessions WHERE username = $1 AND token <> $2`, [req.username, req.sessionKey || ''])).map(r => r.token);
+  await endSessions(req.username, others, 'This device was signed out from another device.');
+  res.json({ message: 'ok', signedOutSessions: others.length });
+}));
+
+app.post('/sessions/:id/revoke', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  const row = await one(`SELECT token FROM sessions WHERE username = $1 AND public_id = $2`, [req.username, String(req.params.id || '')]);
+  if (!row) return res.status(404).json({ error: 'that device is already signed out' });
+  await endSessions(req.username, [row.token], 'This device was signed out from another device.');
+  res.json({ message: 'ok', current: row.token === req.sessionKey });
+}));
+
 
 app.get('/profile', requireAuth, route(async (req, res) => res.json(await selfProfile(req.username))));
 
@@ -1872,23 +2207,14 @@ app.post('/settings/password', requireAuth, route(async (req, res) => {
   const next = String(req.body.newPassword || '');
   const user = await getUser(req.username);
   if (!user || !(await bcrypt.compare(current, user.password_hash))) return res.status(400).json({ error: 'current password is incorrect' });
-  if (next.length < 6) return res.status(400).json({ error: 'new password must be at least 6 characters' });
+  if (next.length < MIN_PASSWORD || next.length > 200) return res.status(400).json({ error: 'new ' + PASSWORD_RULE });
   if (next === current) return res.status(400).json({ error: 'new password must be different from the current one' });
   await pool.query(`UPDATE users SET password_hash = $1 WHERE username = $2`, [await bcrypt.hash(next, 10), req.username]);
   invalidateUser(req.username);
 
-  const header = req.headers.authorization || '';
-  const keepToken = header.startsWith('Bearer ') ? header.slice(7) : '';
-  const others = await q(`SELECT token FROM sessions WHERE username = $1 AND token <> $2`, [req.username, keepToken]);
-  for (const row of others) tokens.delete(row.token);
-  await pool.query(`DELETE FROM sessions WHERE username = $1 AND token <> $2`, [req.username, keepToken]);
-  for (const id of [...(onlineUsers.get(req.username) || [])]) {
-    const s = io.sockets.sockets.get(id);
-    if (s && (s.handshake.auth || {}).token !== keepToken) {
-      s.emit('adminNotice', { message: 'Your password was changed on another device - please log in again.' });
-      s.disconnect(true);
-    }
-  }
+  // every other device is signed out; the one that changed it stays in
+  const others = (await q(`SELECT token FROM sessions WHERE username = $1 AND token <> $2`, [req.username, req.sessionKey || ''])).map(r => r.token);
+  await endSessions(req.username, others, 'Your password was changed on another device - please log in again.');
   res.json({ message: 'ok', signedOutSessions: others.length });
 }));
 
@@ -1996,10 +2322,11 @@ app.get('/read-receipts', requireAuth, route(async (req, res) => {
 // SQL that limits `messages` to rooms `username` can read: channels of
 // servers they're in (and the original server), their group chats and
 // their DMs. $1 = array of channel/group rooms, $2 = username.
-async function readableRoomsClause(username) {
+async function readableRoomsClause(username, alias = '') {
+  const room = alias ? alias + '.room' : 'room';
   return {
     // usernames can't contain ':', so a DM room splits cleanly into its two people
-    sql: `(room = ANY($1) OR (room LIKE 'dm:%' AND (split_part(room, ':', 2) = $2 OR split_part(room, ':', 3) = $2)))`,
+    sql: `(${room} = ANY($1) OR (${room} LIKE 'dm:%' AND (split_part(${room}, ':', 2) = $2 OR split_part(${room}, ':', 3) = $2)))`,
     values: [await allRoomsFor(username), username]
   };
 }
@@ -2055,6 +2382,88 @@ app.get('/mentions', requireAuth, route(async (req, res) => {
     [...readable.values, '(^|[^a-z0-9_.-])@' + escapeRegex(req.username) + '($|[^a-z0-9_.-])', myRoles]
   );
   res.json(await normaliseMessages(rows));
+}));
+
+// ---------------- UNREAD ----------------
+// How many messages (and files) are waiting in each room, worked out from
+// read receipts - so the badges are right the moment the app opens, on any
+// device, not only for what arrived while this tab happened to be open.
+// Blocked people never count. `mentions` is the part of `count` that pings
+// you (@you, @everyone, one of your roles).
+async function mentionPatternFor(username) {
+  return '(^|[^a-z0-9_.-])@' + escapeRegex(username) + '($|[^a-z0-9_.-])';
+}
+async function unreadFor(username) {
+  const readable = await readableRoomsClause(username, 'm');
+  const me = await one(`SELECT unread_base_id, unread_base_at FROM users WHERE username = $1`, [username]);
+  const baseId = (me && me.unread_base_id) || 0;
+  const baseAt = (me && me.unread_base_at) || new Date(0);
+  const myRoles = (await q(`SELECT role_id FROM server_member_roles WHERE username = $1`, [username])).map(r => r.role_id);
+  const [messageRows, fileRows] = await Promise.all([
+    q(
+      `SELECT m.room, COUNT(*)::int AS n,
+              COUNT(*) FILTER (WHERE m.text ~* $3 OR m.mentions_everyone = 1
+                OR (m.mention_role_ids <> '' AND string_to_array(m.mention_role_ids, ',')::int[] && $4::int[]))::int AS mentions
+       FROM messages m
+       LEFT JOIN read_receipts r ON r.room = m.room AND r.username = $2
+       WHERE m.id > $5 AND ${readable.sql} AND m.deleted_at IS NULL AND m."user" <> $2
+         AND m.id > COALESCE(r.last_message_id, 0)
+         AND m."user" NOT IN (SELECT blocked FROM blocks WHERE blocker = $2)
+       GROUP BY m.room`,
+      [...readable.values, await mentionPatternFor(username), myRoles, baseId]
+    ),
+    q(
+      `SELECT m.room, COUNT(*)::int AS n
+       FROM files m
+       LEFT JOIN read_receipts r ON r.room = m.room AND r.username = $2
+       WHERE m.created_at > $3 AND ${readable.sql} AND m."user" <> $2
+         AND m.created_at > COALESCE(r.updated_at, 'epoch'::timestamptz)
+         AND m."user" NOT IN (SELECT blocked FROM blocks WHERE blocker = $2)
+       GROUP BY m.room`,
+      [...readable.values, baseAt]
+    )
+  ]);
+  const rooms = {};
+  for (const row of messageRows) rooms[row.room] = { count: row.n, mentions: row.mentions };
+  for (const row of fileRows) {
+    if (!rooms[row.room]) rooms[row.room] = { count: 0, mentions: 0 };
+    rooms[row.room].count += row.n;
+  }
+  return rooms;
+}
+app.get('/unread', requireAuth, route(async (req, res) => {
+  res.json({ rooms: await unreadFor(req.username) });
+}));
+
+// Marks rooms read up to their newest message: every channel and thread of
+// one server ({ serverId }), or everything you can read ({ all: true }).
+async function markRoomsRead(username, rooms) {
+  if (!rooms.length) return;
+  await pool.query(
+    `INSERT INTO read_receipts (room, username, last_message_id, updated_at)
+     SELECT r.room, $2, COALESCE((SELECT MAX(id) FROM messages WHERE room = r.room), 0), NOW()
+     FROM unnest($1::text[]) AS r(room)
+     ON CONFLICT (room, username) DO UPDATE SET
+       last_message_id = GREATEST(read_receipts.last_message_id, EXCLUDED.last_message_id),
+       updated_at = NOW()`,
+    [rooms, username]
+  );
+}
+app.post('/read-all', requireAuth, route(async (req, res) => {
+  let rooms;
+  if (req.body.all === true) {
+    rooms = Object.keys(await unreadFor(req.username));
+  } else {
+    const serverId = Number(req.body.serverId || 0);
+    if (!serverId || !(await isServerMember(req.username, serverId))) return res.status(404).json({ error: 'server not found' });
+    const mine = new Set(await readableChannelRooms(req.username));
+    const channels = (await getChannelsForServer(serverId)).map(c => c.room).filter(room => mine.has(room));
+    const threads = channels.length ? (await q(`SELECT 'thread:' || id AS room FROM threads WHERE parent_room = ANY($1)`, [channels])).map(t => t.room) : [];
+    rooms = channels.concat(threads);
+  }
+  await markRoomsRead(req.username, rooms);
+  sendToUser(req.username, 'readSync', { rooms });
+  res.json({ message: 'ok', rooms: rooms.length });
 }));
 
 // Where a message lives, for message links. Anything you can't see (or
@@ -2493,13 +2902,14 @@ app.post('/bots', requireAuth, route(async (req, res) => {
   if (!validUsername(username)) return res.status(400).json({ error: 'bot names are 2-30 letters, numbers, dots, hyphens or underscores' });
   const count = await one(`SELECT count(*)::int AS n FROM users WHERE is_bot = 1 AND bot_owner = $1 AND banned = 0`, [req.username]);
   if (count.n >= MAX_BOTS_PER_OWNER) return res.status(400).json({ error: `you can have up to ${MAX_BOTS_PER_OWNER} bots` });
-  if (await getUser(username)) return res.status(409).json({ error: 'that name is taken' });
+  if (await usernameTaken(username)) return res.status(409).json({ error: 'that name is taken' });
   const token = newBotToken();
   try {
     // one INSERT, so it's never briefly a normal account; '!' is not a
     // bcrypt hash, and /login refuses bots before checking passwords anyway
     await pool.query(
-      `INSERT INTO users (username, password_hash, display_name, is_bot, bot_owner, bot_token_hash) VALUES ($1, '!bot', $2, 1, $3, $4)`,
+      `INSERT INTO users (username, password_hash, display_name, is_bot, bot_owner, bot_token_hash, unread_base_id, unread_base_at)
+       VALUES ($1, '!bot', $2, 1, $3, $4, (SELECT COALESCE(MAX(id), 0) FROM messages), NOW())`,
       [username, cleanText(req.body.displayName || username, 40) || username, req.username, sha256Hex(token)]
     );
   } catch (err) {
@@ -3334,7 +3744,7 @@ async function getGlobalCensor() {
 }
 
 app.get('/site-settings', requireAuth, route(async (req, res) => {
-  res.json({ globalCensor: await getGlobalCensor() });
+  res.json({ globalCensor: await getGlobalCensor(), keepFileBytes: KEEP_FILE_BYTES, tempFileHours: FILE_EXPIRY_HOURS });
 }));
 
 app.post('/site-settings/global-censor', requireAuth, route(async (req, res) => {
@@ -3632,6 +4042,11 @@ async function addServerMember(srv, username) {
       );
     }
     await resyncRooms([username]); // their open connections join the new rooms
+    // history from before they joined isn't "unread" for them
+    const mine = new Set(await readableChannelRooms(username));
+    const rooms = (await getChannelsForServer(srv.id)).map(c => c.room).filter(room => mine.has(room));
+    const threads = rooms.length ? (await q(`SELECT 'thread:' || id AS room FROM threads WHERE parent_room = ANY($1)`, [rooms])).map(t => t.room) : [];
+    await markRoomsRead(username, rooms.concat(threads)).catch(err => console.error('join read baseline failed:', err.message));
   }
   if (joined && srv.system_channel_id) {
     const channel = await getChannelById(srv.system_channel_id);
@@ -4335,7 +4750,8 @@ app.post('/groups/:id/members', requireAuth, route(async (req, res) => {
   if (group.owner !== req.username && !(await isAdmin(req.username))) return res.status(403).json({ error: 'only the group owner can add members' });
   if (!validUsername(username) || !(await getUser(username))) return res.status(400).json({ error: 'user not found' });
   if (await isBotUser(username)) return res.status(400).json({ error: 'Bots can\'t be added to group chats - add them to a server instead.' });
-  await pool.query(`INSERT INTO group_members (group_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING`, [groupId, username]);
+  const added = await one(`INSERT INTO group_members (group_id, username, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING RETURNING username`, [groupId, username]);
+  if (added) await markRoomsRead(username, [`group:${groupId}`]).catch(err => console.error('group read baseline failed:', err.message));
   sendToUser(username, 'groupsChanged', {});
   io.to(`group:${groupId}`).emit('groupsChanged', {});
   res.json({ message: 'ok' });
@@ -4432,14 +4848,45 @@ app.post('/upload', requireAuth, route(async (req, res) => {
     if (blocked) return res.status(403).json({ error: blocked });
   }
 
+  if (rateLimited('upload:' + req.username, 30, 5 * 60 * 1000)) return res.status(429).json({ error: 'You\'re sending files very quickly - wait a few minutes and try again.' });
+
   const ext = path.extname(originalName).slice(0, 16);
   const storedName = `${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`;
   const fullPath = path.join(UPLOAD_DIR, storedName);
+  // Small enough to keep (see KEEP_FILE_BYTES)? Then it goes in the
+  // database and stays. The size has to be known up front to decide.
+  const keep = contentLength > 0 && contentLength <= KEEP_FILE_BYTES;
 
   try {
-    const size = await saveUploadStream(req, fullPath, MAX_FILE_BYTES);
-    const fileUrl = `/uploads/${storedName}`;
-    const created = await insertFile(finalRoom, req.username, toUser || null, isGroup, originalName, fileType, fileUrl, size, caption || null);
+    let created;
+    if (keep) {
+      const buffer = await bufferUploadStream(req, KEEP_FILE_BYTES);
+      const key = crypto.randomBytes(18).toString('base64url');
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        created = (await client.query(
+          `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'db') RETURNING id`,
+          [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/media/${key}/${encodeURIComponent(originalName)}`, buffer.length, caption || null]
+        )).rows[0];
+        await client.query(`INSERT INTO file_blobs (file_id, key, data, size) VALUES ($1, $2, $3, $4)`, [created.id, key, buffer, buffer.length]);
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw err;
+      } finally {
+        client.release();
+      }
+      enforceMediaBudget().catch(err => console.error('enforceMediaBudget failed:', err.message));
+    } else {
+      const size = await saveUploadStream(req, fullPath, MAX_FILE_BYTES);
+      created = await one(
+        `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'disk', NOW() + INTERVAL '${FILE_EXPIRY_HOURS} hours') RETURNING id`,
+        [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/uploads/${storedName}`, size, caption || null]
+      );
+    }
     const fileMsg = await normaliseFile(await getFileById(created.id));
 
     if (toUser) {
@@ -4457,20 +4904,123 @@ app.post('/upload', requireAuth, route(async (req, res) => {
   }
 }));
 
+// ---------------- KEPT FILES (/media) ----------------
+// Kept attachments are served straight from Postgres. The key in the URL is
+// 18 random bytes, so (like the old /uploads names) a link works for anyone
+// who was given it and can't be guessed - <img> and <video> can't send a
+// login token. The same safety rules as /uploads apply: the type comes from
+// the file's extension, never from what the uploader claimed; anything a
+// browser could run as a page is download-only; SVGs get the no-scripts
+// sandbox.
+const INLINE_MEDIA_TYPE = /^(image\/(png|jpeg|gif|webp|avif|bmp|svg\+xml|x-icon|vnd\.microsoft\.icon)|video\/|audio\/|application\/pdf$|text\/plain$)/;
+app.get('/media/:key/:name?', route(async (req, res) => {
+  const key = String(req.params.key || '');
+  if (!/^[A-Za-z0-9_-]{16,40}$/.test(key)) return res.status(404).end();
+  let entry = blobCache.get(key);
+  if (!entry) {
+    const row = await one(`SELECT b.data, f.file_name FROM file_blobs b JOIN files f ON f.id = b.file_id WHERE b.key = $1`, [key]);
+    if (!row) return res.status(404).json({ error: 'This file is no longer available.' });
+    entry = { buffer: row.data, name: row.file_name || 'file' };
+    cacheBlob(key, entry);
+  }
+  const ext = path.extname(entry.name).toLowerCase();
+  let type = express.static.mime.lookup(entry.name) || 'application/octet-stream';
+  const active = ACTIVE_UPLOAD_EXT.has(ext);
+  if (ext === '.svg') {
+    res.setHeader('Content-Security-Policy', SVG_UPLOAD_CSP);
+  } else if (active || !INLINE_MEDIA_TYPE.test(type)) {
+    // never opened in the page: downloaded, and sandboxed even if something does open it
+    if (active) type = 'application/octet-stream';
+    res.setHeader('Content-Disposition', 'attachment');
+    res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+  }
+  if (/^text\//.test(type)) type += '; charset=utf-8';
+  res.setHeader('Content-Type', type);
+  res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('ETag', `"${key}"`);
+  if (req.headers['if-none-match'] === `"${key}"`) return res.status(304).end();
+  // byte ranges: Safari won't play audio/video without them, and seeking needs them
+  const total = entry.buffer.length;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+  if (range && (range[1] || range[2])) {
+    let start = range[1] ? Number(range[1]) : Math.max(0, total - Number(range[2]));
+    let end = range[1] && range[2] ? Number(range[2]) : total - 1;
+    end = Math.min(end, total - 1);
+    if (!(start >= 0) || start > end) {
+      res.setHeader('Content-Range', `bytes */${total}`);
+      return res.status(416).end();
+    }
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+    return res.end(entry.buffer.subarray(start, end + 1));
+  }
+  res.end(entry.buffer);
+}));
+
+// The uploader can delete their own file; so can whoever moderates the
+// room (server owner/admins, site admins).
+app.post('/files/:id/delete', requireAuth, route(async (req, res) => {
+  const file = await getFileById(Number(req.params.id));
+  if (!file || !(await isAllowedRoom(req.username, file.room))) return res.status(404).json({ error: 'file not found' });
+  if (file.user !== req.username && !(await canModerateRoom(req.username, file.room))) return res.status(403).json({ error: 'you can only delete your own files' });
+  await deleteFiles([file]);
+  res.json({ message: 'ok' });
+}));
+
+// ---------------- HISTORY ----------------
+// One page of a room: HISTORY_PAGE messages plus the files sent in the same
+// stretch of time, so the two always line up (they used to be fetched
+// separately, each with its own cut-off). ?before=<message id> pages back.
+// The first page also says where this person had read up to, for the "new
+// messages" line.
+app.get('/history', requireAuth, route(async (req, res) => {
+  const room = String(req.query.room || '');
+  if (!room || !(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
+  const before = Math.max(0, Math.floor(Number(req.query.before) || 0));
+  const rows = before ? await getMessagesBefore(room, before, HISTORY_PAGE) : await getMessagesForRoom(room, HISTORY_PAGE);
+  const hasMore = rows.length >= HISTORY_PAGE;
+  let until = null;
+  if (before) {
+    const edge = await one(`SELECT created_at FROM messages WHERE id = $1 AND room = $2`, [before, room]);
+    until = edge ? edge.created_at : null;
+  }
+  const files = await getFilesBetween(room, hasMore ? rows[0].created_at : null, until);
+  const out = { messages: await normaliseMessages(rows), files: await normaliseFiles(files), hasMore };
+  if (!before) {
+    const receipt = await one(`SELECT last_message_id, updated_at FROM read_receipts WHERE room = $1 AND username = $2`, [room, req.username]);
+    const base = await one(`SELECT unread_base_id, unread_base_at FROM users WHERE username = $1`, [req.username]);
+    out.lastRead = {
+      id: Math.max(receipt ? receipt.last_message_id : 0, (base && base.unread_base_id) || 0),
+      at: receipt ? receipt.updated_at : ((base && base.unread_base_at) || null)
+    };
+  }
+  res.json(out);
+}));
+
 app.set('io', io);
 
 // ---------------- SOCKET AUTH ----------------
 io.use((socket, next) => {
   let token = String((socket.handshake.auth && socket.handshake.auth.token) || '');
   if (token.startsWith('Bot ')) token = token.slice(4);
-  (isBotToken(token) ? usernameForBotToken(token) : usernameForToken(token)).then(username => {
-    if (!username) return next(new Error('not authenticated'));
-    return getUser(username).then(user => {
+  const lookup = isBotToken(token)
+    ? usernameForBotToken(token).then(username => (username ? { username, key: '' } : null))
+    : sessionForToken(token);
+  lookup.then(session => {
+    if (!session) return next(new Error('not authenticated'));
+    return getUser(session.username).then(user => {
       if (!user || user.banned) return next(new Error('not authenticated'));
-      socket.username = username;
+      socket.username = session.username;
+      socket.sessionKey = session.key; // lets "sign out that device" find this socket
       next();
     });
-  }).catch(() => next(new Error('not authenticated')));
+  }).catch(err => {
+    // a database hiccup is not "your login is invalid" - the browser would
+    // throw the session away. Say so, and it will simply retry.
+    console.error('socket auth failed:', err.message);
+    next(new Error('server is busy'));
+  });
 });
 
 // ---------------- SOCKET EVENTS ----------------
@@ -4798,16 +5348,21 @@ io.on('connection', (socket) => {
 
   socket.on('markRead', async (data = {}) => {
     const room = String(data.room || '');
-    const lastMessageId = Number(data.lastMessageId || 0);
-    if (!room || !lastMessageId || !(await isAllowedRoom(socket.username, room))) return;
+    // 0 is allowed: "I've seen this room" when its newest thing is a file
+    // (files aren't messages, so there's no message id to point at)
+    const lastMessageId = Math.max(0, Math.floor(Number(data.lastMessageId) || 0));
+    if (!room || lastMessageId > 2147483647 || !(await isAllowedRoom(socket.username, room))) return;
     await pool.query(
       `INSERT INTO read_receipts (room, username, last_message_id, updated_at)
-       VALUES ($1, $2, $3, NOW())
+       VALUES ($1, $2, LEAST($3::bigint, (SELECT COALESCE(MAX(id), 0) FROM messages))::int, NOW())
        ON CONFLICT (room, username) DO UPDATE SET
          last_message_id = GREATEST(read_receipts.last_message_id, EXCLUDED.last_message_id),
          updated_at = NOW()`,
       [room, socket.username, lastMessageId]
     );
+    // this person's other devices clear the same badge
+    sendToUser(socket.username, 'readSync', { rooms: [room], from: socket.id });
+    if (!lastMessageId) return;
     const payload = { room, user: socket.username, lastMessageId };
     io.to(room).emit('readReceipt', payload);
     const other = getDMOtherUser(socket.username, room);
@@ -5067,7 +5622,10 @@ async function main() {
   setInterval(() => { removeOldFiles().catch(err => console.error('removeOldFiles failed:', err)); }, 10 * 60 * 1000);
   setInterval(() => { removeExpiredSessions().catch(err => console.error('removeExpiredSessions failed:', err)); }, 60 * 60 * 1000);
   await removeExpiredSessions();
-  await removeOldFiles();
+  setTimeout(() => { hashLegacySessions().catch(err => console.error('hashLegacySessions failed:', err.message)); }, Number(process.env.SESSION_HASH_DELAY_MS || 5 * 60 * 1000)).unref();
+  await removeOldFiles(true);
+  // a kept file whose message row is gone (e.g. its room was deleted) is just wasted space
+  await pool.query(`DELETE FROM file_blobs WHERE file_id NOT IN (SELECT id FROM files)`);
   await scheduleEventReminders();
 
   server.listen(PORT, '0.0.0.0', () => {

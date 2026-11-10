@@ -45,7 +45,9 @@ services:
     volumes:
       - chat-db:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
+      # over the network, not the local socket: during first-time setup Postgres
+      # briefly runs socket-only, and must not count as ready then
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U chat -d chat"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -70,6 +72,13 @@ services:
       - -c
       - |
         if [ -z "$$NEON_URL" ]; then echo "No Neon address given - starting with an empty chat."; exit 0; fi
+        # wait until the database really answers (up to 2 minutes)
+        tries=0
+        until psql -tAc "SELECT 1" >/dev/null 2>&1; do
+          tries=$$((tries + 1))
+          if [ "$$tries" -ge 60 ]; then echo "The chat database never came up."; exit 1; fi
+          sleep 2
+        done
         if [ "$$(psql -tAc "SELECT to_regclass('public.users') IS NOT NULL")" = "t" ]; then echo "The chat database already has data - nothing to copy."; exit 0; fi
         echo "Copying everything from Neon..."
         pg_dump --no-owner --no-privileges "$$NEON_URL" > /tmp/neon.sql || { echo "Could not read from Neon - check the address."; exit 1; }

@@ -19,6 +19,11 @@ to do next) - read it before a big upgrade and add an entry after one.
   restyling. On phones close the drawer with `closeNav()`, never by
   removing the `open` class by hand. Put text on the accent colour in
   `var(--on-brand)`, not white.
+- `relay.js`: relay mode (`RELAY_TO`). Render runs this: it proxies every
+  request and the WebSocket to the real chat on the owner's NAS (Tailscale
+  Funnel address) and answers `/healthz` itself. The NAS runs
+  `deploy/nas/docker-compose.yml` (app + Postgres), which downloads `main` on
+  every start - so a merge reaches the live chat when that container restarts.
 - `public/sw.js`: Web Push service worker.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
   Calls need a real browser to check audio/video: Playwright's Chromium

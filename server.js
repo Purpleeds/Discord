@@ -1,3 +1,10 @@
+// RELAY_TO set: this copy only passes everything through to the real chat
+// running elsewhere (see relay.js) - no database, no chat of its own.
+if (process.env.RELAY_TO) {
+  require('./relay.js');
+  return; // (allowed at the top level of a CommonJS module)
+}
+
 const express = require('express');
 const http = require('http');
 const https = require('https');

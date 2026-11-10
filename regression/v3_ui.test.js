@@ -94,9 +94,9 @@ function startServer() {
   check('picked file shows in the tray', await pb.evaluate(() => pendingFiles.length === 1 && !document.querySelector('.attachChip.temporary')));
   await pb.fill('#messageInput', 'look at this');
   await pb.press('#messageInput', 'Enter'); await sleep(1500);
-  const src = await pb.evaluate(() => { const img = document.querySelector('#messagesInner .message[data-file-id] img'); return img ? img.getAttribute('src') : ''; });
+  const src = await pb.evaluate(() => { const img = document.querySelector('#messagesInner .msgAttachments img'); return img ? img.getAttribute('src') : ''; });
   check('picture appears, served from /media', /^\/media\//.test(src), src);
-  check('picture actually loaded', await pb.evaluate(() => { const img = document.querySelector('#messagesInner .message[data-file-id] img'); return img.complete && img.naturalWidth > 0; }));
+  check('picture actually loaded', await pb.evaluate(() => { const img = document.querySelector('#messagesInner .msgAttachments img'); return img.complete && img.naturalWidth > 0; }));
   await pb.reload(); await ready(pb);
   await pb.evaluate(([sid, r]) => { switchServer(sid); openChannel(r); }, [srv.id, general.room]); await sleep(1000);
   check('still there after a reload', await pb.evaluate(s => !!document.querySelector('#messagesInner img[src="' + s + '"]'), src));
@@ -119,9 +119,11 @@ function startServer() {
   check('a file over the keep limit is marked temporary before sending', tray.temp);
   check('a large photo is resized before upload', tray.shrunk === tray.before && tray.after < tray.before * 0.9 && tray.w === 2560 && tray.h === 1920 && tray.name === 'photo.jpg', tray);
   // delete
-  await pb.hover('#messagesInner .message[data-file-id]');
-  await pb.click('#messagesInner .message[data-file-id] .msgActions button[aria-label="Delete File"]'); await sleep(800);
-  check('deleting a file removes it for good', await pb.evaluate(() => !document.querySelector('#messagesInner .message[data-file-id]')) && (await fetch(BASE + src)).status === 404);
+  // files belong to their message: deleting the message removes them for good
+  const withFile = '#messagesInner .message:has(.msgAttachments img)';
+  await pb.hover(withFile);
+  await pb.click(withFile + ' .msgActions button[aria-label="Delete"]'); await sleep(800);
+  check('deleting the message removes its file for good', await pb.evaluate(() => !document.querySelector('#messagesInner .msgAttachments img')) && (await fetch(BASE + src)).status === 404);
 
   // ---------- drafts ----------
   await pb.fill('#messageInput', 'half a thought');

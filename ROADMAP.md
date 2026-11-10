@@ -170,11 +170,24 @@ large, new system - also split it over several sessions).
 - [x] **Picture, GIF and video banners** for profiles, server profiles and
   servers (up to 8 MB; videos loop silently, still with reduced motion).
 
+- [x] **Files inside messages** - several per message, with the text; they
+  can be replied to, reacted to and pinned.
+- [x] **Moderation** - per-server bans and timeouts (new "Ban & time out"
+  power), and an audit log in Server Settings > Moderation.
+- [x] **Unread badges** - a dot for ordinary unread, a number for mentions
+  and DMs.
+- [x] **Custom emoji** per server ("Manage emoji" power, in the Moderator and
+  Manager presets), in messages and reactions.
+- [x] **TURN relay** on the NAS (coturn behind Funnel on port 8443) for calls
+  on strict networks.
+- [x] **Personas** ("Post as a persona" power): made-up name and picture,
+  labelled, shows who posted, never a real member's name; audit-logged.
+
 ## Decided against
 
 - Admins posting as a real member while muting them - it's impersonation
-  (members would believe someone said what they didn't). An honestly
-  labelled custom persona, like webhooks, is fine if wanted.
+  (members would believe someone said what they didn't). Built instead:
+  labelled personas (see Extras).
 - Game detection / Rich Presence, game overlays, PlayStation/Xbox linking -
   need a desktop app or console access, impossible from a website.
 - Spotify / Steam / Twitch / YouTube connections - each needs developer

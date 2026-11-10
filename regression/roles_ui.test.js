@@ -33,7 +33,7 @@ const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done, uid
   check('presets offered', (await po.$$eval('.presetBtn', b => b.map(x => x.textContent))).join('|') === 'Moderator|Manager|Bots & webhooks|Event host');
   await po.click('.presetBtn[data-preset="moderator"]'); await sleep(900);
   const mod = (await get('/servers', O)).data.find(s => s.id === sid).roles.find(r => r.name === 'Moderator');
-  check('Moderator role created with its powers', mod && mod.permissions.sort().join() === 'kick_members,manage_messages,mention_everyone', mod);
+  check('Moderator role created with its powers', mod && mod.permissions.sort().join() === 'ban_members,kick_members,manage_emoji,manage_messages,mention_everyone', mod);
   check('its editor opens with the Moderator preset highlighted', await po.evaluate(() => { const e = [...document.querySelectorAll('#roleList .channelEditor')].pop(); return e.style.display === 'grid' && e.querySelector('.presetChip.active').dataset.preset === 'moderator'; }));
   // tweak it: becomes Custom
   await po.evaluate(id => { const box = document.getElementById('rolePerm' + id + '_manage_events'); box.checked = true; box.dispatchEvent(new Event('change')); }, mod.id);
@@ -53,7 +53,7 @@ const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done, uid
     const msg = [...document.querySelectorAll('#messagesInner .message')].find(e => e.textContent.includes('a message from x'));
     return { perms: server.permissions.sort().join(), canDelete: !!(msg && msg._item && canModerateHere(msg._item.data.room)), addChannel: can(server, 'manage_channels') };
   }, sid);
-  check('moderator gets exactly their powers', ui.perms === 'kick_members,manage_events,manage_messages,mention_everyone', ui);
+  check('moderator gets exactly their powers', ui.perms === 'ban_members,kick_members,manage_emoji,manage_events,manage_messages,mention_everyone', ui);
   check('moderator can delete others\' messages, but not add channels', ui.canDelete && !ui.addChannel, ui);
   check('moderator has Server Settings in the server menu', await pm.evaluate(s => canManageAnything(servers.find(x => x.id === s)), sid));
   await pm.evaluate(s => openServerSettings(s, 'members'), sid); await sleep(800);

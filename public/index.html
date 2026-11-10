@@ -1764,6 +1764,27 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .pcBanner{background-size:cover;background-position:center;}
 .pcHidden{font-size:12.5px;color:var(--text-muted);font-style:italic;margin-bottom:6px;}
 select.settingsInput{max-width:360px;}
+
+/* ---- badges, attachments in messages, personas, emoji, moderation ---- */
+.pillBadge.unreadDot,.railBadge.unreadDot{min-width:8px;width:8px;height:8px;padding:0;border-radius:50%;background:var(--text-bright);}
+.railBadge.unreadDot{width:10px;height:10px;min-width:10px;}
+.msgAttachments{display:flex;flex-direction:column;gap:8px;margin-top:6px;}
+.msgAttachments .attachment{margin-top:0;}
+.tagChip.persona{background:color-mix(in srgb,var(--brand) 22%,transparent);color:var(--brand);}
+.personaBy{font-size:12px;color:var(--text-muted);margin-left:2px;}
+.personaBar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px;padding:7px 14px;border-radius:12px;font-size:13px;background:color-mix(in srgb,var(--brand) 14%,var(--raised));color:var(--text-bright);}
+#personaBtn.on{color:var(--brand);}
+img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-0.3em;}
+.reaction img.customEmoji{width:18px;height:18px;vertical-align:-4px;}
+.emojiGrid button img.customEmoji{width:26px;height:26px;}
+.emojiManageGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;}
+.emojiCell{display:flex;flex-direction:column;align-items:center;gap:6px;padding:12px;border:1px solid var(--line);border-radius:var(--r-card);background:var(--raised);font-size:13px;color:var(--text-muted);}
+.emojiCell img{width:44px;height:44px;object-fit:contain;}
+.modList{display:flex;flex-direction:column;gap:6px;}
+.modRow{display:flex;align-items:center;gap:12px;padding:10px 14px;border:1px solid var(--line);border-radius:12px;background:var(--raised);}
+.modRow .grow{flex:1;min-width:0;}
+.modRow .rowTitle{font-weight:600;color:var(--text-bright);}
+.modRow .rowSub{font-size:12.5px;color:var(--text-muted);}
 </style>
 </head>
 
@@ -1890,6 +1911,7 @@ select.settingsInput{max-width:360px;}
         <div id="composer">
           <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
+          <button id="personaBtn" title="Post as a persona" aria-label="Post as a persona" onclick="openPersonaPicker()" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5c3 1.3 5 1.3 8 0s5-1.3 8 0v6c0 4.5-3.6 8-8 8s-8-3.5-8-8z"/><path d="M8.5 10.5h1.5M14 10.5h1.5M9.5 14.5c1.6 1.2 3.4 1.2 5 0"/></svg></button>
           <button id="emojiBtn" title="Emoji" aria-label="Emoji" onclick="openEmojiPicker(event,'composer')"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.8 1.2 2 1.9 3.4 1.9s2.6-.7 3.4-1.9"/><circle cx="9.2" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="14.8" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></button>
           <button id="sendBtn" title="Send (Enter)" aria-label="Send message" onclick="sendMessage()"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.1 6.5L15 12 3.5 13.9z"/></svg></button>
         </div>
@@ -2640,6 +2662,9 @@ function belongsHere(room){
 }
 
 function cacheFromPayload(msg){
+  // personas and webhooks aren't the poster's real name; in server channels the
+  // name can be a server nickname - none of those may become someone's profile
+  if(!msg || msg.persona || msg.bot || (msg.room && channelByRoom(msg.room))) return;
   if(msg && msg.user){
     // merge, so a message payload (which only carries name + avatar)
     // doesn't wipe the richer profile fields we already know about
@@ -2733,6 +2758,7 @@ function maybeNotifyDesktop(msg, kind, title, room){
 
 function bumpUnreadQuietly(room){
   if(levelFor(room) === 'none') return;
+  if(!unread[room]) unreadMentions[room] = 0;
   unread[room] = (unread[room] || 0) + 1;
   renderSidebar();
   renderRail();
@@ -2740,6 +2766,8 @@ function bumpUnreadQuietly(room){
 
 function bumpUnread(room, msg){
   if(levelFor(room) === 'none') return; // muted: no unread badge either
+  if(!unread[room]) unreadMentions[room] = 0;
+  if(msg && msg.user !== username && mentionsMe(msg)) unreadMentions[room] = (unreadMentions[room] || 0) + 1;
   const label = isDMRoom(room)
     ? '@ ' + (msg.user || 'dm')
     : (isGroupRoom(room) ? '@ ' + (groupByRoom[room] ? groupByRoom[room].name : 'group') : '# ' + roomLabel(room));
@@ -2759,7 +2787,9 @@ async function loadUnread(){
     if(!response.ok) return;
     const rooms = (await response.json()).rooms || {};
     const next = {};
+    unreadMentions = {};
     Object.keys(rooms).forEach(room => {
+      unreadMentions[room] = rooms[room].mentions || 0;
       if(levelFor(room) === 'none') return;
       if(room === currentRoom && canSeeChat() && !forumRoom) return; // looking at it right now
       if(rooms[room].count > 0) next[room] = rooms[room].count;
@@ -2983,6 +3013,28 @@ function roomLabel(room){
   if(found && found.thread) return found.channel.name + ' › ' + found.thread.name;
   return found ? found.channel.name : room;
 }
+// Unread badges: a number only for what's addressed to you (mentions, DMs,
+// group chats); ordinary unread in a channel is just a dot and bold name.
+let unreadMentions = {}; // room -> how many of its unread ping you
+function mentionCount(room){ return unread[room] ? (unreadMentions[room] || 0) : 0; }
+function serverMentionCount(server){
+  const rooms = new Set((server.channels || []).map(c => c.room));
+  return Object.keys(unread).reduce((sum, room) => {
+    const t = threadIndex[threadIdOf(room)];
+    return sum + ((rooms.has(room) || (t && rooms.has(t.parentRoom))) ? mentionCount(room) : 0);
+  }, 0);
+}
+function roomBadge(room){
+  const count = unread[room] || 0;
+  if(!count) return makeBadge(0);
+  if(isDMRoom(room) || isGroupRoom(room)) return makeBadge(count);
+  const pings = mentionCount(room);
+  if(pings) return makeBadge(pings);
+  const dot = makeBadge(0);
+  dot.classList.add('unreadDot');
+  dot.style.display = 'flex';
+  return dot;
+}
 function serverUnreadCount(server){
   const channelRooms = new Set((server.channels || []).map(c => c.room));
   const threadUnread = Object.keys(unread).filter(room => {
@@ -3019,7 +3071,10 @@ function renderRail(){
 
     const badge = document.createElement('div');
     badge.className = 'railBadge';
-    if(count){ badge.style.display = 'flex'; badge.textContent = count > 99 ? '99+' : count; }
+    // a number for mentions, a small dot for anything else unread
+    const pings = serverMentionCount(server);
+    if(pings){ badge.style.display = 'flex'; badge.textContent = pings > 99 ? '99+' : pings; }
+    else if(count){ badge.style.display = 'flex'; badge.classList.add('unreadDot'); badge.textContent = ''; }
     wrap.appendChild(badge);
 
     const tip = document.createElement('div');
@@ -3253,7 +3308,7 @@ function renderSidebar(){
       nameEl.className = 'channelName';
       nameEl.textContent = channel.name;
       item.appendChild(nameEl);
-      item.appendChild(makeBadge(count));
+      item.appendChild(roomBadge(channel.room));
       item.onclick = channel.kind === 'voice'
         ? () => { openChannel(channel.room); joinCall('voice:' + channel.room); } // clicking a voice channel joins it
         : () => openChannel(channel.room);
@@ -3407,6 +3462,7 @@ function enterRoom(room){
   closeFriends();
   closeForum();
   switchDraftTo(room);
+  setTimeout(paintPersonaUi, 0);
   unread[room] = 0;
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
@@ -3529,6 +3585,7 @@ function shouldGroup(item, prev){
   if(appearance.compact) return false; // compact mode puts a name on every line, like Discord's
   if(prev.data.user !== item.data.user) return false;
   if(item.data.bot && prev.data.displayName !== item.data.displayName) return false; // one webhook, several names
+  if(!!item.data.persona !== !!prev.data.persona || (item.data.persona && prev.data.displayName !== item.data.displayName)) return false;
   if(item.data.kind || prev.data.kind) return false; // system messages stand alone
   if(item.kind === 'message' && item.data.replyTo) return false;
   const gap = parseTime(item.data.createdAt) - parseTime(prev.data.createdAt);
@@ -3721,7 +3778,9 @@ function buildMessageEl(item, grouped){
     time.textContent = formatTime(data.createdAt);
     wrap.appendChild(time);
   }else{
-    if(data.bot){
+    if(data.persona){
+      gutter.appendChild(personaAvatar(data));
+    }else if(data.bot){
       gutter.appendChild(botAvatar(data.displayName, '', 'onChat'));
     }else{
       const avatar = createAvatar(data.user, '', { wrapClass:'onChat', url: /^\/assets\//.test(data.avatarUrl || '') ? data.avatarUrl : '' });
@@ -3757,7 +3816,17 @@ function buildMessageEl(item, grouped){
     const head = document.createElement('div');
     head.className = 'msgHead';
     const author = document.createElement('span');
-    if(data.bot){
+    if(data.persona){
+      // a persona: its made-up name, a PERSONA tag, and who really posted it
+      author.className = 'msgAuthor';
+      author.textContent = data.displayName || 'Persona';
+      author.title = 'A persona: a made-up name posted by ' + displayNameFor(data.user);
+      head.appendChild(author);
+      const tag = chip('PERSONA', 'persona');
+      tag.title = author.title;
+      head.appendChild(tag);
+      head.appendChild(Object.assign(document.createElement('span'), { className:'personaBy', textContent:'by ' + displayNameFor(data.user) }));
+    }else if(data.bot){
       // a webhook: its own name, a BOT tag, and no profile to open
       author.className = 'msgAuthor';
       author.textContent = data.displayName || 'Webhook';
@@ -3817,7 +3886,18 @@ function buildMessageEl(item, grouped){
       text.appendChild(edited);
     }
     if(data.pinned) text.appendChild(pinMarker());
+    if(!data.text && (data.attachments || []).length && !data.editedAt && !data.pinned) text.style.display = 'none';
     body.appendChild(text);
+    if((data.attachments || []).length){
+      const holder = document.createElement('div');
+      holder.className = 'msgAttachments';
+      data.attachments.forEach(file => {
+        const one = buildAttachment(file);
+        if(file.expiresAt) one.appendChild(Object.assign(document.createElement('div'), { className:'fileExpiry', textContent:'Temporary file: removed ' + timeUntil(file.expiresAt) }));
+        holder.appendChild(one);
+      });
+      body.appendChild(holder);
+    }
     appendLinkedImages(body, data.text || '');
     appendLinkPreviews(body, data);
     if(!data.deleted && (data.reactionRoles || []).length) body.appendChild(buildRoleMenu(data));
@@ -3860,6 +3940,11 @@ async function deleteFile(data){
   }catch(err){ toast(capitalise(err.message)); }
 }
 
+function timeUntil(value){
+  const left = parseTime(value) - Date.now();
+  if(left <= 0) return 'now';
+  return 'in ' + (left > 172800000 ? Math.round(left / 86400000) + ' days' : left > 3600000 ? Math.round(left / 3600000) + ' h' : Math.max(1, Math.round(left / 60000)) + ' min');
+}
 function pinMarker(){
   const mark = document.createElement('span');
   mark.className = 'pinMark';
@@ -3955,8 +4040,33 @@ function buildActions(item){
   return bar;
 }
 
+// Custom emoji: written <:name:id> in messages, drawn from any server you're in.
+function customEmojiById(id){
+  for(const s of servers){ const e = (s.emojis || []).find(x => x.id === id); if(e) return e; }
+  return null;
+}
+function customEmojiHtml(name, id){
+  const e = customEmojiById(Number(id));
+  return e ? '<img class="customEmoji" src="' + escapeHtml(e.url) + '" alt=":' + escapeHtml(name) + ':" title=":' + escapeHtml(name) + ':">' : ':' + escapeHtml(name) + ':';
+}
+// A reaction: a built-in emoji, or a custom one as <:name:id>.
+function emojiHtml(emoji){
+  const m = /^<:([a-z0-9_]{2,32}):(\d+)>$/.exec(String(emoji));
+  return m ? customEmojiHtml(m[1], m[2]) : escapeHtml(emoji);
+}
+// :name: typed in a server channel becomes that server's custom emoji.
+function expandCustomEmoji(text, room){
+  const found = channelByRoom(room);
+  const list = found ? (found.server.emojis || []) : [];
+  if(!list.length) return text;
+  return text.replace(/(^|[^<\w]):([a-z0-9_]{2,32}):/g, (m, lead, name) => {
+    const e = list.find(x => x.name === name);
+    return e ? lead + '<:' + e.name + ':' + e.id + '>' : m;
+  });
+}
 function renderMarkdown(text){
   let html = escapeHtml(text);
+  html = html.replace(/&lt;:([a-z0-9_]{2,32}):(\d{1,9})&gt;/g, (m, name, id) => customEmojiHtml(name, id));
   html = html.replace(/```([\s\S]*?)```/g, (m, code) => '<pre class="codeBlock">' + code.replace(/^\n+|\n+$/g,'') + '</pre>');
   html = html.replace(/`([^`\n]+)`/g, '<code class="inlineCode">$1</code>');
   html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<b><i>$1</i></b>');
@@ -4176,7 +4286,7 @@ function paintReactions(holder, data){
     const pill = document.createElement('div');
     pill.className = 'reaction' + ((reaction.users || []).includes(username) ? ' mine' : '');
     pill.title = (reaction.users || []).join(', ');
-    pill.innerHTML = '<span>' + reaction.emoji + '</span><span class="count">' + reaction.count + '</span>';
+    pill.innerHTML = '<span>' + emojiHtml(reaction.emoji) + '</span><span class="count">' + reaction.count + '</span>';
     pill.onclick = () => sendReaction(data.id, reaction.emoji);
     holder.appendChild(pill);
   });
@@ -4211,6 +4321,11 @@ function applyUpdatedMessage(msg){
   const el = document.querySelector('.message[data-message-id="' + msg.id + '"]');
   if(!el) return;
   if(msg.kind === 'call'){ const item = { kind:'message', data:msg }; el.replaceWith(buildCallMessageEl(item)); return; }
+  if(el._item && (el._item.data.attachments || []).length !== (msg.attachments || []).length){
+    const item = { kind:'message', data: Object.assign({}, el._item.data, msg) };
+    el.replaceWith(buildMessageEl(item, el.classList.contains('grouped')));
+    return;
+  }
   if(el._item) el._item.data = Object.assign({}, el._item.data, msg);
   const text = el.querySelector('.msgText');
   if(text && !msg.deleted && editingId !== msg.id){
@@ -4337,36 +4452,106 @@ function sendReaction(id, emoji){
   socket.emit('reactMessage', { id, emoji }, result => { if(result && result.error) showError(result.error); });
 }
 
+/* ---- personas ---- */
+// Someone with "Post as a persona" can post under a made-up name and picture
+// in a server's channels. It's always labelled, and shows who posted it.
+const personas = {}; // serverId -> { name, avatarUrl } while switched on
+function activePersona(){
+  const found = channelByRoom(currentRoom);
+  return found && personas[found.server.id] && can(found.server, 'use_personas') ? personas[found.server.id] : null;
+}
+function paintPersonaUi(){
+  const found = !activeDMUser && !currentGroupRoom ? channelByRoom(currentRoom) : null;
+  const allowed = !!(found && can(found.server, 'use_personas'));
+  $('personaBtn').hidden = !allowed;
+  const persona = allowed ? personas[found.server.id] : null;
+  $('personaBtn').classList.toggle('on', !!persona);
+  let bar = $('personaBar');
+  if(!persona){ if(bar) bar.remove(); return; }
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'personaBar';
+    bar.className = 'personaBar';
+    $('composerBox').before(bar);
+  }
+  bar.innerHTML = '<span>Posting as <b></b> (persona - labelled, and shows it\'s you)</span><button class="linkBtn">Stop</button>';
+  bar.querySelector('b').textContent = persona.name;
+  bar.querySelector('button').onclick = () => { delete personas[found.server.id]; paintPersonaUi(); };
+}
+function personaAvatar(data){
+  const wrap = document.createElement('div');
+  wrap.className = 'avatarWrap onChat';
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar';
+  avatar.style.background = avatarColour(data.displayName || 'persona');
+  if(data.avatarUrl){ const img = document.createElement('img'); img.src = data.avatarUrl; img.alt = ''; avatar.appendChild(img); }
+  else avatar.textContent = (data.displayName || '?').charAt(0).toUpperCase();
+  wrap.appendChild(avatar);
+  return wrap;
+}
+function openPersonaPicker(){
+  const found = channelByRoom(currentRoom);
+  if(!found) return;
+  const sid = found.server.id;
+  const current = personas[sid] || { name:'', avatarUrl:'' };
+  let avatarUrl = current.avatarUrl;
+  openModal('<div class="modalHead"><h2>Post as a persona</h2></div><div class="modalBody">' +
+    '<div class="switchDesc" style="margin-bottom:12px">Post under a made-up name - a narrator, a character, the server\'s mascot. Every message is labelled PERSONA and shows that you posted it. It can\'t be a real member\'s name.</div>' +
+    '<label class="formLabel" for="personaName">Name</label><input class="formInput" id="personaName" maxlength="32" placeholder="The Narrator">' +
+    '<div class="rowFlex" style="margin:12px 0"><button class="btn grey" id="personaPic">Picture</button><span class="switchDesc" id="personaPicNote"></span></div>' +
+    '<div class="rowFlex"><button class="btn" id="personaOn">Start posting as this persona</button>' + (personas[sid] ? '<button class="btn grey" id="personaOff">Post as myself</button>' : '') + '</div>' +
+    '<div class="modalMsg" id="modalMsg"></div></div>');
+  $('personaName').value = current.name;
+  $('personaPicNote').textContent = avatarUrl ? 'Picture chosen' : 'Optional';
+  $('personaPic').onclick = () => pickMediaFile(false, url => { avatarUrl = url; $('personaPicNote').textContent = 'Picture chosen'; }, msg => modalMessage(msg, true));
+  $('personaOn').onclick = () => {
+    const name = $('personaName').value.trim();
+    if(!name){ modalMessage('Give the persona a name.', true); return; }
+    const lower = name.toLowerCase();
+    const real = directoryUsers.some(u => u.username.toLowerCase() === lower || String(u.displayName || '').toLowerCase() === lower);
+    if(real){ modalMessage('That\'s a real person\'s name - pick a made-up one.', true); return; }
+    personas[sid] = { name, avatarUrl };
+    closeModal();
+    paintPersonaUi();
+    $('messageInput').focus();
+  };
+  if($('personaOff')) $('personaOff').onclick = () => { delete personas[sid]; closeModal(); paintPersonaUi(); };
+}
+
 async function sendMessage(){
   if(!socket) return;
   closeMentionAutocomplete();
   const input = $('messageInput');
   const text = input.value.trim();
+  const room = activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom;
 
+  // files go up first, then one message carries them all (with the text)
+  let attachments = [];
   if(pendingFiles.length){
     if(!socket.connected){ toast('Files can\'t be sent until you\'re back online.'); return; }
     const files = pendingFiles.slice();
     clearAttachments();
-    input.value = '';
-    clearDraft();
-    autoResize();
-    for(let i = 0; i < files.length; i++){
-      await uploadFile(files[i], i === 0 ? text : '');
+    try{
+      for(let i = 0; i < files.length; i++){
+        attachments.push(await uploadAttachment(files[i], room, activeDMUser, i, files.length));
+      }
+    }catch(err){
+      pendingFiles = files; renderAttachments(); // put them back so nothing is lost
+      showError(err.message);
+      return;
     }
-    cancelReply();
-    stopTyping();
-    return;
   }
 
-  if(!text) return;
+  if(!text && !attachments.length) return;
   let sendText = text;
-  if(text.startsWith('/')){
+  if(text.startsWith('/') && !attachments.length){
     if(!socket.connected){ toast('Commands need a connection. Try again once you\'re back online.'); return; }
     const handled = await runSlashCommand(text);
     if(handled === true){ input.value = ''; clearDraft(); autoResize(); cancelReply(); stopTyping(); return; }
     if(typeof handled === 'string') sendText = handled;
   }
-  postChatMessage(sendText, replyTo);
+  if(!activeDMUser) sendText = expandCustomEmoji(sendText, room);
+  postChatMessage(sendText, replyTo, attachments);
   input.value = '';
   clearDraft();
   autoResize();
@@ -4375,12 +4560,43 @@ async function sendMessage(){
   stopTyping();
 }
 
+// Uploads one file for a message that's about to be sent (it isn't posted
+// on its own). Resolves with the file, or rejects with a readable error.
+function uploadAttachment(file, room, toUser, index, total){
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/upload');
+    xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+    xhr.setRequestHeader('X-Room', room);
+    xhr.setRequestHeader('X-Attach', '1');
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+    xhr.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
+    if(toUser) xhr.setRequestHeader('X-To-User', toUser);
+    xhr.upload.onprogress = e => {
+      if(e.lengthComputable) $('uploadBar').style.width = (((index + e.loaded / e.total) / total) * 100) + '%';
+    };
+    xhr.onload = () => {
+      setTimeout(() => { $('uploadBar').style.width = '0%'; }, 400);
+      if(xhr.status === 401){ sessionExpired(); reject(new Error('Your session ended.')); return; }
+      let data = {};
+      try{ data = JSON.parse(xhr.responseText || '{}'); }catch(e){}
+      if(xhr.status >= 200 && xhr.status < 300) resolve(data);
+      else reject(new Error(capitalise(data.error || 'Upload failed.')));
+    };
+    xhr.onerror = () => { $('uploadBar').style.width = '0%'; reject(new Error('Upload failed. Check your connection and try again.')); };
+    xhr.send(file);
+  });
+}
+
 // Shows the message right away (greyed out) and sends it. While the
 // connection is down socket.io holds it and sends it on reconnect; the
 // banner over the chat says so. `reply` is the message being replied to.
-function postChatMessage(sendText, reply){
+function postChatMessage(sendText, reply, attachments){
+  attachments = attachments || [];
   const dmUser = activeDMUser;
-  const payload = { text: sendText, replyTo: reply ? reply.id : null };
+  const payload = { text: sendText, replyTo: reply ? reply.id : null, attachments: attachments.map(a => a.id) };
+  const persona = !dmUser ? activePersona() : null;
+  if(persona) payload.persona = persona;
   const room = dmUser ? roomNameForDM(username, dmUser) : currentRoom;
   const tempId = 'pending:' + (++pendingSendSeq);
   const pendingItem = {
@@ -4389,7 +4605,8 @@ function postChatMessage(sendText, reply){
       id: tempId, room, user: username, displayName: displayNameFor(username),
       avatarUrl: avatarUrlFor(username), text: sendText, to: dmUser || '', dmTo: dmUser || '',
       isGroup: !!currentGroupRoom, replyTo: reply ? { id:reply.id, user:reply.user, displayName:reply.displayName, text:reply.text } : null,
-      editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true
+      editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true,
+      attachments, persona: !!persona, ...(persona ? { displayName: persona.name, avatarUrl: persona.avatarUrl || '' } : {})
     }
   };
   appendItem(pendingItem);
@@ -4399,7 +4616,7 @@ function postChatMessage(sendText, reply){
   // later message in the same room.
   setTimeout(() => pendingSends.delete(tempId), 15000);
   const onResult = result => {
-    if(result && result.error){ markSendFailed(tempId, { text: sendText, reply, room, dmUser }, result.error); pendingSends.delete(tempId); return; }
+    if(result && result.error){ markSendFailed(tempId, { text: sendText, reply, room, dmUser, attachments }, result.error); pendingSends.delete(tempId); return; }
     if(result && result.id) confirmPendingSendId(tempId, result.id);
   };
   if(dmUser){
@@ -4510,7 +4727,7 @@ function markSendFailed(tempId, again, reason){
         if(!stillThere){ toast('Go back to that conversation to send it again.'); return; }
         forgetFailedSend(tempId);
         el.remove();
-        postChatMessage(again.text, again.reply);
+        postChatMessage(again.text, again.reply, again.attachments);
       };
       text.appendChild(retry);
       const drop = document.createElement('button');
@@ -4978,6 +5195,27 @@ function openEmojiPicker(event, mode, messageId){
   }
   const recents = recentEmojis.filter(e => list.includes(e)).slice(0, 8);
   addGrid('Recently used', recents);
+  // this server's own emoji
+  const home = channelByRoom(mode === 'reaction' ? ((document.querySelector('.message[data-message-id="' + messageId + '"]') || {})._item || { data:{} }).data.room || currentRoom : currentRoom);
+  if(home && (home.server.emojis || []).length){
+    picker.appendChild(Object.assign(document.createElement('div'), { className:'pickerTitle', textContent:home.server.name }));
+    const grid = document.createElement('div');
+    grid.className = 'emojiGrid';
+    home.server.emojis.forEach(e => {
+      const button = document.createElement('button');
+      button.title = ':' + e.name + ':';
+      button.innerHTML = '<img class="customEmoji" alt="">';
+      button.querySelector('img').src = e.url;
+      button.onclick = ev => {
+        ev.stopPropagation();
+        if(emojiContext.mode === 'reaction') sendReaction(emojiContext.messageId, '<:' + e.name + ':' + e.id + '>');
+        else insertEmoji(':' + e.name + ':');
+        hideEmojiPicker();
+      };
+      grid.appendChild(button);
+    });
+    picker.appendChild(grid);
+  }
   addGrid(mode === 'reaction' ? 'Add reaction' : 'Emoji', list);
   picker.style.display = 'block';
   const rect = picker.getBoundingClientRect();
@@ -8878,11 +9116,14 @@ const PERMISSION_INFO = [
   { key:'kick_members', label:'Kick members', desc:'Remove members from the server and disconnect people from voice. Never admins, or anyone with powers they lack.' },
   { key:'manage_integrations', label:'Manage bots & webhooks', desc:'Add bots, and create webhooks and slash commands.' },
   { key:'manage_events', label:'Manage events', desc:'Create, edit and cancel events.' },
-  { key:'mention_everyone', label:'Mention @everyone', desc:'Use @everyone, and mention roles that aren\'t open to everyone.' }
+  { key:'mention_everyone', label:'Mention @everyone', desc:'Use @everyone, and mention roles that aren\'t open to everyone.' },
+  { key:'ban_members', label:'Ban & time out members', desc:'Ban people from this server (they can\'t rejoin until unbanned) and time members out so they can\'t post for a while.' },
+  { key:'manage_emoji', label:'Manage emoji', desc:'Add and remove this server\'s custom emoji.' },
+  { key:'use_personas', label:'Post as a persona', desc:'Post under a made-up name and picture. Always labelled as a persona, shows who posted it, and can never use a real member\'s name.' }
 ];
 const PERMISSION_PRESETS = [
-  { key:'moderator', label:'Moderator', color:'#2ecc71', perms:['manage_messages', 'kick_members', 'mention_everyone'] },
-  { key:'manager', label:'Manager', color:'#3498db', perms:['manage_server', 'manage_channels', 'manage_roles', 'manage_messages', 'kick_members', 'manage_integrations', 'manage_events', 'mention_everyone'] },
+  { key:'moderator', label:'Moderator', color:'#2ecc71', perms:['manage_messages', 'kick_members', 'ban_members', 'mention_everyone', 'manage_emoji'] },
+  { key:'manager', label:'Manager', color:'#3498db', perms:['manage_server', 'manage_channels', 'manage_roles', 'manage_messages', 'kick_members', 'ban_members', 'manage_integrations', 'manage_events', 'mention_everyone', 'manage_emoji', 'use_personas'] },
   { key:'bots', label:'Bots & webhooks', color:'#9b59b6', perms:['manage_integrations'] },
   { key:'events', label:'Event host', color:'#e67e22', perms:['manage_events', 'mention_everyone'] },
   { key:'none', label:'No powers', color:'', perms:[] }
@@ -8912,6 +9153,7 @@ function openServerSettings(serverId, sectionKey){
       { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
       { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!can(server, 'manage_integrations') },
+      { key:'emoji', label:'Emoji', render:c => renderServerEmoji(c, sid), hidden:server.isDefault },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
     ]},
@@ -9544,6 +9786,40 @@ async function renderServerMembers(c, sid){
           role.onclick = async () => { await setServerRole(server, m.username, m.role === 'admin' ? 'member' : 'admin'); rerenderSettingsSection(); };
           row.appendChild(role);
         }
+        if(can(server, 'ban_members') && (m.role !== 'admin' || server.canManageOwnerLevel)){
+          const mod = document.createElement('button');
+          mod.className = 'btn grey';
+          mod.textContent = m.timedOutUntil ? 'Timed out' : 'Timeout';
+          const setTimeoutFor = async minutes => {
+            try{
+              const response = await fetch('/servers/' + sid + '/members/' + encodeURIComponent(m.username) + '/timeout', { method:'POST', headers:authHeaders(), body:JSON.stringify({ minutes }) });
+              const data = await response.json();
+              if(!response.ok) throw new Error(data.error || 'could not change the timeout');
+              toast(minutes ? 'Timed out ' + (m.displayName || m.username) : 'Timeout lifted');
+              rerenderSettingsSection();
+            }catch(err){ toast(capitalise(err.message)); }
+          };
+          mod.onclick = e => showMenu(e, [{ header:'Time out ' + (m.displayName || m.username) }].concat(
+            [[5, '5 minutes'], [10, '10 minutes'], [60, '1 hour'], [360, '6 hours'], [1440, '1 day'], [10080, '1 week']].map(([min, label]) => ({ label, action:() => setTimeoutFor(min) })),
+            m.timedOutUntil ? [{ sep:true }, { label:'Lift the timeout', action:() => setTimeoutFor(0) }] : []
+          ));
+          row.appendChild(mod);
+          const ban = document.createElement('button');
+          ban.className = 'btn danger';
+          ban.textContent = 'Ban';
+          ban.onclick = async () => {
+            const reason = prompt('Ban ' + (m.displayName || m.username) + ' from ' + server.name + '? They can\'t rejoin until unbanned.\n\nReason (optional):', '');
+            if(reason === null) return;
+            try{
+              const response = await fetch('/servers/' + sid + '/members/' + encodeURIComponent(m.username) + '/ban', { method:'POST', headers:authHeaders(), body:JSON.stringify({ reason }) });
+              const data = await response.json();
+              if(!response.ok) throw new Error(data.error || 'could not ban');
+              toast('Banned ' + (m.displayName || m.username));
+              rerenderSettingsSection();
+            }catch(err){ toast(capitalise(err.message)); }
+          };
+          row.appendChild(ban);
+        }
         if(can(server, 'kick_members') && (m.role !== 'admin' || server.canManageOwnerLevel)){
           const kick = document.createElement('button');
           kick.className = 'btn danger';
@@ -9569,12 +9845,114 @@ async function renderServerMembers(c, sid){
   paint('');
 }
 
+const AUDIT_LABELS = {
+  kick:'kicked', ban:'banned', unban:'unbanned', timeout:'timed out', timeout_lifted:'lifted the timeout of',
+  message_delete:'deleted a message by', file_delete:'deleted a file by', role_create:'created the role', role_update:'changed the role',
+  role_delete:'deleted a role', member_roles:'changed the roles of', channel_create:'created', channel_update:'edited', channel_delete:'deleted',
+  server_update:'changed the server settings', webhook_delete:'deleted the webhook', emoji_add:'added the emoji', emoji_remove:'removed the emoji',
+  persona_post:'posted as the persona'
+};
+async function loadModerationLists(sid){
+  const listRow = (main, sub, button) => {
+    const row = document.createElement('div');
+    row.className = 'modRow';
+    const info = document.createElement('div');
+    info.className = 'grow';
+    info.appendChild(Object.assign(document.createElement('div'), { className:'rowTitle', textContent:main }));
+    if(sub) info.appendChild(Object.assign(document.createElement('div'), { className:'rowSub', textContent:sub }));
+    row.appendChild(info);
+    if(button) row.appendChild(button);
+    return row;
+  };
+  const fill = async (id, url, empty, build) => {
+    const box = $(id);
+    if(!box) return;
+    try{
+      const response = await fetch(url, { headers: bearer() });
+      if(!response.ok) throw new Error();
+      const rows = await response.json();
+      if(!$(id)) return;
+      box.innerHTML = '';
+      if(!rows.length){ box.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:empty })); return; }
+      rows.forEach(r => box.appendChild(build(r)));
+    }catch(e){ box.textContent = 'Could not load this.'; }
+  };
+  const action = (label, url) => {
+    const b = Object.assign(document.createElement('button'), { className:'btn grey', textContent:label });
+    b.onclick = async () => {
+      b.disabled = true;
+      const response = await fetch(url, { method:'POST', headers:authHeaders(), body:JSON.stringify({ minutes:0 }) }).catch(() => null);
+      if(response && response.ok) loadModerationLists(sid); else { b.disabled = false; toast('That didn\'t work - try again.'); }
+    };
+    return b;
+  };
+  fill('modTimeouts', '/servers/' + sid + '/timeouts', 'Nobody is timed out.', t =>
+    listRow(displayNameFor(t.username) + ' (' + t.username + ')', 'Until ' + parseTime(t.until).toLocaleString() + (t.reason ? ' · ' + t.reason : '') + ' · by ' + t.setBy,
+      action('Lift', '/servers/' + sid + '/members/' + encodeURIComponent(t.username) + '/timeout')));
+  fill('modBans', '/servers/' + sid + '/bans', 'Nobody is banned.', b =>
+    listRow(b.username, 'Banned ' + parseTime(b.createdAt).toLocaleDateString() + ' by ' + b.bannedBy + (b.reason ? ' · ' + b.reason : ''),
+      action('Unban', '/servers/' + sid + '/bans/' + encodeURIComponent(b.username) + '/unban')));
+  fill('modAudit', '/servers/' + sid + '/audit', 'Nothing yet.', a =>
+    listRow(displayNameFor(a.actor) + ' ' + (AUDIT_LABELS[a.action] || a.action) + (a.target ? ' ' + a.target : ''),
+      formatStamp(a.createdAt) + (a.details ? ' · ' + a.details : '')));
+}
+
+function renderServerEmoji(c, sid){
+  const server = serverById(sid);
+  if(!server){ c.innerHTML = ''; return; }
+  const manage = can(server, 'manage_emoji');
+  const list = server.emojis || [];
+  c.innerHTML = '<h2 class="settingsTitle">Emoji</h2>' +
+    '<div class="settingsSub">This server\'s own emoji. Type <b>:name:</b> in a message, or pick them from the emoji button. They work as reactions too.</div>' +
+    (manage ? section('Add an emoji',
+      '<div class="rowFlex"><input class="settingsInput" id="emojiName" maxlength="32" placeholder="name, e.g. party_cat" style="max-width:240px">' +
+      '<button class="btn" id="emojiUpload">Upload picture or GIF</button></div>' +
+      '<div class="switchDesc" style="margin-top:8px">Square pictures work best. Names use lowercase letters, numbers and _. Up to 50 per server.</div><div class="inlineMsg" id="emojiMsg"></div>') : '') +
+    section('Emoji (' + list.length + ')', '<div id="emojiList" class="emojiManageGrid"></div>');
+  const grid = $('emojiList');
+  if(!list.length) grid.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: manage ? 'No custom emoji yet - add the first one above.' : 'No custom emoji yet.' }));
+  list.forEach(e => {
+    const cell = document.createElement('div');
+    cell.className = 'emojiCell';
+    const img = document.createElement('img'); img.src = e.url; img.alt = ':' + e.name + ':';
+    cell.appendChild(img);
+    cell.appendChild(Object.assign(document.createElement('span'), { textContent:':' + e.name + ':' }));
+    if(manage){
+      const del = Object.assign(document.createElement('button'), { className:'linkBtn', textContent:'Remove' });
+      del.onclick = async () => {
+        if(!confirm('Remove :' + e.name + ':?')) return;
+        const response = await fetch('/servers/' + sid + '/emojis/' + e.id + '/delete', { method:'POST', headers:authHeaders(), body:'{}' });
+        if(response.ok){ await refreshServers(); rerenderSettingsSection(); } else toast('Could not remove it.');
+      };
+      cell.appendChild(del);
+    }
+    grid.appendChild(cell);
+  });
+  if(manage) $('emojiUpload').onclick = () => {
+    const name = $('emojiName').value.trim().toLowerCase().replace(/^:|:$/g, '');
+    if(!/^[a-z0-9_]{2,32}$/.test(name)){ inlineMessage($('emojiMsg'), 'Name it first: 2-32 lowercase letters, numbers or _.', true); return; }
+    pickMediaFile(false, async url => {
+      try{
+        const response = await fetch('/servers/' + sid + '/emojis', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name, url }) });
+        const data = await response.json();
+        if(!response.ok) throw new Error(capitalise(data.error || 'Could not add it.'));
+        await refreshServers();
+        rerenderSettingsSection();
+        toast('Added :' + name + ':');
+      }catch(err){ inlineMessage($('emojiMsg'), err.message, true); }
+    }, msg => inlineMessage($('emojiMsg'), msg, true));
+  };
+}
+
 function renderServerModeration(c, sid){
   const server = serverById(sid);
   if(!server){ c.innerHTML = ''; return; }
   c.innerHTML = '<h2 class="settingsTitle">Moderation</h2>' +
     section('Content Filter', switchRow('serverCensorToggle', 'Censor swear words for everyone in this server', 'Overrides each member\'s personal setting while it\'s on.', server.censorSwears, !can(server, 'manage_server'))) +
+    (can(server, 'ban_members') ? section('Timeouts', '<div id="modTimeouts" class="modList">Loading…</div>') + section('Bans', '<div id="modBans" class="modList">Loading…</div>') : '') +
+    (['manage_server', 'kick_members', 'ban_members', 'manage_roles'].some(k => can(server, k)) ? section('Audit log', '<div class="switchDesc" style="margin-bottom:10px">What moderators and admins did here, newest first.</div><div id="modAudit" class="modList">Loading…</div>') : '') +
     section('Who can moderate', '<div class="switchDesc">The owner and server admins can do everything. Other members get powers from their roles (Roles → Permissions), for example a Moderator role that can delete messages and kick members. Only the owner can make or remove admins.</div>');
+  loadModerationLists(sid);
   const box = $('serverCensorToggle');
   if(box && can(server, 'manage_server')) box.onchange = async () => {
     const enabled = box.checked;

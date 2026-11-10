@@ -1,12 +1,12 @@
 {
   "name": "socket-chat-render",
-  "version": "2.0.0",
-  "description": "Express and Socket.IO chat app for Render deployment",
+  "version": "3.0.0",
+  "description": "Self-hosted Discord-style chat: Express, Socket.IO and Postgres",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node --test"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": "22.x"

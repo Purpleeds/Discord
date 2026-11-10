@@ -2908,7 +2908,8 @@ app.post('/bots', requireAuth, route(async (req, res) => {
     // one INSERT, so it's never briefly a normal account; '!' is not a
     // bcrypt hash, and /login refuses bots before checking passwords anyway
     await pool.query(
-      `INSERT INTO users (username, password_hash, display_name, is_bot, bot_owner, bot_token_hash) VALUES ($1, '!bot', $2, 1, $3, $4)`,
+      `INSERT INTO users (username, password_hash, display_name, is_bot, bot_owner, bot_token_hash, unread_base_id, unread_base_at)
+       VALUES ($1, '!bot', $2, 1, $3, $4, (SELECT COALESCE(MAX(id), 0) FROM messages), NOW())`,
       [username, cleanText(req.body.displayName || username, 40) || username, req.username, sha256Hex(token)]
     );
   } catch (err) {

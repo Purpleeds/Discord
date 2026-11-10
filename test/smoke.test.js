@@ -37,7 +37,8 @@ before(async () => {
   if (!DB) throw new Error('Set TEST_DATABASE_URL to a throwaway Postgres database to run the tests.');
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chat-test-'));
   child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, DATABASE_URL: DB, PORT: String(PORT), RATE_LIMITS: 'off', DATA_DIR: dataDir },
+    // a 1 MB attachment budget, so the "oldest files make room" rule can be tested with small files
+    env: { ...process.env, DATABASE_URL: DB, PORT: String(PORT), RATE_LIMITS: 'off', DATA_DIR: dataDir, MEDIA_BUDGET_MB: '1' },
     stdio: ['ignore', 'pipe', 'inherit']
   });
   await new Promise((resolve, reject) => {
@@ -457,4 +458,184 @@ test('bot accounts: tokens, servers, slash commands and limits', async () => {
   botSocket.close();
   await api(tokens.a, `/bots/${botName}/delete`, {});
   assert.equal((await api(tokens.a, `/servers/${sid}/delete`, {})).status, 200);
+});
+
+// ---------------------------------------------------------------- v3 ----
+const post = (route, body, headers) => fetch(BASE + route, {
+  method: 'POST', headers: { 'content-type': 'application/json', ...(headers || {}) }, body: JSON.stringify(body || {})
+}).then(async res => ({ status: res.status, data: await res.json().catch(() => ({})) }));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function upload(token, room, name, body) {
+  const res = await fetch(BASE + '/upload', {
+    method: 'POST', body,
+    headers: { authorization: 'Bearer ' + token, 'x-room': room, 'x-file-name': encodeURIComponent(name), 'x-file-type': 'application/octet-stream' }
+  });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+// a private server with A and B in it, for tests that count things
+async function makeServer(name) {
+  const sid = (await api(tokens.a, '/servers', { name: name + ' ' + tag, template: 'friends', audience: 'friends' })).data.id;
+  const s = (await api(tokens.a, '/servers')).data.find(x => x.id === sid);
+  await api(tokens.b, '/servers/join', { code: s.inviteCode });
+  const text = s.channels.filter(c => c.kind !== 'voice');
+  for (const c of text) await emit(sockets.a, 'joinRoom', c.room);
+  return { sid, rooms: text.map(c => c.room) };
+}
+
+test('v3 accounts: sessions are hashed, listed and revocable; login never invents accounts', async () => {
+  const name = 'Td' + tag;
+  assert.equal((await post('/register', { username: name, password: 'short12' })).status, 400, 'new passwords need 8 characters');
+  const first = await post('/register', { username: name, password: 'secret123' }, { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/130.0 Safari/537.36' });
+  assert.equal(first.status, 201);
+  assert.equal((await post('/register', { username: name.toLowerCase(), password: 'secret123' })).status, 409, 'names differing only by capitals are refused');
+
+  // the app's login screen sends create:false - a typo must not become a new account
+  const typo = await post('/login', { username: 'nobody' + tag, password: 'secret123', create: false });
+  assert.equal(typo.status, 404);
+  assert.equal(typo.data.code, 'no_account');
+  assert.equal((await post('/login', { username: 'nobody' + tag, password: 'secret123', create: false })).status, 404, 'still not created');
+  const second = await post('/login', { username: name.toUpperCase(), password: 'secret123', create: false },
+    { 'user-agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Version/17.0 Mobile/15E148 Safari/604.1' });
+  assert.equal(second.data.username, name, 'login ignores capitals and answers with the real name');
+
+  const devices = (await api(first.data.token, '/sessions')).data;
+  assert.deepEqual(devices.map(d => [d.device, d.current]), [['Chrome on Windows', true], ['Safari on iPhone', false]]);
+  assert.ok(!JSON.stringify(devices).includes(first.data.token) && !JSON.stringify(devices).includes('sha256'), 'no token or hash leaves the server');
+
+  // signing a device out kills its token and its live connection
+  const phone = await new Promise(resolve => {
+    const sock = io(BASE, { auth: { token: second.data.token }, transports: ['websocket'], reconnection: false });
+    sock.on('connect', () => resolve(sock));
+  });
+  const dropped = new Promise(resolve => phone.on('disconnect', resolve));
+  assert.equal((await api(first.data.token, `/sessions/${devices[1].id}/revoke`, {})).status, 200);
+  await dropped;
+  assert.equal((await api(second.data.token, '/profile')).status, 401);
+  assert.equal((await api(tokens.a, `/sessions/${devices[0].id}/revoke`, {})).status, 404, "can't touch someone else's session");
+
+  // changing the password signs every other device out
+  const third = await post('/login', { username: name, password: 'secret123', create: false });
+  const changed = await api(first.data.token, '/settings/password', { currentPassword: 'secret123', newPassword: 'secret456' });
+  assert.equal(changed.data.signedOutSessions, 1);
+  assert.equal((await api(third.data.token, '/profile')).status, 401);
+  assert.equal((await api(first.data.token, '/profile')).status, 200);
+
+  // the page itself can't be framed by another site
+  const page = await fetch(BASE + '/');
+  assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'self'/);
+  assert.equal(page.headers.get('x-frame-options'), 'SAMEORIGIN');
+});
+
+test('v3 unread: counted on the server, synced between devices, cleared per server', async () => {
+  const { sid, rooms } = await makeServer('Unread');
+  const [general, other] = rooms;
+  assert.deepEqual((await api(tokens.b, '/unread')).data.rooms[general], undefined, 'history from before joining is not unread');
+  const m1 = await emit(sockets.a, 'message', { room: general, text: 'one' });
+  await emit(sockets.a, 'message', { room: general, text: `two @${names.b}` });
+  await emit(sockets.a, 'message', { room: other, text: 'elsewhere' });
+  await emit(sockets.a, 'dmMessage', { to: names.b, text: 'psst' });
+  let rooms2 = (await api(tokens.b, '/unread')).data.rooms;
+  assert.deepEqual(rooms2[general], { count: 2, mentions: 1 });
+  assert.equal(rooms2[other].count, 1);
+  assert.ok(Object.keys(rooms2).some(r => r.startsWith('dm:') && r.includes(names.a)), 'DMs count too');
+
+  // reading part of a channel on one connection tells the person's other devices
+  const synced = nextEvent(sockets.b, 'readSync', d => d.rooms.includes(general));
+  sockets.b.emit('markRead', { room: general, lastMessageId: m1.id });
+  await synced;
+  assert.equal((await api(tokens.b, '/unread')).data.rooms[general].count, 1);
+  // a made-up huge id must not hide messages that haven't been sent yet
+  sockets.b.emit('markRead', { room: general, lastMessageId: 2000000000 });
+  await sleep(200);
+  await emit(sockets.a, 'message', { room: general, text: 'three' });
+  assert.equal((await api(tokens.b, '/unread')).data.rooms[general].count, 1);
+
+  assert.equal((await api(tokens.c, '/read-all', { serverId: sid })).status, 404, 'not your server');
+  assert.equal((await api(tokens.b, '/read-all', { serverId: sid })).status, 200);
+  rooms2 = (await api(tokens.b, '/unread')).data.rooms;
+  assert.ok(!rooms2[general] && !rooms2[other]);
+  await api(tokens.b, '/read-all', { all: true });
+  assert.deepEqual((await api(tokens.b, '/unread')).data.rooms, {});
+  await api(tokens.a, `/servers/${sid}/delete`, {});
+});
+
+test('v3 attachments: small files are kept in the database, big ones are temporary', async () => {
+  const { sid, rooms } = await makeServer('Files');
+  const [general, other] = rooms;
+  const bytes = Buffer.from('kept forever (within the budget)');
+  const kept = await upload(tokens.a, general, 'note.txt', bytes);
+  assert.equal(kept.status, 201);
+  assert.equal(kept.data.kept, true);
+  assert.equal(kept.data.expiresAt, null);
+  assert.match(kept.data.fileUrl, /^\/media\/[\w-]{16,}\/note\.txt$/);
+  const got = await fetch(BASE + kept.data.fileUrl);
+  assert.equal(got.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.ok(Buffer.from(await got.arrayBuffer()).equals(bytes));
+  const part = await fetch(BASE + kept.data.fileUrl, { headers: { range: 'bytes=0-3' } });
+  assert.equal(part.status, 206);
+  assert.equal(await part.text(), 'kept');
+  assert.equal(fs.readdirSync(path.join(dataDir, 'uploads')).length, 0, 'nothing was written to the temporary disk');
+
+  // a page disguised as a picture is still never run on the app's origin
+  const page = await fetch(BASE + (await upload(tokens.a, general, 'evil.html', Buffer.from('<script>1</script>'))).data.fileUrl);
+  assert.equal(page.headers.get('content-disposition'), 'attachment');
+  assert.match(page.headers.get('content-security-policy'), /sandbox/);
+  const svg = await fetch(BASE + (await upload(tokens.a, general, 'pic.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).data.fileUrl);
+  assert.equal(svg.headers.get('content-type'), 'image/svg+xml');
+  assert.match(svg.headers.get('content-security-policy'), /^sandbox/);
+
+  // over the keep limit: a temporary share on disk that says when it goes
+  const big = await upload(tokens.a, general, 'big.bin', Buffer.alloc(9 * 1024 * 1024, 1));
+  assert.equal(big.data.kept, false);
+  assert.match(big.data.fileUrl, /^\/uploads\//);
+  const hours = (new Date(big.data.expiresAt) - Date.now()) / 3600000;
+  assert.ok(hours > 5.9 && hours < 6.1, 'expires in about 6 hours');
+
+  // only the uploader or a moderator can delete
+  assert.equal((await api(tokens.b, `/files/${kept.data.id}/delete`, {})).status, 403);
+  assert.equal((await api(tokens.c, `/files/${kept.data.id}/delete`, {})).status, 404);
+  const gone = nextEvent(sockets.a, 'fileDeleted', d => d.id === kept.data.id);
+  assert.equal((await api(tokens.a, `/files/${kept.data.id}/delete`, {})).status, 200);
+  await gone;
+  assert.equal((await fetch(BASE + kept.data.fileUrl)).status, 404);
+
+  // the budget (1 MB in this test) drops the oldest kept files first
+  const urls = [];
+  for (let i = 0; i < 4; i++) urls.push((await upload(tokens.a, other, `chunk${i}.bin`, Buffer.alloc(400 * 1024, i))).data.fileUrl);
+  await sleep(600);
+  const alive = await Promise.all(urls.map(async u => (await fetch(BASE + u)).status));
+  assert.deepEqual(alive, [404, 404, 200, 200], 'the two oldest made room for the two newest');
+  await api(tokens.a, `/servers/${sid}/delete`, {});
+});
+
+test('v3 history: messages and files page back together, each exactly once', async () => {
+  const { sid, rooms } = await makeServer('History');
+  const room = rooms[1];
+  const sent = [];
+  for (let i = 0; i < 160; i++) {
+    sent.push('m' + (await emit(sockets.a, 'message', { room, text: 'line ' + i })).id);
+    if (i % 40 === 20) sent.push('f' + (await upload(tokens.a, room, `f${i}.txt`, Buffer.from('f' + i))).data.id);
+  }
+  const flatten = page => [
+    ...page.messages.map(m => ({ key: 'm' + m.id, at: m.createdAt, id: m.id })),
+    ...page.files.map(f => ({ key: 'f' + f.id, at: f.createdAt, id: f.id }))
+  ].sort((x, y) => new Date(x.at) - new Date(y.at) || x.id - y.id).map(x => x.key);
+
+  let page = (await api(tokens.b, '/history?room=' + encodeURIComponent(room))).data;
+  assert.equal(page.messages.length, 75);
+  assert.equal(page.hasMore, true);
+  assert.equal(typeof page.lastRead.id, 'number', 'the first page says where you had read up to');
+  const seen = flatten(page);
+  let pages = 1;
+  while (page.hasMore) {
+    page = (await api(tokens.b, `/history?room=${encodeURIComponent(room)}&before=${page.messages[0].id}`)).data;
+    seen.unshift(...flatten(page));
+    assert.ok(++pages < 10);
+  }
+  assert.equal(pages, 3);
+  assert.deepEqual(seen, sent);
+  assert.equal((await api(tokens.c, '/history?room=' + encodeURIComponent(room))).status, 403);
+  // the older endpoints (used by bots) still work
+  assert.equal((await api(tokens.b, '/messages?room=' + encodeURIComponent(room))).data.length, 160);
+  await api(tokens.a, `/servers/${sid}/delete`, {});
 });

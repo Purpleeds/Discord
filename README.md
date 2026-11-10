@@ -31,7 +31,9 @@ tables itself on startup, so an empty database is all it needs.
 | `DATABASE_URL` | yes | Postgres connection string. On Neon use the **pooled** one. |
 | `PORT` | no | Port to listen on (default `3000`; Render sets this). |
 | `PGSSL` | no | Set to `false` for a local Postgres without SSL. |
-| `DATA_DIR` | no | Where shared files are stored (default: this folder). |
+| `DATA_DIR` | no | Where large temporary files are stored (default: this folder). |
+| `KEEP_FILE_MB` | no | Attachments up to this size are kept, in the database (default `8`). Bigger ones are temporary. |
+| `MEDIA_BUDGET_MB` | no | Total space kept attachments may use before the oldest are removed (default `250`). |
 | `RATE_LIMITS` | no | Set to `off` to disable rate limits (for tests only). |
 | `LINK_PREVIEW_TEST_HOSTS` | no | Tests only (ignored unless `RATE_LIMITS=off`): exact `host:port` pairs link previews may fetch even though they're private. |
 | `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
@@ -107,18 +109,25 @@ package.json. See
 [RENDER_POSTGRES_SETUP.md](RENDER_POSTGRES_SETUP.md) for moving the
 database or setting it up from scratch.
 
-Shared files (the up-to-10GB uploads) are kept on Render's temporary disk
-and deleted after 6 hours. Everything else (accounts, messages, avatars,
-server icons, friends) is in Postgres.
+Everything is in Postgres: accounts, messages, avatars, server icons,
+friends, and attachments up to `KEEP_FILE_MB` (8 MB by default). Kept
+attachments share a budget (`MEDIA_BUDGET_MB`, 250 MB by default) and the
+oldest are removed when it fills, so size it to your database plan (Neon's
+free plan is 0.5 GB for everything). Bigger files, up to 10 GB, are
+temporary shares on Render's disk: deleted after 6 hours or on a restart,
+and labelled that way in the app.
+
+[UPGRADES.md](UPGRADES.md) lists what each major version changed and what
+to check after deploying it.
 
 ## Tests
 
 The smoke test starts its own copy of the server against a database you
-point it at and checks the main features end to end (accounts, messages,
-DMs, friends, blocking, upload safety, servers, private channels,
-threads, events, calls, webhooks, slash commands, reaction roles and
-link-preview SSRF protection). Use a throwaway database: it
-creates test accounts.
+point it at and checks the main features end to end (accounts and
+sessions, messages, DMs, friends, blocking, uploads and kept attachments,
+unread counts, history paging, servers, private channels, threads, events,
+calls, webhooks, slash commands, reaction roles, bots and link-preview SSRF
+protection). Use a throwaway database: it creates test accounts.
 
 ```bash
 TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/chat_test PGSSL=false npm test
@@ -129,3 +138,6 @@ TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/chat_test PGSSL=false np
 The account named `Purple` is always a site-wide admin. Other accounts can
 be created or made admins at startup via `SEED_ACCOUNTS` near the top of
 `server.js`.
+
+`regression/` holds the larger suites, including the browser ones that
+click through the real page (see [regression/README.md](regression/README.md)).

@@ -1729,6 +1729,17 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .newMessagesLine{display:flex;align-items:center;gap:10px;margin:10px 16px 2px 16px;color:var(--brand);font-size:12.5px;font-weight:700;}
 .newMessagesLine::before{content:"";flex:1;height:1px;background:color-mix(in srgb,var(--brand) 60%,transparent);}
 .newMessagesLine span{padding:1px 9px;border-radius:999px;background:var(--brand);color:var(--on-brand);}
+
+/* ---- v3: connection banner, failed sends ---- */
+.connBanner{display:none;align-items:center;gap:10px;padding:8px 18px;font-size:13.5px;font-weight:600;color:var(--text-bright);background:color-mix(in srgb,var(--yellow) 16%,var(--desk));border-bottom:1px solid color-mix(in srgb,var(--yellow) 40%,transparent);}
+.connBanner.show{display:flex;}
+.connDot{width:8px;height:8px;border-radius:50%;background:var(--yellow);flex:none;animation:connPulse 1.4s ease-in-out infinite;}
+@keyframes connPulse{50%{opacity:.25;}}
+@media (prefers-reduced-motion: reduce){.connDot{animation:none;}}
+.message.failed .msgText{color:var(--text-muted);}
+.failNote{display:block;font-size:12.5px;color:#fa777c;margin-top:2px;}
+.failRetry{font-size:12.5px;margin-right:12px;}
+#loginCard #status{text-align:left;}
 </style>
 </head>
 
@@ -1836,6 +1847,7 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
         <button class="searchClear" aria-label="Clear search" onclick="clearSearch()">✕</button>
       </div>
     </div>
+    <div id="connBanner" class="connBanner" role="status" aria-live="polite"><span class="connDot"></span><span id="connText">Reconnecting…</span></div>
     <div id="callPanel" class="callPanel" aria-label="Call"></div>
     <div id="messages"><div id="messagesInner"></div></div>
     <div id="friendsView"></div>
@@ -2289,6 +2301,10 @@ function resetToLoginScreen(message){
   servers=[]; groups=[]; groupByRoom={}; unread={}; pendingFiles=[]; replyTo=null;
   stopTabAlert();
   forgetSession();
+  failedSends = [];
+  drafts = {}; draftRoom = ''; try{ localStorage.removeItem('drafts'); }catch(e){}
+  $('messageInput').value = '';
+  clearTimeout(connLostTimer); connLostTimer = null; connBannerShown = false; $('connBanner').classList.remove('show');
   closeSettings(true);
   closePopouts();
   clearSearch();
@@ -2326,12 +2342,76 @@ window.fetch = async function(input, init){
   return response;
 };
 
+/* ============================ connection state ============================ */
+// A thin bar over the chat whenever the live connection is down, so a
+// message that hasn't gone anywhere is never a mystery. It waits a moment
+// before showing: most drops (a wifi blip) heal faster than you can read it.
+let connLostTimer = null;
+let connBannerShown = false;
+function connectionLost(){
+  if(connLostTimer || connBannerShown || !token) return;
+  connLostTimer = setTimeout(() => {
+    connLostTimer = null;
+    if(!token || (socket && socket.connected)) return;
+    connBannerShown = true;
+    paintConnBanner();
+    $('connBanner').classList.add('show');
+  }, 1500);
+}
+function paintConnBanner(){
+  $('connText').textContent = navigator.onLine === false
+    ? 'You\'re offline. Messages you send will go out when you\'re back.'
+    : 'Reconnecting… Messages you send will go out once you\'re connected.';
+}
+function connectionBack(){
+  clearTimeout(connLostTimer);
+  connLostTimer = null;
+  if(connBannerShown){ connBannerShown = false; $('connBanner').classList.remove('show'); toast('Back online'); }
+  // anything still shown as "sending" is about to be redrawn from the
+  // server's copy; forget the placeholders so the real messages aren't
+  // mistaken for their echoes and dropped
+  pendingSends.clear();
+}
+window.addEventListener('online', () => { if(connBannerShown) paintConnBanner(); });
+window.addEventListener('offline', () => { if(token){ if(connBannerShown) paintConnBanner(); else connectionLost(); } });
+
+/* ============================ drafts ============================ */
+// What you'd typed in a channel is still there when you come back to it,
+// including after a reload. Kept on this device only.
+let drafts = {};
+let draftRoom = '';
+try{ drafts = JSON.parse(localStorage.getItem('drafts') || '{}') || {}; }catch(e){ drafts = {}; }
+function saveDrafts(){
+  const keys = Object.keys(drafts);
+  if(keys.length > 60) keys.slice(0, keys.length - 60).forEach(k => delete drafts[k]);
+  try{ localStorage.setItem('drafts', JSON.stringify(drafts)); }catch(e){}
+}
+function stashDraft(){
+  if(!draftRoom) return;
+  const text = $('messageInput').value;
+  if(text.trim()) drafts[draftRoom] = text.slice(0, 4000);
+  else delete drafts[draftRoom];
+  saveDrafts();
+}
+function switchDraftTo(room){
+  if(room === draftRoom) return;
+  stashDraft();
+  draftRoom = room;
+  $('messageInput').value = drafts[room] || '';
+  autoResize();
+}
+function clearDraft(){ if(draftRoom && drafts[draftRoom]){ delete drafts[draftRoom]; saveDrafts(); } }
+let draftSaveTimer = null;
+function draftChanged(){ clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(stashDraft, 600); }
+window.addEventListener('pagehide', stashDraft);
+
 /* ============================ sockets ============================ */
 function connectSocket(){
   socket = io({ auth:{ token } });
   setupVoiceSocket();
 
   socket.on('connect', async () => {
+    connectionBack();
     reportedIdle = false;
     await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends()]);
     socket.emit('syncRooms');
@@ -2348,7 +2428,23 @@ function connectSocket(){
   });
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
-    setStatus(err.message || 'socket connection failed');
+    connectionLost();
+    // the server refused for now (busy database): socket.io doesn't retry that by itself
+    if(socket && !socket.active) setTimeout(() => { if(socket && token && !socket.connected) socket.connect(); }, 3000);
+  });
+  socket.on('disconnect', reason => {
+    connectionLost();
+    if(reason === 'io server disconnect'){
+      // The server closed this connection on purpose: signed out from another
+      // device, kicked, banned... or it is just restarting. Ask who we are -
+      // a 401 ends the session (the fetch wrapper handles that); anything
+      // else means we're still welcome, so connect again.
+      setTimeout(async () => {
+        if(!token || !socket || socket.connected) return;
+        try{ await fetch('/profile', { headers: bearer() }); }catch(e){}
+        if(token && socket && !socket.connected) socket.connect();
+      }, 800);
+    }
   });
   socket.on('users', async users => {
     onlineUserList = Array.isArray(users) ? users : [];
@@ -2534,6 +2630,13 @@ function cacheFromPayload(msg){
   }
 }
 
+// A live message that's already on screen (it also came with the history
+// that was loading as it arrived - common right after a reconnect).
+function alreadyShown(msg, kind){
+  const attr = kind === 'file' ? 'data-file-id' : 'data-message-id';
+  return !!document.querySelector('#messagesInner .message[' + attr + '="' + msg.id + '"]');
+}
+
 function handleIncoming(msg, kind){
   cacheFromPayload(msg);
   if(isThreadRoom(msg.room) && !threadIndex[threadIdOf(msg.room)]) ensureThread(threadIdOf(msg.room)).then(() => { renderSidebar(); renderRail(); });
@@ -2542,6 +2645,7 @@ function handleIncoming(msg, kind){
   // optimistically when we sent it - if so, just upgrade that element in
   // place (grey -> full color) instead of appending a duplicate.
   if(kind === 'message' && msg.user === username && confirmPendingSendData(msg)) return;
+  if(alreadyShown(msg, kind)) return;
   if(isBlocked(msg.user)){
     // still added (collapsed) so the timeline stays complete, but no pings
     if(msg.room === currentRoom) appendItem({ kind, data:msg });
@@ -2565,6 +2669,7 @@ function handleIncoming(msg, kind){
 function handleIncomingDM(msg, kind){
   cacheFromPayload(msg);
   if(kind === 'message' && msg.user === username && confirmPendingSendData(msg)) return;
+  if(alreadyShown(msg, kind)) return;
   const other = msg.user === username ? (msg.to || msg.dmTo) : msg.user;
   const room = msg.room || roomNameForDM(username, other);
   if(isBlocked(msg.user)){
@@ -3217,6 +3322,7 @@ function setComposerEnabled(on){
 function enterRoom(room){
   closeFriends();
   closeForum();
+  switchDraftTo(room);
   unread[room] = 0;
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
@@ -3264,6 +3370,10 @@ async function loadHistory(room){
     historyState = { room, oldestId: messages.length ? messages[0].id : null, hasMore: !!page.hasMore, loading:false };
     newMarker = firstUnreadItem(combined, page.lastRead);
     renderTimeline();
+    failedSends.filter(item => item.data.room === room).forEach(item => {
+      appendItem(item);
+      markSendFailed(item.data.id, item.data.failedInfo.again, item.data.failedInfo.reason);
+    });
     scrollToBottom();
     // open at the "new messages" line when what's new doesn't fit on screen
     const line = $('newMessagesLine');
@@ -4143,15 +4253,17 @@ function sendReaction(id, emoji){
 }
 
 async function sendMessage(){
-  if(!socket || !socket.connected) return;
+  if(!socket) return;
   closeMentionAutocomplete();
   const input = $('messageInput');
   const text = input.value.trim();
 
   if(pendingFiles.length){
+    if(!socket.connected){ toast('Files can\'t be sent until you\'re back online.'); return; }
     const files = pendingFiles.slice();
     clearAttachments();
     input.value = '';
+    clearDraft();
     autoResize();
     for(let i = 0; i < files.length; i++){
       await uploadFile(files[i], i === 0 ? text : '');
@@ -4164,21 +4276,34 @@ async function sendMessage(){
   if(!text) return;
   let sendText = text;
   if(text.startsWith('/')){
+    if(!socket.connected){ toast('Commands need a connection. Try again once you\'re back online.'); return; }
     const handled = await runSlashCommand(text);
-    if(handled === true){ input.value = ''; autoResize(); cancelReply(); stopTyping(); return; }
+    if(handled === true){ input.value = ''; clearDraft(); autoResize(); cancelReply(); stopTyping(); return; }
     if(typeof handled === 'string') sendText = handled;
   }
-  const payload = { text: sendText, replyTo: replyTo ? replyTo.id : null };
-  const room = activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom;
+  postChatMessage(sendText, replyTo);
+  input.value = '';
+  clearDraft();
+  autoResize();
+  input.focus();
+  cancelReply();
+  stopTyping();
+}
 
-  // Show it right away, greyed out, instead of waiting for the round trip.
+// Shows the message right away (greyed out) and sends it. While the
+// connection is down socket.io holds it and sends it on reconnect; the
+// banner over the chat says so. `reply` is the message being replied to.
+function postChatMessage(sendText, reply){
+  const dmUser = activeDMUser;
+  const payload = { text: sendText, replyTo: reply ? reply.id : null };
+  const room = dmUser ? roomNameForDM(username, dmUser) : currentRoom;
   const tempId = 'pending:' + (++pendingSendSeq);
   const pendingItem = {
     kind: 'message',
     data: {
       id: tempId, room, user: username, displayName: displayNameFor(username),
-      avatarUrl: avatarUrlFor(username), text: sendText, to: activeDMUser || '', dmTo: activeDMUser || '',
-      isGroup: !!currentGroupRoom, replyTo: replyTo ? { id:replyTo.id, user:replyTo.user, displayName:replyTo.displayName, text:replyTo.text } : null,
+      avatarUrl: avatarUrlFor(username), text: sendText, to: dmUser || '', dmTo: dmUser || '',
+      isGroup: !!currentGroupRoom, replyTo: reply ? { id:reply.id, user:reply.user, displayName:reply.displayName, text:reply.text } : null,
       editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true
     }
   };
@@ -4188,25 +4313,17 @@ async function sendMessage(){
   // broadcast) so a stale entry can't wrongly latch onto some unrelated
   // later message in the same room.
   setTimeout(() => pendingSends.delete(tempId), 15000);
-
-  if(activeDMUser){
-    payload.to = activeDMUser;
-    socket.emit('dmMessage', payload, result => {
-      if(result && result.error){ markSendFailed(tempId); showError(result.error); pendingSends.delete(tempId); return; }
-      if(result && result.id) confirmPendingSendId(tempId, result.id);
-    });
+  const onResult = result => {
+    if(result && result.error){ markSendFailed(tempId, { text: sendText, reply, room, dmUser }, result.error); pendingSends.delete(tempId); return; }
+    if(result && result.id) confirmPendingSendId(tempId, result.id);
+  };
+  if(dmUser){
+    payload.to = dmUser;
+    socket.emit('dmMessage', payload, onResult);
   }else{
-    payload.room = currentRoom;
-    socket.emit('message', payload, result => {
-      if(result && result.error){ markSendFailed(tempId); showError(result.error); pendingSends.delete(tempId); return; }
-      if(result && result.id) confirmPendingSendId(tempId, result.id);
-    });
+    payload.room = room;
+    socket.emit('message', payload, onResult);
   }
-  input.value = '';
-  autoResize();
-  input.focus();
-  cancelReply();
-  stopTyping();
 }
 
 // The ack (an id) usually arrives after the server's own broadcast of the
@@ -4276,13 +4393,48 @@ function confirmPendingSendData(msg){
   return true;
 }
 
-function markSendFailed(tempId){
+// A send the server refused (slowmode, muted, blocked...). It stays in
+// place with the reason and a way to try again, instead of a dead grey line.
+let failedSends = []; // messages that weren't sent, kept so a channel refresh doesn't quietly drop them
+function forgetFailedSend(tempId){
+  failedSends = failedSends.filter(item => item.data.id !== tempId);
+  timelineItems = timelineItems.filter(item => item.data.id !== tempId);
+}
+function markSendFailed(tempId, again, reason){
   const el = document.querySelector('.message[data-message-id="' + tempId + '"]');
-  if(!el) return;
+  if(!el){ if(reason) showError(reason); return; }
+  if(el._item && again && !failedSends.includes(el._item)){
+    el._item.data.failedInfo = { again, reason };
+    failedSends.push(el._item);
+    if(failedSends.length > 20) failedSends.shift();
+  }
   el.classList.remove('pending');
   el.classList.add('failed');
   const text = el.querySelector('.msgText');
-  if(text) text.appendChild(Object.assign(document.createElement('span'), { className:'failNote', textContent:'Not delivered' }));
+  if(text){
+    const note = document.createElement('span');
+    note.className = 'failNote';
+    note.textContent = 'Not sent' + (reason ? ': ' + reason : '');
+    text.appendChild(note);
+    if(again){
+      const retry = document.createElement('button');
+      retry.className = 'linkBtn failRetry';
+      retry.textContent = 'Try again';
+      retry.onclick = () => {
+        const stillThere = again.dmUser ? activeDMUser === again.dmUser : currentRoom === again.room;
+        if(!stillThere){ toast('Go back to that conversation to send it again.'); return; }
+        forgetFailedSend(tempId);
+        el.remove();
+        postChatMessage(again.text, again.reply);
+      };
+      text.appendChild(retry);
+      const drop = document.createElement('button');
+      drop.className = 'linkBtn failRetry';
+      drop.textContent = 'Discard';
+      drop.onclick = () => { forgetFailedSend(tempId); el.remove(); };
+      text.appendChild(drop);
+    }
+  }
   const actions = el.querySelector('.msgActions');
   if(actions) actions.remove(); // nothing to edit/react to - it was never saved
 }
@@ -10107,7 +10259,7 @@ function selectMention(candidate){
 }
 
 const input = $('messageInput');
-input.addEventListener('input', () => { autoResize(); sendTyping(); updateMentionState(); });
+input.addEventListener('input', () => { autoResize(); sendTyping(); updateMentionState(); draftChanged(); });
 input.addEventListener('keydown', e => {
   if(mentionState){
     const box = $('mentionAutocomplete');

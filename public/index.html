@@ -1740,6 +1740,30 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .failNote{display:block;font-size:12.5px;color:#fa777c;margin-top:2px;}
 .failRetry{font-size:12.5px;margin-right:12px;}
 #loginCard #status{text-align:left;}
+
+/* ---- role permissions ---- */
+.presetRow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.presetBtn{display:inline-flex;align-items:center;gap:8px;}
+.permBlock{display:grid;gap:4px;border-top:1px solid var(--line);padding-top:14px;}
+.permBlock .presetRow{margin:4px 0 8px;}
+.presetChip{font:inherit;font-size:13px;font-weight:600;padding:5px 12px;border-radius:999px;border:1px solid var(--line-strong);background:transparent;color:var(--text-muted);cursor:pointer;}
+.presetChip:hover:not(:disabled){color:var(--text-bright);border-color:var(--text-muted);}
+.presetChip:disabled{opacity:.4;cursor:not-allowed;}
+.presetChip.active{background:var(--brand);border-color:var(--brand);color:var(--on-brand);}
+.presetChip.custom{cursor:default;}
+.presetChip.custom:not(.active){display:none;}
+.permBlock .switchRow b{color:var(--yellow);font-weight:600;}
+.lockedNote{margin-left:auto;font-size:12.5px;color:var(--text-muted);white-space:nowrap;}
+.contextItem.disabled{opacity:.45;cursor:not-allowed;}
+
+/* ---- media banners, server profiles ---- */
+.hasMediaBanner{position:relative;overflow:hidden;}
+.bannerMedia{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;z-index:0;}
+.bannerShade{background-size:cover;}
+.hasMediaBanner > :not(.bannerMedia){position:relative;z-index:1;}
+.pcBanner{background-size:cover;background-position:center;}
+.pcHidden{font-size:12.5px;color:var(--text-muted);font-style:italic;margin-bottom:6px;}
+select.settingsInput{max-width:360px;}
 </style>
 </head>
 
@@ -2855,8 +2879,68 @@ function paintAvatar(avatar, user){
 
 function refreshAvatars(user){
   document.querySelectorAll('.avatar[data-user="' + String(user).replace(/"/g,'') + '"]').forEach(el => paintAvatar(el, user));
-  document.querySelectorAll('.authorName[data-user="' + String(user).replace(/"/g,'') + '"]').forEach(el => { el.textContent = displayNameFor(user); });
+  // a server nickname wins inside that server's channels
+  document.querySelectorAll('.authorName[data-user="' + String(user).replace(/"/g,'') + '"]').forEach(el => { el.textContent = nameIn(user, el.dataset.colorRoom || ''); });
 }
+
+/* ---- banners and uploads for them ---- */
+function isVideoUrl(url){ return /\.(mp4|webm)(\?|$)/i.test(String(url || '')); }
+// Fills `el` with a banner: a picture/GIF, or a short looping muted video,
+// over `color`. `shade` is an optional gradient laid over the top (for names
+// written on the banner). Videos stay still when reduced motion is on.
+function paintMediaBanner(el, url, color, shade){
+  el.querySelectorAll(':scope > .bannerMedia').forEach(n => n.remove());
+  el.classList.toggle('hasMediaBanner', isVideoUrl(url));
+  el.style.backgroundColor = color || '';
+  if(url && isVideoUrl(url)){
+    const video = document.createElement('video');
+    video.className = 'bannerMedia';
+    video.src = url; video.muted = true; video.loop = true; video.playsInline = true;
+    video.setAttribute('muted', ''); video.setAttribute('playsinline', '');
+    const still = appearance.reduceMotion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches && appearance.reduceMotion !== false);
+    video.autoplay = !still;
+    if(!still) video.play().catch(() => {});
+    el.prepend(video);
+    el.style.backgroundImage = '';
+    if(shade){ const s = document.createElement('div'); s.className = 'bannerMedia bannerShade'; s.style.backgroundImage = shade; video.after(s); }
+  }else{
+    el.style.backgroundImage = url ? (shade ? shade + ', ' : '') + 'url("' + url + '")' : (shade || '');
+  }
+}
+// Uploads a picture, GIF or short video to the server's asset store and
+// returns its address (/assets/...).
+async function uploadAsset(file){
+  if(file.size > 8 * 1024 * 1024) throw new Error('That file is over 8 MB. Pick a smaller one (or a shorter video).');
+  const response = await fetch('/assets', { method:'POST', headers:{ 'Authorization':'Bearer ' + token, 'X-File-Type': file.type }, body:file });
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok) throw new Error(capitalise(data.error || 'Upload failed.'));
+  return data.url;
+}
+function pickMediaFile(allowVideo, onDone, onError){
+  const picker = document.createElement('input');
+  picker.type = 'file';
+  picker.accept = allowVideo ? 'image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm' : 'image/png,image/jpeg,image/gif,image/webp,image/avif';
+  picker.onchange = async () => {
+    const file = picker.files && picker.files[0];
+    if(!file) return;
+    try{ onDone(await uploadAsset(file)); }
+    catch(err){ onError(err.message); }
+  };
+  picker.click();
+}
+
+/* ---- per-server profiles ---- */
+// sid -> username -> { nickname, avatarUrl, bannerUrl, bio, hideRoles }, from the member list
+const serverProfiles = {};
+function serverIdForRoom(room){ const found = room ? channelByRoom(room) : null; return found ? found.server.id : null; }
+function serverProfileOf(user, room){
+  const sid = serverIdForRoom(room);
+  if(!sid) return null;
+  if(user === username){ const s = serverById(sid); if(s && s.myServerProfile) return s.myServerProfile; }
+  return (serverProfiles[sid] || {})[user] || null;
+}
+// The name to show for someone in a room: their server nickname, if any.
+function nameIn(user, room){ const sp = serverProfileOf(user, room); return (sp && sp.nickname) || displayNameFor(user); }
 
 function createAvatar(user, size, options){
   options = options || {};
@@ -2864,8 +2948,8 @@ function createAvatar(user, size, options){
   wrap.className = 'avatarWrap' + (options.wrapClass ? ' ' + options.wrapClass : '') + (size === 'sm' ? ' sm' : '');
   const avatar = document.createElement('div');
   avatar.className = 'avatar' + (size ? ' ' + size : '');
-  avatar.dataset.user = user || '';
-  paintAvatar(avatar, user);
+  if(options.url){ paintAvatarFrom(avatar, user, options.url); avatar.dataset.fixedUrl = '1'; }
+  else { avatar.dataset.user = user || ''; paintAvatar(avatar, user); }
   wrap.appendChild(avatar);
   if(options.presence){
     const dot = document.createElement('div');
@@ -3134,7 +3218,7 @@ function renderSidebar(){
   const sections = [{ id:null, name:'Text Channels', list:channels.filter(c => !c.categoryId || !(server.categories || []).some(cat => cat.id === c.categoryId)) }]
     .concat((server.categories || []).map(cat => ({ id:cat.id, name:cat.name, list:channels.filter(c => c.categoryId === cat.id) })));
   sections.forEach(group => {
-    if(group.id && !group.list.length && !server.canManage) return; // nothing you can see in it
+    if(group.id && !group.list.length && !can(server, 'manage_channels')) return; // nothing you can see in it
     if(!group.id && !group.list.length && (server.categories || []).length) return;
     const collapsed = group.id && collapsedCategories.has(group.id);
     // channels outside any category sit at the top with no heading (like Discord)
@@ -3148,7 +3232,7 @@ function renderSidebar(){
       title.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
       title.onclick = () => toggleCategory(group.id);
     }
-    if(server.canManage){
+    if(can(server, 'manage_channels')){
       const add = document.createElement('button');
       add.textContent = '+';
       add.title = 'Create channel' + (group.id ? ' in ' + group.name : '');
@@ -3640,7 +3724,7 @@ function buildMessageEl(item, grouped){
     if(data.bot){
       gutter.appendChild(botAvatar(data.displayName, '', 'onChat'));
     }else{
-      const avatar = createAvatar(data.user, '', { wrapClass:'onChat' });
+      const avatar = createAvatar(data.user, '', { wrapClass:'onChat', url: /^\/assets\//.test(data.avatarUrl || '') ? data.avatarUrl : '' });
       avatar.style.cursor = 'pointer';
       avatar.onclick = e => openProfilePopout(e, data.user, data.room);
       avatar.oncontextmenu = e => showUserMenu(e, data.user, data.room);
@@ -3808,7 +3892,7 @@ const ICONS = {
 function canModerateHere(room){
   if(myProfile.isAdmin) return true;
   const found = channelByRoom(room);
-  return !!(found && (found.server.isServerAdmin || found.server.canManage));
+  return !!(found && can(found.server, 'manage_messages'));
 }
 function canPinHere(room){
   if(isDMRoom(room) || isGroupRoom(room)) return true;
@@ -3849,7 +3933,7 @@ function buildActions(item){
     }
     bar.appendChild(toolbarButton(ICONS.link, 'Copy Message Link', e => { copyText(messageLink(liveData(e.currentTarget, data).id)); }));
     const roleHome = channelByRoom(data.room);
-    if(roleHome && (roleHome.server.canManage || myProfile.isAdmin) && !data.deleted){
+    if(roleHome && can(roleHome.server, 'manage_roles') && !data.deleted){
       bar.appendChild(toolbarButton(ICON_ROLES_SVG, 'Reaction Roles', e => openReactionRoles(liveData(e.currentTarget, data))));
     }
     if(canPinHere(data.room)){
@@ -4666,7 +4750,8 @@ async function renderMembers(refetch){
         const sid = Number(key.slice(7));
         serverRoles[sid] = {};
         memberRoleIds[sid] = {};
-        members.forEach(m => { serverRoles[sid][m.username] = m.role; memberRoleIds[sid][m.username] = m.roleIds || []; });
+        serverProfiles[sid] = {};
+        members.forEach(m => { serverRoles[sid][m.username] = m.role; memberRoleIds[sid][m.username] = m.roleIds || []; if(m.serverProfile) serverProfiles[sid][m.username] = Object.assign({ rolesHidden: !!m.rolesHidden }, m.serverProfile); });
         refreshVisibleBadges();
         refreshNameColors();
       }
@@ -4710,7 +4795,8 @@ function roleBadgeInfo(user, room){
   const found = channelByRoom(room);
   if(!found) return null;
   const roles = serverRoles[found.server.id] || {};
-  if(found.server.owner === user) return { key:'badgeOwner', label:'OWNER', title:'Server owner' };
+  // (the member list says 'member' for an owner who hides their roles)
+  if(user in roles ? roles[user] === 'owner' : found.server.owner === user) return { key:'badgeOwner', label:'OWNER', title:'Server owner' };
   if(roles[user] === 'admin') return { key:'badgeServerAdmin', label:'ADMIN', title:'Server admin' };
   return null;
 }
@@ -4768,7 +4854,8 @@ function paintMemberGroups(holder, online, offline, owner, serverId){
 function memberRow(member, owner, offline, room){
   const row = document.createElement('div');
   row.className = 'memberRow' + (offline ? ' offline' : '');
-  row.appendChild(createAvatar(member.username, 'sm', { presence:true }));
+  const sp = member.serverProfile || null;
+  row.appendChild(createAvatar(member.username, 'sm', { presence:true, url: sp && sp.avatarUrl ? sp.avatarUrl : '' }));
   const info = document.createElement('div');
   info.className = 'memberInfo';
   const line = document.createElement('div');
@@ -4776,7 +4863,8 @@ function memberRow(member, owner, offline, room){
   const name = document.createElement('div');
   name.className = 'memberName authorName' + (owner && member.username === owner ? ' owner' : '');
   name.dataset.user = member.username;
-  name.textContent = displayNameFor(member.username) || member.displayName;
+  name.textContent = (sp && sp.nickname) || displayNameFor(member.username) || member.displayName;
+  name.dataset.colorRoom = room || currentRoom || '';
   if(!offline) paintNameColor(name, member.username, room || currentRoom);
   line.appendChild(name);
 
@@ -4784,7 +4872,7 @@ function memberRow(member, owner, offline, room){
     ? { key:'badgeBot', label:'BOT', title:'Bot account' + (member.botOwner ? ' made by ' + member.botOwner : '') }
     : isAdminUser(member.username)
     ? { key:'badgeAdmin', label:'ADMIN', title:'Site admin' }
-    : (owner && member.username === owner ? { key:'badgeOwner', label:'OWNER', title:'Server owner' }
+    : (owner && member.username === owner && member.role === 'owner' ? { key:'badgeOwner', label:'OWNER', title:'Server owner' }
       : (member.role === 'admin' ? { key:'badgeServerAdmin', label:'ADMIN', title:'Server admin' } : null));
   if(badgeInfo){
     const badge = document.createElement('span');
@@ -4935,9 +5023,9 @@ function showMenu(event, items){
       return;
     }
     const el = document.createElement('div');
-    el.className = 'contextItem' + (item.danger ? ' danger' : '');
+    el.className = 'contextItem' + (item.danger ? ' danger' : '') + (item.disabled ? ' disabled' : '');
     el.textContent = item.label;
-    el.onclick = () => { hideContextMenu(); item.action(); };
+    el.onclick = item.disabled ? (e => e.stopPropagation()) : () => { hideContextMenu(); item.action(); };
     menu.appendChild(el);
   });
   menu.style.display = 'block';
@@ -5027,7 +5115,7 @@ function levelMenuItems(key, title){
 function showChannelMenu(event, server, channel){
   const items = [{ label:'Copy channel name', action:() => copyText('#' + channel.name) }];
   items.push(...levelMenuItems('room:' + channel.room, 'Notifications'));
-  if(server.canManage){
+  if(can(server, 'manage_channels')){
     items.push({ sep:true });
     items.push({ label:'Edit channel', action:() => openServerSettings(server.id, 'channels') });
     items.push({ label:'Create channel', action:openCreateChannel });
@@ -5042,11 +5130,12 @@ function showServerMenu(event, server){
     { label:'Copy invite code', action:() => copyText(server.inviteCode || '') }
   ];
   if(serverUnreadCount(server)) items.push({ label:'Mark as read', action:() => markServerRead(server) });
+  if(!server.isDefault) items.push({ label:'Edit server profile', action:() => { serverProfileTarget = server.id; openSettings('serverprofile'); } });
   items.push(...levelMenuItems('server:' + server.id, 'Server notifications'));
-  if(server.canManage){
+  if(canManageAnything(server)){
     items.push({ sep:true });
     items.push({ label:'Server Settings', action:() => openServerSettings(server.id) });
-    items.push({ label:'Create channel', action:() => { switchServer(server.id); openCreateChannel(); } });
+    if(can(server, 'manage_channels')) items.push({ label:'Create channel', action:() => { switchServer(server.id); openCreateChannel(); } });
   }
   if(!server.isDefault){
     items.push({ sep:true });
@@ -5358,7 +5447,7 @@ function rolesFor(user, room){
   const found = room ? channelByRoom(room) : null;
   if(found){
     const roles = serverRoles[found.server.id] || {};
-    if(found.server.owner === user) out.push({ label:'Server Owner', color:'#5865f2' });
+    if(user in roles ? roles[user] === 'owner' : found.server.owner === user) out.push({ label:'Server Owner', color:'#5865f2' });
     else if(roles[user] === 'admin') out.push({ label:'Server Admin', color:'#3ba55c' });
     customRolesFor(user, found.server.id).forEach(r => out.push({ label:r.name, color:r.color || '#99aab5' }));
   }
@@ -5370,11 +5459,20 @@ function rolesFor(user, room){
 function buildProfileCard(user, opts){
   opts = opts || {};
   const p = Object.assign(knownProfile(user), opts.override || {});
+  // inside a server, their server profile (nickname, picture, banner, bio) wins
+  const sp = opts.serverOverride || (opts.preview ? null : serverProfileOf(user, opts.room));
+  const globalName = p.displayName || user;
+  if(sp){
+    if(sp.nickname) p.displayName = sp.nickname;
+    if(sp.avatarUrl) p.avatarUrl = sp.avatarUrl;
+    if(sp.bannerUrl) p.bannerUrl = sp.bannerUrl;
+    if(sp.bio) p.bio = sp.bio;
+  }
   const card = document.createElement('div');
   card.className = 'profileCard';
   const banner = document.createElement('div');
   banner.className = 'pcBanner';
-  banner.style.background = p.bannerColor || avatarColour(user);
+  paintMediaBanner(banner, p.bannerUrl, p.bannerColor || avatarColour(user));
   card.appendChild(banner);
 
   const avWrap = document.createElement('div');
@@ -5401,7 +5499,7 @@ function buildProfileCard(user, opts){
   inner.appendChild(name);
   const line = document.createElement('div');
   line.className = 'pcUser';
-  line.textContent = user;
+  line.textContent = user + (sp && sp.nickname && sp.nickname !== globalName && globalName !== user ? ' · ' + globalName : '');
   if(p.pronouns){
     const dotSep = document.createElement('span'); dotSep.className = 'dot'; dotSep.textContent = '•';
     line.appendChild(dotSep);
@@ -5431,7 +5529,10 @@ function buildProfileCard(user, opts){
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:'Member Since' }));
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcText', textContent:memberSinceText(p.memberSince) }));
   }
-  const roles = rolesFor(user, opts.room);
+  const roles = opts.preview && !opts.serverOverride ? [] : rolesFor(user, opts.room);
+  if(sp && sp.rolesHidden && roles.length){
+    inner.appendChild(Object.assign(document.createElement('div'), { className:'pcText pcHidden', textContent:'Roles hidden from members - you can see them because you manage roles.' }));
+  }
   if(roles.length){
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:'Roles' }));
     const holder = document.createElement('div');
@@ -5888,7 +5989,7 @@ function afterFriendsChanged(){
 function updateBlockedBar(){
   const blocked = !friendsOpen && !!activeDMUser && isBlocked(activeDMUser);
   const found = !friendsOpen && view === 'server' && currentRoom ? channelByRoom(currentRoom) : null;
-  const readOnly = !!(found && !found.thread && found.channel.adminsOnly && !found.server.isServerAdmin);
+  const readOnly = !!(found && !found.thread && found.channel.adminsOnly && !can(found.server, 'manage_messages'));
   $('composerNoticeText').textContent = blocked
     ? 'You can\'t send messages to a user you have blocked.'
     : 'This is an announcement channel - only admins can post here.';
@@ -5902,7 +6003,7 @@ const ICON_ANNOUNCE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-
 function channelPlaceholder(found){
   if(found.thread) return 'Message ' + shortName(found.thread.name);
   const ch = found.channel;
-  const slow = ch.slowmode && !found.server.isServerAdmin ? ' (slowmode: ' + slowmodeLabel(ch.slowmode) + ')' : '';
+  const slow = ch.slowmode && !can(found.server, 'manage_messages') ? ' (slowmode: ' + slowmodeLabel(ch.slowmode) + ')' : '';
   return 'Message #' + ch.name + slow;
 }
 function slowmodeLabel(seconds){
@@ -5918,10 +6019,16 @@ function paintSidebarBanner(server){
   const header = $('sidebarHeader');
   const has = !!(server && (server.bannerUrl || server.bannerColor));
   header.classList.toggle('hasBanner', has);
-  header.style.backgroundColor = has ? (server.bannerColor || 'var(--bg-tertiary)') : '';
-  header.style.backgroundImage = has && server.bannerUrl
-    ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%), url("' + server.bannerUrl + '")'
-    : (has ? 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)' : '');
+  if(has){
+    if(header._bannerKey !== server.bannerUrl + '|' + server.bannerColor){ // don't restart a video on every redraw
+      header._bannerKey = server.bannerUrl + '|' + server.bannerColor;
+      paintMediaBanner(header, server.bannerUrl, server.bannerColor || 'var(--bg-tertiary)',
+        server.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%)' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)');
+    }
+  }else{
+    header._bannerKey = '';
+    paintMediaBanner(header, '', '', '');
+  }
   const body = $('sidebarBody');
   if(!body._bannerScroll){ body._bannerScroll = true; body.addEventListener('scroll', updateBannerCollapse, { passive:true }); }
   updateBannerCollapse();
@@ -6830,13 +6937,13 @@ function renderEventsList(){
   if(!server || !body) return;
   $('evSub').textContent = 'Coming up in ' + server.name;
   const create = $('evCreate');
-  create.style.display = server.canManage ? '' : 'none';
+  create.style.display = can(server, 'manage_events') ? '' : 'none';
   create.onclick = () => renderEventForm(null);
   const list = eventsByServer[server.id] || [];
   body.innerHTML = '';
   if(!list.length){
     body.innerHTML = '<div class="panelEmpty"><span class="big">' + ICON_CALENDAR_SVG.replace('width="18" height="18"', 'width="40" height="40"') + '</span>No upcoming events.' +
-      (server.canManage ? ' Create one and members can mark themselves as interested - they\'ll get a reminder when it starts.' : '') + '</div>';
+      (can(server, 'manage_events') ? ' Create one and members can mark themselves as interested - they\'ll get a reminder when it starts.' : '') + '</div>';
     return;
   }
   list.forEach(ev => {
@@ -6872,7 +6979,7 @@ function renderEventsList(){
       }catch(err){ toast(err.message); }
     };
     actions.appendChild(rsvp);
-    if(server.canManage){
+    if(can(server, 'manage_events')){
       const edit = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Edit' });
       edit.onclick = () => renderEventForm(ev);
       const cancel = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Cancel Event' });
@@ -8029,7 +8136,7 @@ function renderBotsSection(c){
     const list = $('botList');
     if(!list) return;
     list.innerHTML = bots.length ? '' : '<div class="panelEmpty">No bots yet.</div>';
-    const manageable = servers.filter(s => !s.isDefault && s.canManage);
+    const manageable = servers.filter(s => !s.isDefault && can(s, 'manage_integrations'));
     bots.forEach(bot => {
       profiles[bot.username] = Object.assign({}, profiles[bot.username] || {}, bot);
       const card = document.createElement('div');
@@ -8138,6 +8245,7 @@ function openSettings(sectionKey){
       { key:'account', label:'My Account', render:renderAccountSection },
       { key:'devices', label:'Devices', render:renderDevicesSection },
       { key:'profile', label:'Profiles', render:renderProfileSection },
+      { key:'serverprofile', label:'Server Profiles', render:renderServerProfileSection },
       { key:'privacy', label:'Privacy & Safety', render:renderPrivacySection },
       { key:'bots', label:'My Bots', render:renderBotsSection }
     ]},
@@ -8280,6 +8388,69 @@ async function renderDevicesSection(c){
   load();
 }
 
+// Settings > Server Profiles: a different nickname, picture, banner and bio
+// inside one server, and (for admins and roles that allow it) hiding your roles.
+let serverProfileTarget = null;
+function renderServerProfileSection(c){
+  const choices = servers.filter(s => !s.isDefault);
+  if(!choices.length){
+    c.innerHTML = '<h2 class="settingsTitle">Server Profiles</h2><div class="panelEmpty">Join or create a server to give yourself a different name or picture there. (The open general server uses your main profile.)</div>';
+    return;
+  }
+  if(!choices.some(s => s.id === serverProfileTarget)) serverProfileTarget = (choices.find(s => s.id === currentServerId) || choices[0]).id;
+  const server = serverById(serverProfileTarget);
+  const mine = Object.assign({ nickname:'', avatarUrl:'', bannerUrl:'', bio:'', hideRoles:false }, server.myServerProfile || {});
+  const original = Object.assign({}, mine);
+  let draft = Object.assign({}, mine);
+  c.innerHTML =
+    '<h2 class="settingsTitle">Server Profiles</h2>' +
+    '<div class="settingsSub">Look different in one server. Anything left empty uses your main profile.</div>' +
+    '<div class="profileLayout"><div class="profileEditor">' +
+      section('Server', '<select class="settingsInput" id="spServer">' + choices.map(s => '<option value="' + s.id + '"' + (s.id === server.id ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('') + '</select>') +
+      section('Nickname', '<input class="settingsInput" id="spNick" maxlength="32" placeholder="' + escapeHtml(displayNameFor(username)) + '">') +
+      section('Server avatar', '<div class="rowFlex"><button class="btn" id="spAvatarUpload">Upload picture or GIF</button><button class="btn grey" id="spAvatarRemove">Use my main avatar</button></div>') +
+      section('Server banner', '<div class="rowFlex"><button class="btn" id="spBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="spBannerRemove">Use my main banner</button></div>' +
+        '<div class="switchDesc" style="margin-top:8px">Up to 8 MB. Videos play silently on a loop.</div>') +
+      section('About me in this server', '<textarea class="settingsInput" id="spBio" maxlength="190" placeholder="Leave empty to use your main About Me"></textarea>') +
+      section('Roles', switchRow('spHide', 'Hide my roles', server.canHideRoles
+        ? 'Other members see you as a plain member: no role badge, colour or role list. People who manage roles still see them, and your powers don\'t change.'
+        : 'Only the owner, admins and roles that allow it can hide their roles. Ask an admin to turn on "Members can hide this role" for your role.', mine.hideRoles, !server.canHideRoles)) +
+      '<div class="rowFlex"><button class="btn" id="spSave">Save</button><button class="btn grey" id="spReset">Reset</button><span class="inlineMsg" id="spMsg" style="margin:0"></span></div>' +
+    '</div><div class="profilePreviewCol"><div class="sectionHeading">Preview in ' + escapeHtml(server.name) + '</div><div id="spPreview"></div></div></div>';
+  const fill = () => { $('spNick').value = draft.nickname; $('spBio').value = draft.bio; $('spHide').checked = !!draft.hideRoles; };
+  const preview = () => {
+    const holder = $('spPreview');
+    holder.innerHTML = '';
+    holder.appendChild(buildProfileCard(username, { preview:true, serverOverride: draft }));
+  };
+  const msg = (t, err) => inlineMessage($('spMsg'), t, err);
+  fill(); preview();
+  $('spServer').onchange = e => { serverProfileTarget = Number(e.target.value); renderServerProfileSection(c); };
+  $('spNick').oninput = e => { draft.nickname = e.target.value; preview(); };
+  $('spBio').oninput = e => { draft.bio = e.target.value; preview(); };
+  $('spHide').onchange = e => { draft.hideRoles = e.target.checked; };
+  $('spAvatarRemove').onclick = () => { draft.avatarUrl = ''; preview(); };
+  $('spBannerRemove').onclick = () => { draft.bannerUrl = ''; preview(); };
+  $('spAvatarUpload').onclick = () => { msg('Uploading…'); pickMediaFile(false, url => { draft.avatarUrl = url; msg(''); preview(); }, m => msg(m, true)); };
+  $('spBannerUpload').onclick = () => { msg('Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; msg(''); preview(); }, m => msg(m, true)); };
+  $('spReset').onclick = () => { draft = Object.assign({}, original); fill(); preview(); msg(''); };
+  $('spSave').onclick = async () => {
+    const payload = {};
+    Object.keys(original).forEach(k => { if(original[k] !== draft[k]) payload[k] = draft[k]; });
+    if(!Object.keys(payload).length){ msg('Nothing to save.'); return; }
+    try{
+      const response = await fetch('/servers/' + server.id + '/profile', { method:'POST', headers:authHeaders(), body:JSON.stringify(payload) });
+      const data = await response.json();
+      if(!response.ok) throw new Error(capitalise(data.error || 'Could not save.'));
+      server.myServerProfile = data;
+      Object.assign(original, data); draft = Object.assign({}, data);
+      msg('Saved.');
+      renderMembers(true);
+      if(currentServerId === server.id && currentRoom) loadHistory(currentRoom); // show the new name on your messages
+    }catch(err){ msg(err.message, true); }
+  };
+}
+
 const BANNER_PRESETS = ['', '#5865f2', '#eb459e', '#23a55a', '#f0b132', '#ed4245', '#1abc9c', '#9b59b6', '#e67e22', '#4e5058'];
 
 function renderProfileSection(c){
@@ -8289,6 +8460,7 @@ function renderProfileSection(c){
     customStatus: myProfile.customStatus || '',
     bio: myProfile.bio || '',
     bannerColor: myProfile.bannerColor || '',
+    bannerUrl: myProfile.bannerUrl || '',
     avatarUrl: myProfile.avatarUrl || ''
   };
   let draft = Object.assign({}, original);
@@ -8306,7 +8478,9 @@ function renderProfileSection(c){
           '<div class="switchDesc" style="margin-top:8px">PNG, JPG, GIF or WEBP up to 1.5MB. Or paste an image link:</div>' +
           '<input class="settingsInput" id="profAvatarLink" placeholder="https://example.com/me.png" style="margin-top:8px">' +
           '<div class="inlineMsg" id="profAvatarMsg"></div>') +
-        section('Banner Colour', '<div class="colorRow" id="profBanner"></div>') +
+        section('Banner', '<div class="rowFlex"><button class="btn" id="profBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="profBannerRemove">Remove</button></div>' +
+          '<div class="switchDesc" style="margin:8px 0 12px">Up to 8 MB. Videos (MP4 or WEBM) play silently on a loop. Without one, your banner is this colour:</div>' +
+          '<div class="colorRow" id="profBanner"></div><div class="inlineMsg" id="profBannerMsg"></div>') +
         section('Custom Status', '<input class="settingsInput" id="profStatus" maxlength="128" placeholder="What\'s up?"><div class="charCount" id="profStatusCount"></div>') +
         section('About Me', '<textarea class="settingsInput" id="profBio" maxlength="190" placeholder="Tell people a little about yourself"></textarea><div class="charCount" id="profBioCount"></div><div class="inlineMsg" id="profMsg"></div>') +
       '</div>' +
@@ -8371,7 +8545,7 @@ function renderProfileSection(c){
       renderMembers(true);
       Object.assign(original, {
         displayName: data.displayName, pronouns: data.pronouns || '', customStatus: data.customStatus || '',
-        bio: data.bio || '', bannerColor: data.bannerColor || '', avatarUrl: data.avatarUrl || ''
+        bio: data.bio || '', bannerColor: data.bannerColor || '', bannerUrl: data.bannerUrl || '', avatarUrl: data.avatarUrl || ''
       });
       draft = Object.assign({}, original);
       fillInputs();
@@ -8392,6 +8566,8 @@ function renderProfileSection(c){
     changed();
   });
   $('profRemove').onclick = () => { draft.avatarUrl = ''; $('profAvatarLink').value = ''; changed(); };
+  $('profBannerRemove').onclick = () => { draft.bannerUrl = ''; changed(); };
+  $('profBannerUpload').onclick = () => { inlineMessage($('profBannerMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; inlineMessage($('profBannerMsg'), ''); changed(); }, msg => inlineMessage($('profBannerMsg'), msg, true)); };
   $('profUpload').onclick = () => {
     const picker = document.createElement('input');
     picker.type = 'file';
@@ -8691,6 +8867,38 @@ function renderSiteSection(c){
 }
 
 /* ============================ server settings ============================ */
+/* ---- role permissions ---- */
+// What each power lets someone do. The server decides (serverPermissions()
+// in server.js); these just decide which buttons to show.
+const PERMISSION_INFO = [
+  { key:'manage_server', label:'Manage server', desc:'Change the name, icon, banner, description, welcome channel and swear filter, and reset the invite.' },
+  { key:'manage_channels', label:'Manage channels', desc:'Create, edit, reorder and delete channels and categories, and choose who sees private ones.' },
+  { key:'manage_roles', label:'Manage roles', desc:'Create and edit roles and give them to members - only roles with powers they have themselves.' },
+  { key:'manage_messages', label:'Manage messages', desc:'Delete or pin anyone\'s messages and files, end polls, manage threads, skip slowmode and post in announcement channels.' },
+  { key:'kick_members', label:'Kick members', desc:'Remove members from the server and disconnect people from voice. Never admins, or anyone with powers they lack.' },
+  { key:'manage_integrations', label:'Manage bots & webhooks', desc:'Add bots, and create webhooks and slash commands.' },
+  { key:'manage_events', label:'Manage events', desc:'Create, edit and cancel events.' },
+  { key:'mention_everyone', label:'Mention @everyone', desc:'Use @everyone, and mention roles that aren\'t open to everyone.' }
+];
+const PERMISSION_PRESETS = [
+  { key:'moderator', label:'Moderator', color:'#2ecc71', perms:['manage_messages', 'kick_members', 'mention_everyone'] },
+  { key:'manager', label:'Manager', color:'#3498db', perms:['manage_server', 'manage_channels', 'manage_roles', 'manage_messages', 'kick_members', 'manage_integrations', 'manage_events', 'mention_everyone'] },
+  { key:'bots', label:'Bots & webhooks', color:'#9b59b6', perms:['manage_integrations'] },
+  { key:'events', label:'Event host', color:'#e67e22', perms:['manage_events', 'mention_everyone'] },
+  { key:'none', label:'No powers', color:'', perms:[] }
+];
+function permLabel(key){ const p = PERMISSION_INFO.find(x => x.key === key); return p ? p.label : key; }
+function presetFor(perms){
+  const set = [...perms].sort().join(',');
+  return PERMISSION_PRESETS.find(p => [...p.perms].sort().join(',') === set) || null;
+}
+// Does this person have `perm` in `server`?
+function can(server, perm){ return !!server && (server.permissions || []).includes(perm); }
+// Has any power at all here (shows Server Settings in menus).
+function canManageAnything(server){ return !!server && (server.permissions || []).length > 0; }
+// Can I hand out / edit this role? Only if I have every power it carries.
+function coversRolePerms(server, role){ return (role.permissions || []).every(p => can(server, p)); }
+
 function openServerSettings(serverId, sectionKey){
   const server = serverById(serverId) || currentServer();
   if(!server) return;
@@ -8703,7 +8911,7 @@ function openServerSettings(serverId, sectionKey){
       { key:'channels', label:'Channels', render:c => renderServerChannels(c, sid) },
       { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
-      { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!(server.canManage || myProfile.isAdmin) },
+      { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!can(server, 'manage_integrations') },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
     ]},
@@ -8774,7 +8982,7 @@ function renderServerOverview(c, sid){
     bannerColor:server.bannerColor || '', bannerUrl:server.bannerUrl || '', systemChannelId:server.systemChannelId || 0
   };
   let draft = Object.assign({}, original);
-  const canEdit = server.canManage;
+  const canEdit = can(server, 'manage_server');
   c.innerHTML =
     '<h2 class="settingsTitle">Server Overview</h2>' +
     section('', '<div class="iconPicker"><div id="ovIcon"></div><div><div class="switchDesc" style="margin:0 0 10px 0">We recommend a square image at least 512×512.</div>' +
@@ -8783,8 +8991,8 @@ function renderServerOverview(c, sid){
     section('Description', '<textarea class="settingsInput" id="ovDesc" maxlength="300" style="max-width:560px;min-height:80px" placeholder="What\'s this server about? Shown at the top of every channel."></textarea><div class="switchDesc" id="ovDescCount"></div>') +
     section('Banner',
       '<div class="bannerPreview" id="ovBannerPreview"><span id="ovBannerName"></span></div>' +
-      '<div class="switchDesc" style="margin:10px 0">Shown behind the server name at the top of the channel list. A wide image works best (at least 960×540).</div>' +
-      '<div class="rowFlex" style="gap:8px;margin-bottom:12px"><button class="btn" id="ovBannerUpload">Upload Banner</button><button class="btn grey" id="ovBannerRemove">Remove Image</button></div>' +
+      '<div class="switchDesc" style="margin:10px 0">Shown behind the server name at the top of the channel list. A wide picture, GIF or short video (MP4/WEBM, up to 8 MB) works best - at least 960×540. Videos play silently on a loop.</div>' +
+      '<div class="rowFlex" style="gap:8px;margin-bottom:12px"><button class="btn" id="ovBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="ovBannerRemove">Remove</button></div>' +
       '<div class="fieldLabel" style="margin-bottom:6px">Banner colour</div><div class="colorRow" id="ovBannerColors"></div>') +
     (server.isDefault ? '' : section('Welcome Messages',
       '<label class="formLabel" for="ovSystem">Send a message when someone joins</label>' +
@@ -8799,8 +9007,7 @@ function renderServerOverview(c, sid){
   function paintIcon(){ const h = $('ovIcon'); h.innerHTML = ''; h.appendChild(serverIconEl(draft.name, draft.iconUrl)); }
   function paintBanner(){
     const box = $('ovBannerPreview');
-    box.style.backgroundColor = draft.bannerColor || 'var(--bg-tertiary)';
-    box.style.backgroundImage = draft.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%), url("' + draft.bannerUrl + '")' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)';
+    paintMediaBanner(box, draft.bannerUrl, draft.bannerColor || 'var(--bg-tertiary)', draft.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%)' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)');
     $('ovBannerName').textContent = draft.name || server.name;
     $('ovBannerRemove').disabled = !canEdit || !draft.bannerUrl;
   }
@@ -8863,7 +9070,7 @@ function renderServerOverview(c, sid){
   $('ovRemove').onclick = () => { draft.iconUrl = ''; changed(); };
   $('ovUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickImageFile(url => { draft.iconUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
   $('ovBannerRemove').onclick = () => { draft.bannerUrl = ''; changed(); };
-  $('ovBannerUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickImageFile(url => { draft.bannerUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
+  $('ovBannerUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
   paintIcon(); paintBanner(); paintCount();
 }
 
@@ -8918,13 +9125,13 @@ function renderServerChannels(c, sid){
   const catOptions = '<option value="">No category</option>' + cats.map(cat => '<option value="' + cat.id + '">' + escapeHtml(cat.name) + '</option>').join('');
   c.innerHTML =
     '<h2 class="settingsTitle">Channels</h2>' +
-    (server.canManage ? section('Create Channel',
+    (can(server, 'manage_channels') ? section('Create Channel',
       '<div class="rowFlex"><input class="settingsInput" id="newChName" placeholder="new-channel" maxlength="32" style="flex:1;min-width:200px">' +
       '<select class="settingsInput" id="newChCat" style="width:auto">' + catOptions + '</select>' +
       '<select class="settingsInput" id="newChKind" style="width:auto"><option value="text">Text</option><option value="forum">Forum</option><option value="voice">Voice</option></select><button class="btn" id="newChBtn">Create Channel</button></div>' +
       '<label class="rememberRow" style="margin:10px 0 0 0"><input type="checkbox" id="newChPrivate"> Private - only admins can see it until you add people or roles</label>' +
       '<div class="inlineMsg" id="newChMsg"></div>') : '') +
-    (server.canManage ? section('Categories',
+    (can(server, 'manage_channels') ? section('Categories',
       '<div class="switchDesc" style="margin:0 0 10px 0">Group channels under headings people can collapse. Deleting a category keeps its channels.</div>' +
       '<div class="rowFlex" style="margin-bottom:12px"><input class="settingsInput" id="newCatName" placeholder="New category name" maxlength="40" style="flex:1;min-width:200px"><button class="btn" id="newCatBtn">Create Category</button></div>' +
       '<div id="catList"></div>') : '') +
@@ -8987,7 +9194,7 @@ function renderServerChannels(c, sid){
       const extras = [channel.isPrivate ? 'Private' : '', channel.adminsOnly ? 'Announcements' : '', channel.slowmode ? 'Slowmode ' + slowmodeLabel(channel.slowmode) : ''].filter(Boolean);
       row.querySelector('.rowSub').textContent = [channel.topic || 'No topic'].concat(extras).join(' · ');
       box.appendChild(row);
-      if(!server.canManage) return;
+      if(!can(server, 'manage_channels')) return;
       row.appendChild(moveButtons(index, group.list.length, to => {
         const reordered = groups.map(g => g.list.map(ch => ch.id));
         const ids = reordered[groups.indexOf(group)];
@@ -9121,14 +9328,23 @@ function renderServerRoles(c, sid){
   const server = serverById(sid);
   if(!server){ c.innerHTML = ''; return; }
   const roles = server.roles || [];
+  const manage = can(server, 'manage_roles');
+  // quick-start roles: only the presets whose powers you have yourself
+  const quick = PERMISSION_PRESETS.filter(p => p.perms.length && p.perms.every(x => can(server, x)));
   c.innerHTML = '<h2 class="settingsTitle">Roles</h2>' +
     '<div class="settingsSub">Roles give members a coloured name, can list them in their own section of the member list, ' +
-    'and can unlock private channels. Admin powers still come only from Owner and Admin (under Members). ' +
-    'Members can also pick roles themselves through reaction roles (hover a message → the tag button).</div>' +
-    (server.canManage ? '<div class="rowFlex" style="margin-bottom:20px"><button class="btn" id="newRoleBtn">Create Role</button><span class="inlineMsg" id="newRoleMsg" style="margin:0"></span></div>' : '') +
+    'unlock private channels, and can give powers: a Moderator role, say, that can delete messages and kick members. ' +
+    'The owner and admins (under Members) always have every power.</div>' +
+    (manage ? section('Create a role',
+      '<div class="rowFlex presetRow">' +
+        quick.map(p => '<button class="btn grey presetBtn" data-preset="' + p.key + '"><span class="roleDot" style="background:' + (p.color || '#99aab5') + '"></span>' + escapeHtml(p.label) + '</button>').join('') +
+        '<button class="btn" id="newRoleBtn">Custom role</button>' +
+      '</div>' +
+      '<div class="switchDesc" style="margin-top:8px">A preset fills in the powers for you; you can change them afterwards.</div>' +
+      '<span class="inlineMsg" id="newRoleMsg"></span>') : '') +
     section('Roles (' + roles.length + ')', '<div id="roleList"></div>');
   const list = $('roleList');
-  if(!roles.length) list.innerHTML = '<div class="panelEmpty">No roles yet.' + (server.canManage ? ' Create one to give members a coloured name.' : '') + '</div>';
+  if(!roles.length) list.innerHTML = '<div class="panelEmpty">No roles yet.' + (manage ? ' Pick a preset above, or make a custom one.' : '') + '</div>';
   roles.forEach((role, index) => {
     const row = document.createElement('div');
     row.className = 'manageRow';
@@ -9141,10 +9357,18 @@ function renderServerRoles(c, sid){
     info.innerHTML = '<div class="rowTitle"></div><div class="rowSub"></div>';
     info.querySelector('.rowTitle').textContent = role.name;
     info.querySelector('.rowTitle').style.color = role.color || '';
-    info.querySelector('.rowSub').textContent = (role.hoist ? 'Shown separately in the member list' : 'Shown with everyone else') + (role.autoAssign ? ' · given to new members' : '');
+    const perms = role.permissions || [];
+    const preset = presetFor(perms);
+    info.querySelector('.rowSub').textContent = (perms.length ? (preset ? preset.label + ' powers' : perms.map(permLabel).join(', ')) : 'No powers') +
+      ' · ' + (role.hoist ? 'shown separately' : 'shown with everyone else') + (role.autoAssign ? ' · given to new members' : '');
     row.appendChild(info);
     list.appendChild(row);
-    if(!server.canManage) return;
+    if(!manage) return;
+    if(!coversRolePerms(server, role)){
+      // it has powers you don't: look, don't touch
+      row.appendChild(Object.assign(document.createElement('span'), { className:'rowSub lockedNote', textContent:'Has powers you don\'t have' }));
+      return;
+    }
     row.appendChild(moveButtons(index, roles.length, to => saveOrder('/servers/' + sid + '/roles/reorder', roles.map(r => r.id), index, to)));
     const edit = document.createElement('button');
     edit.className = 'btn grey';
@@ -9158,19 +9382,42 @@ function renderServerRoles(c, sid){
       '<div><div class="fieldLabel" style="margin-bottom:6px">Role colour</div><div class="colorRow" data-f="colors"></div></div>' +
       switchRow('roleHoist' + role.id, 'Display role members separately', 'Online members with this role get their own section in the member list.', role.hoist, false) +
       switchRow('roleMention' + role.id, 'Allow anyone to @mention this role', 'Admins can always mention every role. Everyone with the role gets notified.', role.mentionable, false) +
-      switchRow('roleAuto' + role.id, 'Give to new members automatically', 'Everyone who joins the server from now on gets this role.', role.autoAssign, false) +
+      switchRow('roleAuto' + role.id, 'Give to new members automatically', 'Everyone who joins the server from now on gets this role. Not for roles with powers.', role.autoAssign, false) +
+      switchRow('roleHide' + role.id, 'Members can hide this role', 'People with this role can choose to look like a plain member (Settings > Server Profiles). Handy for moderators who\'d rather not stand out.', role.allowHide, false) +
+      '<div class="permBlock"><div class="fieldLabel">Permissions</div>' +
+        '<div class="presetRow" data-f="presets">' + PERMISSION_PRESETS.map(p => '<button type="button" class="presetChip" data-preset="' + p.key + '">' + escapeHtml(p.label) + '</button>').join('') +
+        '<span class="presetChip custom" data-f="customTag">Custom</span></div>' +
+        PERMISSION_INFO.map(p => switchRow('rolePerm' + role.id + '_' + p.key, p.label, escapeHtml(p.desc) + (can(server, p.key) ? '' : ' <b>You don\'t have this power, so you can\'t give it.</b>'), (role.permissions || []).includes(p.key), !can(server, p.key))).join('') +
+      '</div>' +
       '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete">Delete Role</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
     list.appendChild(editor);
     let color = role.color || '';
     editor.querySelector('[data-f=name]').value = role.name;
     paintColorChoices(editor.querySelector('[data-f=colors]'), ROLE_PRESETS, color, picked => { color = picked; }, '#99aab5');
     edit.onclick = () => { editor.style.display = editor.style.display === 'none' ? 'grid' : 'none'; };
+    const permBox = key => editor.querySelector('#rolePerm' + role.id + '_' + key);
+    const tickedPerms = () => PERMISSION_INFO.map(p => p.key).filter(k => permBox(k).checked);
+    // highlight the preset the ticks match, or "Custom"
+    const paintPresets = () => {
+      const match = presetFor(tickedPerms());
+      editor.querySelectorAll('.presetChip[data-preset]').forEach(b => b.classList.toggle('active', !!match && b.dataset.preset === match.key));
+      editor.querySelector('[data-f=customTag]').classList.toggle('active', !match);
+    };
+    editor.querySelectorAll('.presetChip[data-preset]').forEach(b => {
+      const preset = PERMISSION_PRESETS.find(p => p.key === b.dataset.preset);
+      if(!preset.perms.every(k => can(server, k))){ b.disabled = true; b.title = 'Includes powers you don\'t have'; }
+      b.onclick = () => { PERMISSION_INFO.forEach(p => { permBox(p.key).checked = preset.perms.includes(p.key); }); paintPresets(); };
+    });
+    PERMISSION_INFO.forEach(p => permBox(p.key).addEventListener('change', paintPresets));
+    paintPresets();
     editor.querySelector('[data-a=save]').onclick = async () => {
       const body = {
         name: editor.querySelector('[data-f=name]').value.trim(), color,
         hoist: editor.querySelector('#roleHoist' + role.id).checked,
         mentionable: editor.querySelector('#roleMention' + role.id).checked,
-        autoAssign: editor.querySelector('#roleAuto' + role.id).checked
+        autoAssign: editor.querySelector('#roleAuto' + role.id).checked,
+        allowHide: editor.querySelector('#roleHide' + role.id).checked,
+        permissions: tickedPerms()
       };
       try{
         const response = await fetch('/servers/' + sid + '/roles/' + role.id + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
@@ -9194,9 +9441,9 @@ function renderServerRoles(c, sid){
       }catch(err){ inlineMessage(editor.querySelector('[data-f=msg]'), err.message, true); }
     };
   });
-  if($('newRoleBtn')) $('newRoleBtn').onclick = async () => {
+  const createRole = async body => {
     try{
-      const response = await fetch('/servers/' + sid + '/roles', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name:'new role' }) });
+      const response = await fetch('/servers/' + sid + '/roles', { method:'POST', headers:authHeaders(), body:JSON.stringify(body) });
       const data = await response.json();
       if(!response.ok) throw new Error(data.error || 'could not create role');
       await refreshServers();
@@ -9207,6 +9454,11 @@ function renderServerRoles(c, sid){
       if(last){ last.style.display = 'grid'; const input = last.querySelector('[data-f=name]'); input.focus(); input.select(); }
     }catch(err){ inlineMessage($('newRoleMsg'), err.message, true); }
   };
+  if($('newRoleBtn')) $('newRoleBtn').onclick = () => createRole({ name:'new role' });
+  c.querySelectorAll('.presetBtn').forEach(b => {
+    const preset = PERMISSION_PRESETS.find(p => p.key === b.dataset.preset);
+    b.onclick = () => createRole({ name: preset.label, color: preset.color, hoist: true, permissions: preset.perms });
+  });
 }
 
 // Toggle one custom role on a member, from the Members page's Roles menu.
@@ -9267,12 +9519,15 @@ async function renderServerMembers(c, sid){
         info.appendChild(chips);
       }
       row.appendChild(info);
-      if(server.canManage && (server.roles || []).length){
+      if(can(server, 'manage_roles') && (server.roles || []).length){
         const rolesBtn = document.createElement('button');
         rolesBtn.className = 'btn grey';
         rolesBtn.textContent = 'Roles';
+        // roles with powers you don't have are shown but can't be changed
         rolesBtn.onclick = e => showMenu(e, [{ header:'Roles for ' + (m.displayName || m.username) }].concat(
-          server.roles.map(r => ({ label:(roleIds.includes(r.id) ? '✓ ' : '\u2003') + r.name, action:() => toggleMemberRole(sid, m, r.id) }))
+          server.roles.map(r => coversRolePerms(server, r)
+            ? { label:(roleIds.includes(r.id) ? '✓ ' : '\u2003') + r.name, action:() => toggleMemberRole(sid, m, r.id) }
+            : { label:(roleIds.includes(r.id) ? '✓ ' : '\u2003') + r.name + ' (needs powers you don\'t have)', disabled:true, action:() => {} })
         ));
         row.appendChild(rolesBtn);
       }
@@ -9289,7 +9544,7 @@ async function renderServerMembers(c, sid){
           role.onclick = async () => { await setServerRole(server, m.username, m.role === 'admin' ? 'member' : 'admin'); rerenderSettingsSection(); };
           row.appendChild(role);
         }
-        if(server.canManage && (m.role !== 'admin' || server.canManageOwnerLevel)){
+        if(can(server, 'kick_members') && (m.role !== 'admin' || server.canManageOwnerLevel)){
           const kick = document.createElement('button');
           kick.className = 'btn danger';
           kick.textContent = 'Kick';
@@ -9318,10 +9573,10 @@ function renderServerModeration(c, sid){
   const server = serverById(sid);
   if(!server){ c.innerHTML = ''; return; }
   c.innerHTML = '<h2 class="settingsTitle">Moderation</h2>' +
-    section('Content Filter', switchRow('serverCensorToggle', 'Censor swear words for everyone in this server', 'Overrides each member\'s personal setting while it\'s on.', server.censorSwears, !server.canManage)) +
-    section('Who can moderate', '<div class="switchDesc">The owner and server admins can delete anyone\'s messages, pin messages, edit channels and kick members here. Only the owner can make or remove admins.</div>');
+    section('Content Filter', switchRow('serverCensorToggle', 'Censor swear words for everyone in this server', 'Overrides each member\'s personal setting while it\'s on.', server.censorSwears, !can(server, 'manage_server'))) +
+    section('Who can moderate', '<div class="switchDesc">The owner and server admins can do everything. Other members get powers from their roles (Roles → Permissions), for example a Moderator role that can delete messages and kick members. Only the owner can make or remove admins.</div>');
   const box = $('serverCensorToggle');
-  if(box && server.canManage) box.onchange = async () => {
+  if(box && can(server, 'manage_server')) box.onchange = async () => {
     const enabled = box.checked;
     try{
       const response = await fetch('/servers/' + sid + '/censor', { method:'POST', headers:authHeaders(), body:JSON.stringify({ enabled }) });
@@ -9340,7 +9595,7 @@ function renderServerInvites(c, sid){
   c.innerHTML = '<h2 class="settingsTitle">Invites</h2>' +
     section('Invite Code', '<div class="rowFlex"><div class="codeBox" id="invCode" style="font-size:18px"></div><button class="btn" id="invCopy">Copy</button></div>' +
       '<div class="switchDesc" style="margin-top:10px">Friends join with the compass button on the left and this code.</div>') +
-    (server.canManage ? section('Reset Invite', '<div class="switchDesc" style="margin-bottom:12px">Makes a new code — the old one stops working straight away. Useful if it was shared somewhere it shouldn\'t have been.</div><button class="btn danger" id="invReset">Reset Invite Code</button>') : '');
+    (can(server, 'manage_server') ? section('Reset Invite', '<div class="switchDesc" style="margin-bottom:12px">Makes a new code — the old one stops working straight away. Useful if it was shared somewhere it shouldn\'t have been.</div><button class="btn danger" id="invReset">Reset Invite Code</button>') : '');
   $('invCode').textContent = server.inviteCode || '—';
   $('invCopy').onclick = () => copyText(server.inviteCode || '');
   if($('invReset')) $('invReset').onclick = async () => {
@@ -9569,7 +9824,7 @@ function openCreateServer(){
       '<label class="formLabel">Banner</label>' +
       '<div class="bannerPreview wzBanner" id="wzBanner"><span id="wzBannerName"></span></div>' +
       '<div class="rowFlex" style="gap:8px;margin:8px 0 4px;flex-wrap:wrap"><div class="colorRow" id="wzColors"></div></div>' +
-      '<div class="rowFlex" style="gap:8px"><button class="btn grey" id="wzBannerUpload">Upload Banner Image</button><button class="btn ghost" id="wzBannerRemove" style="display:none">Remove image</button></div>' +
+      '<div class="rowFlex" style="gap:8px"><button class="btn grey" id="wzBannerUpload">Upload picture, GIF or video</button><button class="btn ghost" id="wzBannerRemove" style="display:none">Remove</button></div>' +
       '<div class="wzStart"><div class="wzLabel" style="margin-top:14px">You\'ll start with</div><div class="wzChannels" id="wzChannels"></div></div>' +
       '<div class="modalMsg" id="modalMsg"></div></div>' +
       '<div class="modalFoot"><button class="btn ghost" id="wzBack">Back</button><button class="btn" id="wzCreate">Create Server</button></div>'
@@ -9585,8 +9840,11 @@ function openCreateServer(){
       if(setup.iconUrl) icon.querySelector('img').src = setup.iconUrl;
       icon.classList.toggle('has', !!setup.iconUrl);
       const banner = $('wzBanner');
-      banner.style.backgroundColor = setup.bannerColor || 'var(--bg-tertiary)';
-      banner.style.backgroundImage = setup.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.5), rgba(0,0,0,0) 60%), url("' + setup.bannerUrl + '")' : 'linear-gradient(to bottom, rgba(0,0,0,.3), rgba(0,0,0,0) 70%)';
+      const bannerKey = setup.bannerUrl + '|' + setup.bannerColor;
+      if(banner._key !== bannerKey){ // typing the name redraws this; don't restart a video each time
+        banner._key = bannerKey;
+        paintMediaBanner(banner, setup.bannerUrl, setup.bannerColor || 'var(--bg-tertiary)', setup.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.5), rgba(0,0,0,0) 60%)' : 'linear-gradient(to bottom, rgba(0,0,0,.3), rgba(0,0,0,0) 70%)');
+      }
       $('wzBannerName').textContent = setup.name.trim() || 'Your server';
       $('wzBannerRemove').style.display = setup.bannerUrl ? '' : 'none';
     }
@@ -9594,7 +9852,7 @@ function openCreateServer(){
     $('wzName').oninput = e => { setup.name = e.target.value; paint(); };
     $('wzDesc').oninput = e => { setup.description = e.target.value; };
     $('wzIcon').onclick = () => { modalMessage('Uploading…'); pickImageFile(url => { setup.iconUrl = url; modalMessage(''); paint(); }, msg => modalMessage(msg, true)); };
-    $('wzBannerUpload').onclick = () => { modalMessage('Uploading…'); pickImageFile(url => { setup.bannerUrl = url; modalMessage(''); paint(); }, msg => modalMessage(msg, true)); };
+    $('wzBannerUpload').onclick = () => { modalMessage('Uploading…'); pickMediaFile(true, url => { setup.bannerUrl = url; modalMessage(''); paint(); }, msg => modalMessage(msg, true)); };
     $('wzBannerRemove').onclick = () => { setup.bannerUrl = ''; paint(); };
     $('wzBack').onclick = () => { setup.step = 2; step2(); };
     $('wzCreate').onclick = async () => {
@@ -10145,7 +10403,7 @@ function mentionCandidates(query){
     .map(m => Object.assign({ type:'user' }, m));
   const found = view === 'server' ? channelByRoom(currentRoom) : null;
   if(!found) return people;
-  const admin = found.server.isServerAdmin;
+  const admin = can(found.server, 'mention_everyone');
   const extra = [];
   if(admin && 'everyone'.startsWith(q)) extra.push({ type:'everyone' });
   (found.server.roles || []).forEach(role => {

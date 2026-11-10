@@ -158,8 +158,23 @@ large, new system - also split it over several sessions).
   full list, what to check after deploying, and the ideas for version 4 are
   in [UPGRADES.md](UPGRADES.md).
 
+## Extras (Nov 2026, after v3)
+
+- [x] **Role permissions** - roles can carry powers (manage server,
+  channels, roles, messages, kick, bots & webhooks, events, @everyone) with
+  presets (Moderator, Manager, Bots & webhooks, Event host) or custom ticks.
+  Nobody can hand out powers they don't have.
+- [x] **Server profiles** - a nickname, avatar, banner and bio per server
+  (Settings > Server Profiles, or the server menu). Roles can let their
+  members hide their roles.
+- [x] **Picture, GIF and video banners** for profiles, server profiles and
+  servers (up to 8 MB; videos loop silently, still with reduced motion).
+
 ## Decided against
 
+- Admins posting as a real member while muting them - it's impersonation
+  (members would believe someone said what they didn't). An honestly
+  labelled custom persona, like webhooks, is fine if wanted.
 - Game detection / Rich Presence, game overlays, PlayStation/Xbox linking -
   need a desktop app or console access, impossible from a website.
 - Spotify / Steam / Twitch / YouTube connections - each needs developer

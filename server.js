@@ -708,6 +708,56 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS hide_roles INTEGER DEFAULT 0`);
   // roles that let their members hide their roles from everyone else
   await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS allow_hide INTEGER DEFAULT 0`);
+  // ---- attachments inside messages ----
+  // files.message_id: the message a file was sent with (NULL = an older
+  // standalone file). pending = uploaded for a message that hasn't been sent.
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS message_id INTEGER`);
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS pending INTEGER DEFAULT 0`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_files_message ON files (message_id) WHERE message_id IS NOT NULL`);
+  // ---- personas (clearly labelled made-up names, never a real member) ----
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS persona INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS persona_avatar TEXT`);
+  // ---- moderation ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_bans (
+      server_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      reason TEXT,
+      banned_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (server_id, username)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_timeouts (
+      server_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      until TIMESTAMPTZ NOT NULL,
+      reason TEXT,
+      set_by TEXT,
+      PRIMARY KEY (server_id, username)
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target TEXT,
+      details TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_server ON audit_log (server_id, id DESC)`);
+  // ---- custom emoji ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_emojis (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (server_id, name)
+    )`);
   // Two accounts whose names differ only by capitals ("Purple" / "purple")
   // are an impersonation tool. New names are checked in usernameTaken(); the
   // index backs that up, but can't be built if such a pair already exists.
@@ -937,7 +987,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room, limit = 300) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2
      ) recent ORDER BY id ASC`,
     [room, limit]
@@ -946,12 +996,27 @@ async function getMessagesForRoom(room, limit = 300) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
   );
 }
+// The ids of files the sender uploaded for this message (x-attach), checked:
+// theirs, still unsent, for this room. Returns { ids } or { error }.
+const MAX_ATTACHMENTS = 10;
+async function checkAttachments(username, room, list) {
+  const ids = [...new Set((Array.isArray(list) ? list : []).map(Number).filter(n => n > 0))];
+  if (!ids.length) return { ids: [] };
+  if (ids.length > MAX_ATTACHMENTS) return { error: `up to ${MAX_ATTACHMENTS} files per message` };
+  const rows = await q(`SELECT id FROM files WHERE id = ANY($1) AND "user" = $2 AND room = $3 AND pending = 1 AND message_id IS NULL`, [ids, username, room]);
+  if (rows.length !== ids.length) return { error: 'one of the files is missing - try attaching it again' };
+  return { ids };
+}
+async function claimAttachments(messageId, ids) {
+  if (ids.length) await pool.query(`UPDATE files SET message_id = $1, pending = 0 WHERE id = ANY($2)`, [messageId, ids]);
+}
+
 async function insertMessage(room, user, text, toUser, isGroup, replyTo, mentions) {
   mentions = mentions || { everyone: 0, roles: '' };
   return one(
@@ -993,7 +1058,7 @@ async function getFilesForRoom(room) {
   return q(
     `SELECT * FROM (
        SELECT ${FILE_COLUMNS}
-       FROM files WHERE room = $1 ORDER BY id DESC LIMIT 120
+       FROM files WHERE room = $1 AND message_id IS NULL AND COALESCE(pending, 0) = 0 ORDER BY id DESC LIMIT 120
      ) recent ORDER BY id ASC`,
     [room]
   );
@@ -1004,7 +1069,8 @@ async function getFilesBetween(room, from, until) {
   return q(
     `SELECT * FROM (
        SELECT ${FILE_COLUMNS} FROM files
-       WHERE room = $1 AND ($2::timestamptz IS NULL OR created_at >= $2) AND ($3::timestamptz IS NULL OR created_at < $3)
+       WHERE room = $1 AND message_id IS NULL AND COALESCE(pending, 0) = 0
+         AND ($2::timestamptz IS NULL OR created_at >= $2) AND ($3::timestamptz IS NULL OR created_at < $3)
        ORDER BY id DESC LIMIT 200
      ) page ORDER BY id ASC`,
     [room, from, until]
@@ -1345,7 +1411,10 @@ const ROLE_PERMISSIONS = [
   'kick_members',         // kick members (not admins) and disconnect people from voice
   'manage_integrations',  // webhooks, server slash commands, adding bots
   'manage_events',        // create, edit and cancel events
-  'mention_everyone'      // @everyone, and roles that aren't mentionable
+  'mention_everyone',     // @everyone, and roles that aren't mentionable
+  'ban_members',          // ban from this server (and unban); time members out
+  'manage_emoji',         // add and remove this server's custom emoji
+  'use_personas'          // post under a made-up, clearly labelled name and picture
 ];
 const ALL_PERMISSIONS = new Set(ROLE_PERMISSIONS);
 function cleanPermissions(list) {
@@ -1384,12 +1453,47 @@ async function requirePerm(req, res, serverId, perm, what) {
 const PERMISSION_LABELS = {
   manage_server: 'Manage server', manage_channels: 'Manage channels', manage_roles: 'Manage roles',
   manage_messages: 'Manage messages', kick_members: 'Kick members', manage_integrations: 'Manage bots & webhooks',
-  manage_events: 'Manage events', mention_everyone: 'Mention @everyone'
+  manage_events: 'Manage events', mention_everyone: 'Mention @everyone',
+  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji', use_personas: 'Post as a persona'
 };
 // No climbing: a role (and so a member) can only be given, taken or edited
 // by someone who already has every power that role carries.
 function coversRole(mine, rolePermissions) {
   return permissionsFromText(rolePermissions).every(p => mine.has(p));
+}
+
+// ---- Audit log ----
+// What moderators and admins did in a server, newest first, for Server
+// Settings > Moderation. Never blocks the action it records.
+function auditLog(serverId, actor, action, target, details) {
+  if (!serverId) return;
+  pool.query(`INSERT INTO audit_log (server_id, actor, action, target, details) VALUES ($1, $2, $3, $4, $5)`,
+    [serverId, actor, action, target || null, details ? String(details).slice(0, 500) : null])
+    .catch(err => console.error('audit log failed:', err.message));
+}
+async function canSeeAuditLog(username, serverId) {
+  const mine = await serverPermissions(username, serverId);
+  return ['manage_server', 'kick_members', 'ban_members', 'manage_roles'].some(p => mine.has(p));
+}
+// An active timeout for this member in this server, or null.
+async function activeTimeout(username, serverId) {
+  return one(`SELECT until, reason FROM server_timeouts WHERE server_id = $1 AND username = $2 AND until > NOW()`, [serverId, username]);
+}
+async function isServerBanned(username, serverId) {
+  return !!(await one(`SELECT 1 FROM server_bans WHERE server_id = $1 AND username = $2`, [serverId, username]));
+}
+// Who `actor` may moderate: not the owner, not an admin unless actor is
+// owner-level, and nobody with a power the actor lacks.
+async function moderationProblem(actor, target, serverId) {
+  const srv = await getServerById(serverId);
+  if (!srv || srv.is_default) return 'not in the general server - use a site-wide action instead';
+  if (target === srv.owner) return 'the owner can\'t be moderated';
+  if (target === actor) return 'you can\'t do that to yourself';
+  const role = await serverMemberRole(target, serverId);
+  if (role === 'admin' && !(await isServerOwnerLevel(actor, serverId))) return 'only the owner can do that to a server admin';
+  const mine = await serverPermissions(actor, serverId);
+  if ([...(await serverPermissions(target, serverId))].some(p => !mine.has(p))) return 'you can only moderate members whose permissions you have yourself';
+  return null;
 }
 
 // ---- Per-server profiles ----
@@ -1450,6 +1554,7 @@ async function serversForUser(username) {
   if (!rows.length) return [];
   const isBot = await isBotUser(username);
   const ids = rows.map(s => s.id);
+  const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
     q(`SELECT server_id, role, nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
@@ -1498,6 +1603,7 @@ async function serversForUser(username) {
       canManage,
       canManageOwnerLevel: admin || isOwner,
       permissions,
+      emojis: emojiRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
       myServerProfile: myMemberRows.has(s.id) ? serverProfileFromRow(myMemberRows.get(s.id)) : null,
       canHideRoles: !s.is_default && (admin || isOwner || role === 'admin' ||
         customRoleRows.some(r => r.server_id === s.id && r.allow_hide && myRoleRows.some(m => m.server_id === s.id && m.role_id === r.id))),
@@ -1704,6 +1810,10 @@ setInterval(() => {
 async function channelPostBlock(username, room) {
   const channel = await getChannelByRoom(room);
   if (channel && channel.kind === 'forum') return 'This is a forum - start a new post instead.';
+  if (channel) {
+    const timeout = await activeTimeout(username, channel.server_id);
+    if (timeout) return `You're timed out in this server until ${new Date(timeout.until).toUTCString()}${timeout.reason ? ' (' + timeout.reason + ')' : ''}.`;
+  }
   if (!channel || (!channel.admins_only && !channel.slowmode_seconds)) return null;
   if (await hasServerPerm(username, channel.server_id, 'manage_messages')) return null;
   if (channel.admins_only) return 'Only admins can send messages in this channel.';
@@ -1886,6 +1996,13 @@ async function normaliseMessages(rows) {
   ]);
   const threadsBy = new Map(threadRows.map(t => [t.starter_message_id, threadFromRow(t)]));
   const serverLooks = await serverLooksFor(rows);
+  const attachmentRows = await q(`SELECT ${FILE_COLUMNS}, message_id FROM files WHERE message_id = ANY($1) ORDER BY id`, [rows.map(r => r.id)]);
+  const attachmentsBy = new Map();
+  for (const f of await normaliseFiles(attachmentRows)) {
+    const mid = attachmentRows.find(r => r.id === f.id).message_id;
+    if (!attachmentsBy.has(mid)) attachmentsBy.set(mid, []);
+    attachmentsBy.get(mid).push(f);
+  }
   const reactionRolesBy = new Map();
   for (const r of roleRows) {
     if (!reactionRolesBy.has(r.message_id)) reactionRolesBy.set(r.message_id, []);
@@ -1902,8 +2019,11 @@ async function normaliseMessages(rows) {
       bot: !!row.webhook_id,
       botAccount: !!(u && u.is_bot), // written by a bot account (has a profile, unlike webhooks)
       webhookId: row.webhook_id || null,
-      displayName: row.webhook_id ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
-      avatarUrl: row.webhook_id ? '' : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
+      displayName: row.webhook_id || row.persona ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
+      avatarUrl: row.webhook_id ? '' : row.persona ? (row.persona_avatar || '') : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
+      // a persona is labelled as one, and everyone can see who posted it
+      persona: !!row.persona,
+      attachments: deleted ? [] : (attachmentsBy.get(row.id) || []),
       commandName: row.command_name || '',
       invokedBy: row.invoked_by || '',
       reactionRoles: deleted ? [] : (reactionRolesBy.get(row.id) || []),
@@ -1979,7 +2099,10 @@ function diskPathForUpload(fileUrl) {
 // whose file is simply gone (the disk doesn't survive a restart on hosts
 // like Render's free tier), so chats don't keep broken attachments.
 async function removeOldFiles(missingToo) {
-  const rows = await q(`SELECT id, room, to_user, file_url, (expires_at <= NOW()) AS expired FROM files WHERE COALESCE(storage, 'disk') = 'disk'`);
+  // uploads for a message that was never sent go after a day
+  const stale = await q(`SELECT id, room, to_user, file_url, storage FROM files WHERE pending = 1 AND created_at < NOW() - INTERVAL '1 day'`);
+  if (stale.length) await deleteFiles(stale);
+  const rows = await q(`SELECT id, room, to_user, file_url, message_id, (expires_at <= NOW()) AS expired FROM files WHERE COALESCE(storage, 'disk') = 'disk'`);
   const gone = [];
   for (const file of rows) {
     const filePath = diskPathForUpload(file.file_url);
@@ -1992,7 +2115,10 @@ async function removeOldFiles(missingToo) {
   }
   if (!gone.length) return;
   await pool.query(`DELETE FROM files WHERE id = ANY($1)`, [gone.map(f => f.id)]);
-  for (const file of gone) emitRoomOrDM(file.room, file.to_user, 'fileDeleted', { id: file.id, room: file.room });
+  for (const file of gone) {
+    if (file.message_id) await emitMessageUpdate(file.message_id).catch(() => {});
+    else emitRoomOrDM(file.room, file.to_user, 'fileDeleted', { id: file.id, room: file.room });
+  }
 }
 
 // ---- kept files (file_blobs) ----
@@ -2020,11 +2146,14 @@ async function deleteFiles(rows) {
   const blobs = await q(`DELETE FROM file_blobs WHERE file_id = ANY($1) RETURNING key`, [ids]);
   blobs.forEach(b => forgetBlob(b.key));
   await pool.query(`DELETE FROM files WHERE id = ANY($1)`, [ids]);
+  const messages = new Set();
   for (const row of rows) {
     const filePath = (row.storage || 'disk') === 'disk' ? diskPathForUpload(row.file_url) : null;
     if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
-    emitRoomOrDM(row.room, row.to_user, 'fileDeleted', { id: row.id, room: row.room });
+    if (row.message_id) messages.add(row.message_id);
+    else emitRoomOrDM(row.room, row.to_user, 'fileDeleted', { id: row.id, room: row.room });
   }
+  for (const id of messages) await emitMessageUpdate(id).catch(() => {});
 }
 // Keeps stored attachments inside MEDIA_BUDGET_BYTES by dropping the oldest.
 async function enforceMediaBudget() {
@@ -2032,7 +2161,7 @@ async function enforceMediaBudget() {
   if (used <= MEDIA_BUDGET_BYTES) return;
   // first anything nobody can reach any more (its channel, thread or group is gone)
   const orphans = await q(
-    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage FROM files f
+    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage, f.message_id FROM files f
      WHERE f.storage = 'db' AND f.room NOT LIKE 'dm:%'
        AND NOT EXISTS (SELECT 1 FROM server_channels c WHERE c.room = f.room)
        AND NOT EXISTS (SELECT 1 FROM threads t WHERE 'thread:' || t.id = f.room)
@@ -2040,7 +2169,7 @@ async function enforceMediaBudget() {
   );
   await deleteFiles(orphans);
   const over = await q(
-    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage FROM files f JOIN (
+    `SELECT f.id, f.room, f.to_user, f.file_url, f.storage, f.message_id FROM files f JOIN (
        SELECT file_id, SUM(size) OVER (ORDER BY created_at DESC, file_id DESC) AS running FROM file_blobs
      ) b ON b.file_id = f.id WHERE b.running > $1`,
     [MEDIA_BUDGET_BYTES]
@@ -2290,6 +2419,8 @@ async function removeUnusedAssets() {
     `DELETE FROM assets a WHERE a.created_at < NOW() - INTERVAL '1 day'
        AND NOT EXISTS (SELECT 1 FROM users u WHERE u.banner_url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.banner_url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM server_emojis e WHERE e.url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM messages pm WHERE pm.persona_avatar LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%')
      RETURNING key`
   );
@@ -2682,7 +2813,7 @@ async function unreadFor(username) {
       `SELECT m.room, COUNT(*)::int AS n
        FROM files m
        LEFT JOIN read_receipts r ON r.room = m.room AND r.username = $2
-       WHERE m.created_at > $3 AND ${readable.sql} AND m."user" <> $2
+       WHERE m.created_at > $3 AND ${readable.sql} AND m."user" <> $2 AND m.message_id IS NULL AND COALESCE(m.pending, 0) = 0
          AND m.created_at > COALESCE(r.updated_at, 'epoch'::timestamptz)
          AND m."user" NOT IN (SELECT blocked FROM blocks WHERE blocker = $2)
        GROUP BY m.room`,
@@ -2966,6 +3097,7 @@ async function callJoinProblem(username, key) {
   if (info.kind === 'voice') {
     const channel = await getChannelByRoom(info.room);
     if (!channel || channel.kind !== 'voice') return 'call not found';
+    if (await activeTimeout(username, channel.server_id)) return 'You\'re timed out in this server.';
   }
   if (await isMuted(username)) return 'you are muted';
   return null;
@@ -3061,14 +3193,32 @@ async function enforceCallAccess(usernames) {
 // STUN lets browsers find each other; a TURN relay (optional, set with
 // TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL) carries the call when a
 // network (often school or office wifi) blocks direct connections.
+// The TURN shared secret: TURN_SECRET, or read from TURN_SECRET_FILE (the
+// NAS setup has the TURN container write one there on first start).
+function turnSecret() {
+  if (process.env.TURN_SECRET) return process.env.TURN_SECRET;
+  if (process.env.TURN_SECRET_FILE) {
+    try { return fs.readFileSync(process.env.TURN_SECRET_FILE, 'utf8').trim(); } catch (_) { return ''; }
+  }
+  return '';
+}
 app.get('/voice/ice', requireAuth, route(async (req, res) => {
   const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
   if (process.env.TURN_URLS) {
-    iceServers.push({
-      urls: process.env.TURN_URLS.split(',').map(u => u.trim()).filter(Boolean),
-      username: process.env.TURN_USERNAME || '',
-      credential: process.env.TURN_CREDENTIAL || ''
-    });
+    // "{host}" = the address the chat is being reached on (behind the relay
+    // that's the NAS's public name), without a port
+    const host = String(req.headers.host || '').replace(/:\d+$/, '');
+    const urls = process.env.TURN_URLS.split(',').map(u => u.trim().replace('{host}', host)).filter(Boolean);
+    const secret = turnSecret();
+    if (secret) {
+      // coturn's "use-auth-secret": a login that works for 12 hours, made
+      // from the shared secret, so no lasting TURN password reaches browsers
+      const username = Math.floor(Date.now() / 1000 + 12 * 3600) + ':' + req.username.replace(/:/g, '');
+      const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+      iceServers.push({ urls, username, credential });
+    } else {
+      iceServers.push({ urls, username: process.env.TURN_USERNAME || '', credential: process.env.TURN_CREDENTIAL || '' });
+    }
   }
   res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
 }));
@@ -3244,6 +3394,7 @@ app.post('/bots/:name/servers', requireAuth, route(async (req, res) => {
   if (!srv || !(await isServerMember(req.username, srv.id))) return res.status(404).json({ error: 'server not found' });
   if (srv.is_default) return res.status(400).json({ error: 'bots can\'t join the open general server - add it to one of your own servers' });
   if (!(await requirePerm(req, res, srv.id, 'manage_integrations', 'add bots to this server'))) return;
+  if (await isServerBanned(bot.username, srv.id)) return res.status(403).json({ error: 'That bot is banned from this server.' });
   await addServerMember(srv, bot.username);
   res.json((await botsOf(req.username)).find(b => b.username === bot.username));
 }));
@@ -3424,6 +3575,7 @@ app.post('/servers/:id/webhooks/:hookId/delete', requireAuth, route(async (req, 
   const hook = await managedWebhook(req, res);
   if (!hook) return;
   await pool.query(`DELETE FROM webhooks WHERE id = $1`, [hook.id]);
+  auditLog(hook.server_id, req.username, 'webhook_delete', hook.name);
   res.json({ message: 'ok' });
 }));
 
@@ -4339,6 +4491,7 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
   const code = cleanText(req.body.code, 40).toLowerCase();
   const srv = await getServerByCode(code);
   if (!srv) return res.status(404).json({ error: 'invite code not found' });
+  if (await isServerBanned(req.username, srv.id)) return res.status(403).json({ error: 'You are banned from this server.' });
   await addServerMember(srv, req.username);
   res.json({ id: srv.id, name: srv.name });
 }));
@@ -4371,6 +4524,7 @@ app.post('/servers/:id/update', requireAuth, route(async (req, res) => {
   }
   await pool.query(`UPDATE servers SET name = $1 WHERE id = $2`, [name, serverId]);
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'server_update', name, Object.keys(req.body || {}).join(', '));
   res.json({ message: 'ok' });
 }));
 
@@ -4408,6 +4562,7 @@ app.post('/servers/:id/channels', requireAuth, route(async (req, res) => {
     if (['forum', 'voice'].includes(req.body.kind)) await pool.query(`UPDATE server_channels SET kind = $1 WHERE id = $2`, [req.body.kind, created.id]);
     if (srv.is_default) { try { await insertChannel(name, req.username); } catch (_) {} }
     await notifyServerMembers(serverId, 'serversChanged', {});
+    auditLog(serverId, req.username, 'channel_create', '#' + name);
     res.status(201).json({ id: created.id, name, room, serverId });
   } catch (_) {
     res.status(409).json({ error: 'channel already exists' });
@@ -4436,6 +4591,7 @@ app.post('/servers/:id/channels/:channelId/delete', requireAuth, route(async (re
   // too, or ensureDefaultServer() would resurrect the channel on reboot.
   if (channel.room !== channel.name) await deleteChannelRow(channel.room);
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'channel_delete', '#' + channel.name);
   res.json({ message: 'ok' });
 }));
 
@@ -4537,6 +4693,7 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
     serverPermissions(req.username, serverId)
   ]);
   const memberRows = new Map(roleRows.map(r => [r.username, r]));
+  const timeouts = new Map((await q(`SELECT username, until FROM server_timeouts WHERE server_id = $1 AND until > NOW()`, [serverId])).map(r => [r.username, r.until]));
   const mayHide = new Set(hiders.map(r => r.username));
   const seesHidden = viewerPerms.has('manage_roles');
   const roles = new Map(roleRows.map(r => [r.username, r.role]));
@@ -4556,7 +4713,7 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
     const serverProfile = row ? serverProfileFromRow(row) : null;
     const hidden = !!(row && row.hide_roles && (role !== 'member' || mayHide.has(name)));
     if (hidden && name !== req.username && !seesHidden) { role = 'member'; roleIds = []; }
-    out.push({ ...profile, role, roleIds, rolesHidden: hidden, serverProfile, online: isVisiblyOnline(name) });
+    out.push({ ...profile, role, roleIds, rolesHidden: hidden, serverProfile, online: isVisiblyOnline(name), timedOutUntil: timeouts.get(name) || null });
   }
   out.sort((a, b) => (Number(b.online) - Number(a.online)) || a.username.localeCompare(b.username));
   res.json(out);
@@ -4621,7 +4778,172 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
   sendToUser(target, 'adminNotice', { message: `You were removed from ${srv.name}.` });
   sendToUser(target, 'serversChanged', {});
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'kick', target);
   res.json({ message: 'ok' });
+}));
+
+// ---------------- PERSONAS ----------------
+// Someone with the "Post as a persona" power can post under a made-up name
+// and picture in a server channel - like a webhook, it is always labelled
+// as a persona and shows who posted it. It can never use a real member's
+// name, so nobody can be made to look like they said something.
+async function personaProblem(username, room, persona) {
+  const channel = await channelForRoom(room);
+  if (!channel) return 'personas only work in server channels';
+  if (!(await hasServerPerm(username, channel.server_id, 'use_personas'))) return 'you need the "Post as a persona" permission';
+  const name = cleanText(persona && persona.name, 32);
+  if (!name) return 'give the persona a name';
+  const lower = name.toLowerCase();
+  const clash = await one(
+    `SELECT 1 FROM users u LEFT JOIN server_members m ON m.username = u.username AND m.server_id = $2
+     WHERE LOWER(u.username) = $1 OR LOWER(u.display_name) = $1 OR LOWER(COALESCE(m.nickname, '')) = $1 LIMIT 1`,
+    [lower, channel.server_id]
+  );
+  if (clash) return 'that is a real person\'s name - personas can\'t pretend to be real people';
+  if (persona.avatarUrl) {
+    const problem = await assetProblem(persona.avatarUrl, username, false);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+// ---------------- CUSTOM EMOJI ----------------
+// A server's own emoji: a picture or GIF from /assets with a short name.
+// In messages they're written <:name:id>; the client draws the picture.
+const MAX_EMOJIS_PER_SERVER = 50;
+const EMOJI_NAME_RE = /^[a-z0-9_]{2,32}$/;
+app.post('/servers/:id/emojis', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'add emoji'))) return;
+  const name = String(req.body.name || '').trim().toLowerCase().replace(/^:|:$/g, '');
+  if (!EMOJI_NAME_RE.test(name)) return res.status(400).json({ error: 'emoji names are 2-32 lowercase letters, numbers or underscores' });
+  const problem = await assetProblem(req.body.url, req.username, false);
+  if (problem || !req.body.url) return res.status(400).json({ error: problem || 'upload a picture or GIF first' });
+  const count = await one(`SELECT count(*)::int AS n FROM server_emojis WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_EMOJIS_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_EMOJIS_PER_SERVER} emoji` });
+  const row = await one(
+    `INSERT INTO server_emojis (server_id, name, url, created_by) VALUES ($1, $2, $3, $4) ON CONFLICT (server_id, name) DO NOTHING RETURNING id, name, url`,
+    [serverId, name, String(req.body.url), req.username]
+  );
+  if (!row) return res.status(409).json({ error: 'this server already has an emoji with that name' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'emoji_add', ':' + name + ':');
+  res.status(201).json(row);
+}));
+app.post('/servers/:id/emojis/:emojiId/delete', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'remove emoji'))) return;
+  const row = await one(`DELETE FROM server_emojis WHERE id = $1 AND server_id = $2 RETURNING name`, [Number(req.params.emojiId), serverId]);
+  if (!row) return res.status(404).json({ error: 'emoji not found' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'emoji_remove', ':' + row.name + ':');
+  res.json({ message: 'ok' });
+}));
+// A reaction is one of the built-in emoji, or a custom emoji of the server
+// the message is in (written <:name:id>).
+async function validReaction(emoji, room) {
+  if (REACTION_EMOJIS.has(emoji)) return true;
+  const m = /^<:([a-z0-9_]{2,32}):(\d{1,9})>$/.exec(emoji);
+  if (!m) return false;
+  const channel = await channelForRoom(room);
+  if (!channel) return false;
+  return !!(await one(`SELECT 1 FROM server_emojis WHERE id = $1 AND server_id = $2 AND name = $3`, [Number(m[2]), channel.server_id, m[1]]));
+}
+
+// ---------------- BANS, TIMEOUTS, AUDIT LOG ----------------
+// A ban removes someone and stops them rejoining with the invite until
+// they're unbanned. A timeout keeps them in the server but stops them
+// posting, uploading and joining voice there until it runs out.
+app.post('/servers/:id/members/:username/ban', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const target = cleanUsername(req.params.username);
+  if (!(await requirePerm(req, res, serverId, 'ban_members', 'ban members'))) return;
+  if (!(await getUser(target))) return res.status(404).json({ error: 'user not found' });
+  const problem = await moderationProblem(req.username, target, serverId);
+  if (problem) return res.status(403).json({ error: problem });
+  const reason = cleanText(req.body.reason || '', 200);
+  const srv = await getServerById(serverId);
+  await pool.query(
+    `INSERT INTO server_bans (server_id, username, reason, banned_by) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (server_id, username) DO UPDATE SET reason = EXCLUDED.reason, banned_by = EXCLUDED.banned_by, created_at = NOW()`,
+    [serverId, target, reason || null, req.username]
+  );
+  const wasMember = await one(`DELETE FROM server_members WHERE server_id = $1 AND username = $2 RETURNING 1`, [serverId, target]);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await pool.query(`DELETE FROM server_timeouts WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await resyncRooms([target]);
+  if (wasMember) {
+    sendToUser(target, 'adminNotice', { message: `You were banned from ${srv.name}.` + (reason ? ' Reason: ' + reason : '') });
+    sendToUser(target, 'serversChanged', {});
+  }
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'ban', target, reason);
+  res.json({ message: 'ok' });
+}));
+app.post('/servers/:id/bans/:username/unban', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const target = cleanUsername(req.params.username);
+  if (!(await requirePerm(req, res, serverId, 'ban_members', 'unban members'))) return;
+  const row = await one(`DELETE FROM server_bans WHERE server_id = $1 AND username = $2 RETURNING 1`, [serverId, target]);
+  if (!row) return res.status(404).json({ error: 'that person isn\'t banned' });
+  auditLog(serverId, req.username, 'unban', target);
+  res.json({ message: 'ok' });
+}));
+app.get('/servers/:id/bans', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'ban_members', 'see bans'))) return;
+  const rows = await q(`SELECT username, reason, banned_by, created_at FROM server_bans WHERE server_id = $1 ORDER BY created_at DESC LIMIT 500`, [serverId]);
+  res.json(rows.map(r => ({ username: r.username, reason: r.reason || '', bannedBy: r.banned_by || '', createdAt: r.created_at })));
+}));
+const TIMEOUT_CHOICES = [0, 5, 10, 60, 360, 1440, 10080]; // minutes; 0 = lift it
+app.post('/servers/:id/members/:username/timeout', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const target = cleanUsername(req.params.username);
+  if (!(await requirePerm(req, res, serverId, 'ban_members', 'time members out'))) return;
+  const minutes = Number(req.body.minutes);
+  if (!TIMEOUT_CHOICES.includes(minutes)) return res.status(400).json({ error: 'pick one of the timeout lengths' });
+  if (!(await isServerMember(target, serverId))) return res.status(404).json({ error: 'user is not a member of this server' });
+  const problem = await moderationProblem(req.username, target, serverId);
+  if (problem) return res.status(403).json({ error: problem });
+  const srv = await getServerById(serverId);
+  const reason = cleanText(req.body.reason || '', 200);
+  if (!minutes) {
+    await pool.query(`DELETE FROM server_timeouts WHERE server_id = $1 AND username = $2`, [serverId, target]);
+    sendToUser(target, 'adminNotice', { message: `Your timeout in ${srv.name} was lifted.` });
+    auditLog(serverId, req.username, 'timeout_lifted', target);
+  } else {
+    await pool.query(
+      `INSERT INTO server_timeouts (server_id, username, until, reason, set_by) VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4, $5)
+       ON CONFLICT (server_id, username) DO UPDATE SET until = EXCLUDED.until, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by`,
+      [serverId, target, String(minutes), reason || null, req.username]
+    );
+    await enforceCallAccess([target]).catch(() => {});
+    const call = callOf(target);
+    if (call && call.kind === 'voice') {
+      const channel = await getChannelByRoom(call.room);
+      if (channel && channel.server_id === serverId) await leaveCall(call.key, target, `You were timed out in ${srv.name}.`);
+    }
+    sendToUser(target, 'adminNotice', { message: `You were timed out in ${srv.name} for ${minutes >= 1440 ? Math.round(minutes / 1440) + ' day(s)' : minutes >= 60 ? Math.round(minutes / 60) + ' hour(s)' : minutes + ' minutes'}.` + (reason ? ' Reason: ' + reason : '') });
+    auditLog(serverId, req.username, 'timeout', target, minutes + ' min' + (reason ? ' - ' + reason : ''));
+  }
+  await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+  res.json({ message: 'ok' });
+}));
+app.get('/servers/:id/timeouts', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'ban_members', 'see timeouts'))) return;
+  const rows = await q(`SELECT username, until, reason, set_by FROM server_timeouts WHERE server_id = $1 AND until > NOW() ORDER BY until ASC`, [serverId]);
+  res.json(rows.map(r => ({ username: r.username, until: r.until, reason: r.reason || '', setBy: r.set_by || '' })));
+}));
+app.get('/servers/:id/audit', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await canSeeAuditLog(req.username, serverId))) return res.status(403).json({ error: 'only moderators and admins can see the audit log' });
+  const before = Math.max(0, Number(req.query.before) || 0);
+  const rows = await q(
+    `SELECT id, actor, action, target, details, created_at FROM audit_log WHERE server_id = $1 AND ($2 = 0 OR id < $2) ORDER BY id DESC LIMIT 100`,
+    [serverId, before]
+  );
+  res.json(rows.map(r => ({ id: r.id, actor: r.actor, action: r.action, target: r.target || '', details: r.details || '', createdAt: r.created_at })));
 }));
 
 // Rename a channel and/or change its topic.
@@ -4663,6 +4985,7 @@ app.post('/servers/:id/channels/:channelId/update', requireAuth, route(async (re
     [name, topic, slowmode, adminsOnly, categoryId, channelId]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'channel_update', '#' + name, Object.keys(req.body || {}).join(', '));
   res.json({ message: 'ok', id: channelId, name, topic, slowmode, adminsOnly: !!adminsOnly });
 }));
 
@@ -4804,6 +5127,7 @@ app.post('/servers/:id/roles', requireAuth, route(async (req, res) => {
     [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, input.autoAssign || 0, count.top + 1, (input.permissions || []).join(','), input.allowHide || 0]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'role_create', role.name, permissionsFromText(role.permissions).join(', '));
   res.status(201).json(roleFromRow(role));
 }));
 
@@ -4834,6 +5158,7 @@ app.post('/servers/:id/roles/:roleId/update', requireAuth, route(async (req, res
   if (input.permissions && holders.length) await enforceCallAccess(holders).catch(() => {});
   if (input.permissions) await pool.query(`DELETE FROM reaction_roles WHERE role_id = $1 AND $2 <> ''`, [roleId, next.permissions.join(',')]);
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'role_update', updated.name, permissionsFromText(updated.permissions).join(', ') || 'no powers');
   res.json(roleFromRow(updated));
 }));
 
@@ -4854,6 +5179,7 @@ app.post('/servers/:id/roles/:roleId/delete', requireAuth, route(async (req, res
   await resyncRooms(holders);
   for (const id of new Set(menus)) await emitMessageUpdate(id);
   await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'role_delete', String(roleId));
   res.json({ message: 'ok' });
 }));
 
@@ -4885,6 +5211,7 @@ app.post('/servers/:id/members/:username/roles', requireAuth, route(async (req, 
   await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
   sendToUser(target, 'serversChanged', {}); // their channel list may have changed
   sendToUser(target, 'myRolesChanged', { serverId });
+  auditLog(serverId, req.username, 'member_roles', target, changed.map(id => (serverRoles.get(id) ? id : id) + (wanted.includes(id) ? ' added' : ' removed')).join(', '));
   res.json({ message: 'ok', roleIds: wanted });
 }));
 
@@ -5199,9 +5526,18 @@ app.post('/upload', requireAuth, route(async (req, res) => {
   }
 
   if (await isMuted(req.username)) return res.status(403).json({ error: 'you are muted' });
+  // x-attach: 1 = a file for a message that's about to be sent (the message
+  // gets the checks and the broadcast); otherwise a standalone file
+  const attach = req.headers['x-attach'] === '1';
   if (!toUser) {
-    const blocked = await channelPostBlock(req.username, finalRoom);
-    if (blocked) return res.status(403).json({ error: blocked });
+    if (attach) {
+      const channel = await channelForRoom(finalRoom);
+      const timeout = channel ? await activeTimeout(req.username, channel.server_id) : null;
+      if (timeout) return res.status(403).json({ error: 'You\'re timed out in this server.' });
+    } else {
+      const blocked = await channelPostBlock(req.username, finalRoom);
+      if (blocked) return res.status(403).json({ error: blocked });
+    }
   }
 
   if (rateLimited('upload:' + req.username, 30, 5 * 60 * 1000)) return res.status(429).json({ error: 'You\'re sending files very quickly - wait a few minutes and try again.' });
@@ -5222,9 +5558,9 @@ app.post('/upload', requireAuth, route(async (req, res) => {
       try {
         await client.query('BEGIN');
         created = (await client.query(
-          `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'db') RETURNING id`,
-          [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/media/${key}/${encodeURIComponent(originalName)}`, buffer.length, caption || null]
+          `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, pending)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'db', $10) RETURNING id`,
+          [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/media/${key}/${encodeURIComponent(originalName)}`, buffer.length, caption || null, attach ? 1 : 0]
         )).rows[0];
         await client.query(`INSERT INTO file_blobs (file_id, key, data, size) VALUES ($1, $2, $3, $4)`, [created.id, key, buffer, buffer.length]);
         await client.query('COMMIT');
@@ -5238,12 +5574,13 @@ app.post('/upload', requireAuth, route(async (req, res) => {
     } else {
       const size = await saveUploadStream(req, fullPath, MAX_FILE_BYTES);
       created = await one(
-        `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'disk', NOW() + INTERVAL '${FILE_EXPIRY_HOURS} hours') RETURNING id`,
-        [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/uploads/${storedName}`, size, caption || null]
+        `INSERT INTO files (room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, pending)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'disk', NOW() + INTERVAL '${FILE_EXPIRY_HOURS} hours', $10) RETURNING id`,
+        [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/uploads/${storedName}`, size, caption || null, attach ? 1 : 0]
       );
     }
     const fileMsg = await normaliseFile(await getFileById(created.id));
+    if (attach) return res.status(201).json(fileMsg); // shown when its message is sent
 
     if (toUser) {
       io.to(finalRoom).emit('dmFile', fileMsg);
@@ -5320,6 +5657,10 @@ app.post('/files/:id/delete', requireAuth, route(async (req, res) => {
   const file = await getFileById(Number(req.params.id));
   if (!file || !(await isAllowedRoom(req.username, file.room))) return res.status(404).json({ error: 'file not found' });
   if (file.user !== req.username && !(await canModerateRoom(req.username, file.room))) return res.status(403).json({ error: 'you can only delete your own files' });
+  if (file.user !== req.username) {
+    const channel = await channelForRoom(file.room);
+    if (channel) auditLog(channel.server_id, req.username, 'file_delete', file.user, file.file_name);
+  }
   await deleteFiles([file]);
   res.json({ message: 'ok' });
 }));
@@ -5453,6 +5794,8 @@ io.on('connection', (socket) => {
     const room = String(data.room || 'general');
     const text = cleanText(data.text, 4000);
     const replyTo = Number(data.replyTo || 0) || null;
+    const attached = await checkAttachments(socket.username, room, data.attachments);
+    if (attached.error) { if (typeof ack === 'function') ack({ error: attached.error }); return; }
     const muted = await isMuted(socket.username);
     if (muted) {
       if (typeof ack === 'function') ack({ error: 'you are muted until ' + muted.muted_until });
@@ -5462,15 +5805,28 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'forbidden room' });
       return;
     }
-    if (!text) return;
+    if (!text && !attached.ids.length) return;
     const blocked = await channelPostBlock(socket.username, room);
     if (blocked) {
       if (typeof ack === 'function') ack({ error: blocked });
       return;
     }
+    // a persona: a made-up name and picture, always labelled as one
+    let persona = null;
+    if (data.persona) {
+      const problem = await personaProblem(socket.username, room, data.persona);
+      if (problem) { if (typeof ack === 'function') ack({ error: problem }); return; }
+      persona = { name: cleanText(data.persona.name, 32), avatar: String(data.persona.avatarUrl || '') };
+    }
 
     const mentions = await mentionFlags(socket.username, room, text);
-    const created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
+    let created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
+    if (persona) {
+      created = await one(`UPDATE messages SET persona = 1, author_name = $1, persona_avatar = $2 WHERE id = $3 RETURNING *`, [persona.name, persona.avatar || null, created.id]);
+      const channel = await channelForRoom(room);
+      if (channel) auditLog(channel.server_id, socket.username, 'persona_post', persona.name, 'message ' + created.id);
+    }
+    await claimAttachments(created.id, attached.ids);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
     await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
@@ -5586,6 +5942,8 @@ io.on('connection', (socket) => {
     const to = cleanUsername(data.to);
     const text = cleanText(data.text, 4000);
     const replyTo = Number(data.replyTo || 0) || null;
+    const attached = validUsername(to) ? await checkAttachments(socket.username, makeDMRoom(socket.username, to), data.attachments) : { ids: [] };
+    if (attached.error) { if (typeof ack === 'function') ack({ error: attached.error }); return; }
     const muted = await isMuted(socket.username);
     if (muted) {
       if (typeof ack === 'function') ack({ error: 'you are muted until ' + muted.muted_until });
@@ -5595,7 +5953,7 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'invalid recipient' });
       return;
     }
-    if (!text) return;
+    if (!text && !attached.ids.length) return;
     const block = await blockBetween(socket.username, to);
     if (block) {
       if (typeof ack === 'function') ack({ error: dmBlockedError(block) });
@@ -5608,12 +5966,13 @@ io.on('connection', (socket) => {
 
     const room = makeDMRoom(socket.username, to);
     const created = await insertMessage(room, socket.username, text, to, 0, replyTo);
+    await claimAttachments(created.id, attached.ids);
     const msg = await normaliseMessage(created);
     sendToUser(socket.username, 'dmMessage', msg);
     sendToUser(to, 'dmMessage', msg);
     sendPushToUser(to, {
       title: `${socket.username} sent you a message`,
-      body: text.slice(0, 140),
+      body: text.slice(0, 140) || 'Sent a file',
       tag: 'dm:' + room,
       url: '/'
     }).catch(err => console.error('sendPushToUser failed:', err.message));
@@ -5656,6 +6015,12 @@ io.on('connection', (socket) => {
       return;
     }
     await pool.query(`UPDATE messages SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2`, [socket.username, id]);
+    const files = await q(`SELECT id, room, to_user, file_url, storage, message_id FROM files WHERE message_id = $1`, [id]);
+    if (files.length) await deleteFiles(files.map(f => ({ ...f, message_id: null }))); // the message update below covers them
+    if (row.user !== socket.username) {
+      const channel = await channelForRoom(row.room);
+      if (channel) auditLog(channel.server_id, socket.username, 'message_delete', row.user, String(row.text || '').slice(0, 120));
+    }
     const msg = await normaliseMessage(await getMessageById(id));
     emitRoomOrDM(msg.room, msg.to, 'messageDeleted', msg);
     if (typeof ack === 'function') ack({ message: 'ok' });
@@ -5669,7 +6034,7 @@ io.on('connection', (socket) => {
     const id = Number(data.id);
     const emoji = String(data.emoji || '');
     const row = await getMessageById(id);
-    if (!row || row.deleted_at || !REACTION_EMOJIS.has(emoji) || !(await isAllowedRoom(socket.username, row.room))) {
+    if (!row || row.deleted_at || !(await isAllowedRoom(socket.username, row.room)) || !(await validReaction(emoji, row.room))) {
       if (typeof ack === 'function') ack({ error: 'invalid reaction' });
       return;
     }

@@ -11,7 +11,7 @@ const { check, sleep, get, post, reg, sock, emit, done, uid } = require('./lib')
   const general = srv.channels.find(c => c.name === 'general');
   const mine = async (t) => (await get('/servers', t)).data.find(s => s.id === sid);
 
-  check('owner has every permission', (await mine(O)).permissions.length === 8);
+  check('owner has every permission', (await mine(O)).permissions.length === 11);
   check('a plain member has none', (await mine(M)).permissions.length === 0);
   check('a member cannot create roles', (await post(`/servers/${sid}/roles`, M, { name: 'x' })).status === 403);
 

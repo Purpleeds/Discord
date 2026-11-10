@@ -1,39 +1,14 @@
-# ============================================================================
-#  Chat app - everything in one file, for a NAS's Docker app (UGREEN, Synology,
-#  or any machine with Docker). Paste it into Docker > Project > Create.
-#
-#  1. Fill in the four settings just below (between the lines).
-#  2. Create the project. The first start takes a few minutes: it downloads
-#     the app, copies your data from Neon (if you give the Neon address), and
-#     starts the chat.
-#  3. At home it's at http://<your NAS's IP>:8080. With a Tailscale key it is
-#     also public at https://discord.<your-tailnet>.ts.net
-#
-#  Restarting the "chat" container picks up the latest version of the app.
-#  Full guide: deploy/nas/README.md in the repository.
-# ============================================================================
+# The chat on a NAS: app + database + public address + call relay.
+# Paste into the NAS's Docker app (Project > Create, name it "chat") and fill
+# in the settings below. Guide: deploy/nas/README.md
+name: chat
 
 x-settings:
-  # ---------------------------------------------------------------------------
-  # (1) A password for the chat's own database. Letters and numbers only.
-  #     Pick something new - you won't need to type it anywhere else.
-  db-password: &db_password "CHANGE-ME-make-up-a-long-password"
-
-  # (2) Your Neon address, to copy your accounts and messages across the first
-  #     time. It's DATABASE_URL in Render > Discords > Environment. Leave it
-  #     empty ("") to start a brand-new, empty chat instead.
+  db-password: &db_password "CHANGE-ME-letters-and-numbers"
   neon-url: &neon_url ""
-
-  # (3) A Tailscale auth key (tailscale.com > Settings > Keys), so people can
-  #     reach the chat from anywhere. Leave empty for home-only use.
-  tailscale-key: &ts_key ""
-
-  # (4) The first part of the public address: discord -> https://discord.<tailnet>.ts.net
-  address-name: &address_name "discord"
-  # ---------------------------------------------------------------------------
+  tailscale-key: &ts_key "tskey-auth-PASTE-YOURS"
 
 services:
-  # The chat's own database (separate from any Postgres you already run).
   db:
     image: postgres:18
     container_name: chat-db
@@ -45,15 +20,12 @@ services:
     volumes:
       - chat-db:/var/lib/postgresql
     healthcheck:
-      # over the network, not the local socket: during first-time setup Postgres
-      # briefly runs socket-only, and must not count as ready then
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U chat -d chat"]
       interval: 5s
       timeout: 5s
       retries: 30
 
-  # Runs once at start: copies everything from Neon if the database is still
-  # empty, then stops. It never touches Neon, and never overwrites data.
+  # Copies everything from Neon once, while the database is still empty.
   import:
     image: postgres:18
     container_name: chat-import
@@ -71,21 +43,19 @@ services:
       - /bin/sh
       - -c
       - |
-        if [ -z "$$NEON_URL" ]; then echo "No Neon address given - starting with an empty chat."; exit 0; fi
-        # wait until the database really answers (up to 2 minutes)
+        if [ -z "$$NEON_URL" ]; then echo "No Neon address - nothing to copy."; exit 0; fi
         tries=0
         until psql -tAc "SELECT 1" >/dev/null 2>&1; do
           tries=$$((tries + 1))
-          if [ "$$tries" -ge 60 ]; then echo "The chat database never came up."; exit 1; fi
+          if [ "$$tries" -ge 60 ]; then echo "Database never came up."; exit 1; fi
           sleep 2
         done
-        if [ "$$(psql -tAc "SELECT to_regclass('public.users') IS NOT NULL")" = "t" ]; then echo "The chat database already has data - nothing to copy."; exit 0; fi
-        echo "Copying everything from Neon..."
-        pg_dump --no-owner --no-privileges "$$NEON_URL" > /tmp/neon.sql || { echo "Could not read from Neon - check the address."; exit 1; }
+        if [ "$$(psql -tAc "SELECT to_regclass('public.users') IS NOT NULL")" = "t" ]; then echo "Database already has data - nothing to copy."; exit 0; fi
+        pg_dump --no-owner --no-privileges "$$NEON_URL" > /tmp/neon.sql || { echo "Could not read from Neon."; exit 1; }
         psql -v ON_ERROR_STOP=1 -q < /tmp/neon.sql > /dev/null || { echo "Could not load the copy."; exit 1; }
         echo "Copied: $$(psql -tAc "SELECT count(*) FROM users") accounts, $$(psql -tAc "SELECT count(*) FROM messages") messages."
 
-  # The chat app. Downloads the latest version from GitHub each time it starts.
+  # The chat. Downloads the latest version every time it starts.
   chat:
     image: node:22-alpine
     container_name: chat
@@ -104,30 +74,32 @@ services:
       PORT: "3000"
       NODE_ENV: production
       DATA_DIR: /data
-      # attachments up to this size are kept for good; bigger ones for 30 days
       KEEP_FILE_MB: "25"
       MEDIA_BUDGET_MB: "40000"
       FILE_EXPIRY_HOURS: "720"
       CODE_URL: https://codeload.github.com/Purpleeds/Discord/tar.gz/refs/heads/main
+      # calls on strict networks use the relay below ({host} = the public name)
+      TURN_URLS: "turns:{host}:8443?transport=tcp"
+      TURN_SECRET_FILE: /shared/turn-secret
     volumes:
       - chat-code:/app
       - chat-files:/data
+      - turn-shared:/shared
     working_dir: /app
     entrypoint:
       - /bin/sh
       - -c
       - |
         set -e
-        echo "Downloading the latest chat app..."
+        [ -s /shared/turn-secret ] || head -c 32 /dev/urandom | base64 > /shared/turn-secret
+        chmod 644 /shared/turn-secret
         if wget -qO /tmp/code.tgz "$$CODE_URL"; then
           rm -rf /tmp/code && mkdir -p /tmp/code
           tar xzf /tmp/code.tgz -C /tmp/code --strip-components=1
           cp -r /tmp/code/. /app/
-          npm ci --omit=dev --no-audit --no-fund
-        elif [ -f /app/server.js ]; then
-          echo "Couldn't download it - starting the copy from last time."
-        else
-          echo "Couldn't download the app. Is the NAS online?"; exit 1
+          npm ci --omit=dev --no-audit --no-fund --loglevel=error
+        elif [ ! -f /app/server.js ]; then
+          echo "Could not download the app."; exit 1
         fi
         exec node server.js
     healthcheck:
@@ -136,33 +108,54 @@ services:
       timeout: 5s
       start_period: 180s
 
-  # Publishes the chat at https://<address-name>.<your-tailnet>.ts.net with
-  # Tailscale Funnel. Without a key it just waits quietly.
+  # TURN relay for calls when two people can't connect directly. Reached
+  # through Funnel on port 8443 (TLS ends there), so no router changes. It
+  # may only relay between callers, never into your home network.
+  turn:
+    image: coturn/coturn:latest
+    container_name: chat-turn
+    restart: unless-stopped
+    user: root
+    depends_on:
+      - chat
+    volumes:
+      - turn-shared:/shared:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        while [ ! -s /shared/turn-secret ]; do sleep 2; done
+        SELF=$$(hostname -i | awk '{print $$1}')
+        exec turnserver -n --log-file=stdout --no-cli --no-tls --no-dtls --listening-port=3478 \
+          --fingerprint --use-auth-secret --static-auth-secret="$$(cat /shared/turn-secret)" --realm=chat \
+          --min-port=49160 --max-port=49260 --no-multicast-peers --total-quota=40 --max-bps=2500000 \
+          --denied-peer-ip=10.0.0.0-10.255.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255 \
+          --denied-peer-ip=192.168.0.0-192.168.255.255 --denied-peer-ip=100.64.0.0-100.127.255.255 \
+          --allowed-peer-ip=$$SELF
+
+  # Publishes the chat (443) and the call relay (8443) with Tailscale Funnel.
   funnel:
     image: tailscale/tailscale:latest
     container_name: chat-funnel
-    hostname: *address_name
+    hostname: discord
     restart: unless-stopped
     depends_on:
       - chat
     environment:
       TS_AUTHKEY: *ts_key
+      TS_HOSTNAME: discord
       TS_STATE_DIR: /var/lib/tailscale
-      TS_SERVE_CONFIG: /config/serve.json
       TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
     volumes:
       - funnel-state:/var/lib/tailscale
     entrypoint:
       - /bin/sh
       - -c
       - |
-        if [ -z "$$TS_AUTHKEY" ] && [ ! -s /var/lib/tailscale/tailscaled.state ]; then
-          echo "No Tailscale key set - the chat is only reachable at home. Add a key and recreate the project to publish it."
-          exec sleep infinity
-        fi
         mkdir -p /config
         cat > /config/serve.json <<'JSON'
-        {"TCP":{"443":{"HTTPS":true}},"Web":{"$${TS_CERT_DOMAIN}:443":{"Handlers":{"/":{"Proxy":"http://chat:3000"}}}},"AllowFunnel":{"$${TS_CERT_DOMAIN}:443":true}}
+        {"TCP":{"443":{"HTTPS":true},"8443":{"TCPForward":"turn:3478","TerminateTLS":"$${TS_CERT_DOMAIN}"}},"Web":{"$${TS_CERT_DOMAIN}:443":{"Handlers":{"/":{"Proxy":"http://chat:3000"}}}},"AllowFunnel":{"$${TS_CERT_DOMAIN}:443":true,"$${TS_CERT_DOMAIN}:8443":true}}
         JSON
         exec /usr/local/bin/containerboot
 
@@ -171,3 +164,4 @@ volumes:
   chat-code:
   chat-files:
   funnel-state:
+  turn-shared:

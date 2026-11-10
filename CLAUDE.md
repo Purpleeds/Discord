@@ -140,6 +140,24 @@ to do next) - read it before a big upgrade and add an entry after one.
 - The app page is served with `APP_CSP`. Anything new the page loads from
   another origin (a script, a font, a frame) has to be allowed there, and
   the browser regression suite fails on CSP violations.
+- Attachments belong to messages: the client uploads with `X-Attach: 1`
+  (a `pending` file, not broadcast), then sends the message with
+  `attachments: [ids]`; `checkAttachments()`/`claimAttachments()` tie them
+  to it. Messages carry `attachments`; `/history` and unread counting skip
+  attached and pending files. Deleting a message deletes its files. Older
+  standalone files (message_id NULL) still show as their own items.
+- Moderation: per-server bans (`server_bans`, block rejoining) and timeouts
+  (`server_timeouts`, enforced in `channelPostBlock()`, uploads and voice)
+  need `ban_members`; `moderationProblem()` decides who can be moderated.
+  Log moderator actions with `auditLog()` (never blocks the action).
+- Custom emoji (`server_emojis`, `manage_emoji`) are written `<:name:id>` in
+  text and reactions; `validReaction()` checks reactions. Personas
+  (`use_personas`) are always labelled and show the real poster;
+  `personaProblem()` refuses real members' names - don't weaken that.
+- In server channels the client must not cache message names/avatars as
+  profiles (`cacheFromPayload()` skips them): they can be nicknames or personas.
+- TURN: `/voice/ice` gives coturn time-limited logins from `TURN_SECRET` /
+  `TURN_SECRET_FILE`; `{host}` in `TURN_URLS` becomes the public name.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

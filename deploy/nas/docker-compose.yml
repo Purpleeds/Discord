@@ -1,0 +1,164 @@
+# ============================================================================
+#  Chat app - everything in one file, for a NAS's Docker app (UGREEN, Synology,
+#  or any machine with Docker). Paste it into Docker > Project > Create.
+#
+#  1. Fill in the four settings just below (between the lines).
+#  2. Create the project. The first start takes a few minutes: it downloads
+#     the app, copies your data from Neon (if you give the Neon address), and
+#     starts the chat.
+#  3. At home it's at http://<your NAS's IP>:8080. With a Tailscale key it is
+#     also public at https://discord.<your-tailnet>.ts.net
+#
+#  Restarting the "chat" container picks up the latest version of the app.
+#  Full guide: deploy/nas/README.md in the repository.
+# ============================================================================
+
+x-settings:
+  # ---------------------------------------------------------------------------
+  # (1) A password for the chat's own database. Letters and numbers only.
+  #     Pick something new - you won't need to type it anywhere else.
+  db-password: &db_password "CHANGE-ME-make-up-a-long-password"
+
+  # (2) Your Neon address, to copy your accounts and messages across the first
+  #     time. It's DATABASE_URL in Render > Discords > Environment. Leave it
+  #     empty ("") to start a brand-new, empty chat instead.
+  neon-url: &neon_url ""
+
+  # (3) A Tailscale auth key (tailscale.com > Settings > Keys), so people can
+  #     reach the chat from anywhere. Leave empty for home-only use.
+  tailscale-key: &ts_key ""
+
+  # (4) The first part of the public address: discord -> https://discord.<tailnet>.ts.net
+  address-name: &address_name "discord"
+  # ---------------------------------------------------------------------------
+
+services:
+  # The chat's own database (separate from any Postgres you already run).
+  db:
+    image: postgres:18
+    container_name: chat-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: chat
+      POSTGRES_PASSWORD: *db_password
+      POSTGRES_DB: chat
+    volumes:
+      - chat-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat -d chat"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Runs once at start: copies everything from Neon if the database is still
+  # empty, then stops. It never touches Neon, and never overwrites data.
+  import:
+    image: postgres:18
+    container_name: chat-import
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NEON_URL: *neon_url
+      PGHOST: db
+      PGUSER: chat
+      PGDATABASE: chat
+      PGPASSWORD: *db_password
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$$NEON_URL" ]; then echo "No Neon address given - starting with an empty chat."; exit 0; fi
+        if [ "$$(psql -tAc "SELECT to_regclass('public.users') IS NOT NULL")" = "t" ]; then echo "The chat database already has data - nothing to copy."; exit 0; fi
+        echo "Copying everything from Neon..."
+        pg_dump --no-owner --no-privileges "$$NEON_URL" > /tmp/neon.sql || { echo "Could not read from Neon - check the address."; exit 1; }
+        psql -v ON_ERROR_STOP=1 -q < /tmp/neon.sql > /dev/null || { echo "Could not load the copy."; exit 1; }
+        echo "Copied: $$(psql -tAc "SELECT count(*) FROM users") accounts, $$(psql -tAc "SELECT count(*) FROM messages") messages."
+
+  # The chat app. Downloads the latest version from GitHub each time it starts.
+  chat:
+    image: node:22-alpine
+    container_name: chat
+    restart: unless-stopped
+    depends_on:
+      import:
+        condition: service_completed_successfully
+    ports:
+      - "8080:3000"
+    environment:
+      PGHOST: db
+      PGUSER: chat
+      PGDATABASE: chat
+      PGPASSWORD: *db_password
+      PGSSL: "false"
+      PORT: "3000"
+      NODE_ENV: production
+      DATA_DIR: /data
+      # attachments up to this size are kept for good; bigger ones for 30 days
+      KEEP_FILE_MB: "25"
+      MEDIA_BUDGET_MB: "40000"
+      FILE_EXPIRY_HOURS: "720"
+      CODE_URL: https://codeload.github.com/Purpleeds/Discord/tar.gz/refs/heads/main
+    volumes:
+      - chat-code:/app
+      - chat-files:/data
+    working_dir: /app
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "Downloading the latest chat app..."
+        if wget -qO /tmp/code.tgz "$$CODE_URL"; then
+          rm -rf /tmp/code && mkdir -p /tmp/code
+          tar xzf /tmp/code.tgz -C /tmp/code --strip-components=1
+          cp -r /tmp/code/. /app/
+          npm ci --omit=dev --no-audit --no-fund
+        elif [ -f /app/server.js ]; then
+          echo "Couldn't download it - starting the copy from last time."
+        else
+          echo "Couldn't download the app. Is the NAS online?"; exit 1
+        fi
+        exec node server.js
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+
+  # Publishes the chat at https://<address-name>.<your-tailnet>.ts.net with
+  # Tailscale Funnel. Without a key it just waits quietly.
+  funnel:
+    image: tailscale/tailscale:latest
+    container_name: chat-funnel
+    hostname: *address_name
+    restart: unless-stopped
+    depends_on:
+      - chat
+    environment:
+      TS_AUTHKEY: *ts_key
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    volumes:
+      - funnel-state:/var/lib/tailscale
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$$TS_AUTHKEY" ] && [ ! -s /var/lib/tailscale/tailscaled.state ]; then
+          echo "No Tailscale key set - the chat is only reachable at home. Add a key and recreate the project to publish it."
+          exec sleep infinity
+        fi
+        mkdir -p /config
+        cat > /config/serve.json <<'JSON'
+        {"TCP":{"443":{"HTTPS":true}},"Web":{"$${TS_CERT_DOMAIN}:443":{"Handlers":{"/":{"Proxy":"http://chat:3000"}}}},"AllowFunnel":{"$${TS_CERT_DOMAIN}:443":true}}
+        JSON
+        exec /usr/local/bin/containerboot
+
+volumes:
+  chat-db:
+  chat-code:
+  chat-files:
+  funnel-state:

@@ -103,9 +103,13 @@ per page. See `fetchLinkPreview()` in server.js.
 
 ## Deploying
 
-To run it on a Synology NAS (or any Docker host) instead, with the database
-on the NAS, follow [deploy/synology/README.md](deploy/synology/README.md):
-a Dockerfile, a compose file and a script that copies the data from Neon.
+To run it on a NAS (UGREEN, Synology) or any Docker host instead, the
+easiest way is the single file [deploy/nas/docker-compose.yml](deploy/nas/docker-compose.yml)
+(guide: [deploy/nas/README.md](deploy/nas/README.md)): app, database, a one-time
+copy from Neon and a public address, pasted into the NAS's Docker app. The
+older build-it-yourself setup is in [deploy/synology/](deploy/synology/README.md).
+The database can be given as `DATABASE_URL` or the standard `PGHOST` /
+`PGUSER` / `PGPASSWORD` / `PGDATABASE` settings.
 
 
 Render auto-deploys the `main` branch to the **Discords** web service

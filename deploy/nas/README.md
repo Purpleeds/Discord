@@ -37,3 +37,11 @@ Docker apps, or with `docker compose up -d` anywhere. No SSH needed.
   `docker exec chat-db pg_dump -U chat chat > chat-backup.sql`
 - The older multi-file setup (building the image yourself, sharing an
   existing Postgres) is in `deploy/synology/`.
+
+## Keeping an older address (e.g. Render)
+
+To keep using an address the chat had before, run that old copy in relay
+mode: on Render set `RELAY_TO` = your Funnel address (e.g.
+`https://discord.dorper-trout.ts.net`) and remove `MOVED_TO`. It then passes
+everything through to the NAS and needs no database of its own. If the NAS
+is off, visitors see a short "the chat is offline" page.

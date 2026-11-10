@@ -45,9 +45,23 @@ to do next) - read it before a big upgrade and add an entry after one.
   DM uploads/typing, friend requests and mention pushes; the client only
   hides blocked users' channel messages.
 - Server roles (`server_roles`) give name colours, member-list grouping,
-  and can unlock private channels (`channel_access`). Owner/admin powers
-  come only from `server_members.role`. Slowmode, announcement and forum
-  posting rules are enforced on the server in `channelPostBlock()`.
+  can unlock private channels (`channel_access`), and can carry powers
+  (`server_roles.permissions`, keys in `ROLE_PERMISSIONS`). Check a power with
+  `hasServerPerm()` / `requirePerm()` (owner, server admins and site admins
+  have them all; bots and the default server get none from roles) - never
+  with `canManageServer()` for something a role could be allowed. No climbing:
+  roles can only be made, edited, given or taken by someone covering all
+  their powers (`coversRole()`), and roles with powers can never be
+  auto-assigned or picked from a reaction menu. Making/removing server
+  admins and deleting the server stay owner-only. Slowmode, announcement and
+  forum posting rules are enforced on the server in `channelPostBlock()`.
+- Per-server profiles live on `server_members` (nickname, avatar_url,
+  banner_url, bio, hide_roles). Messages in server rooms get the nickname and
+  avatar from `serverLooksFor()`. Hidden roles (owner/admins, or a role with
+  `allow_hide`) are stripped from `/servers/:id/members` for viewers without
+  `manage_roles`; powers are unaffected. Banner/avatar media go through
+  `/assets` (allow-listed image/video types, `assetProblem()` checks the
+  uploader); unused assets are removed after a day.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
   `canViewChannel()` (private channels), with `readableChannelRooms()` /
   `allRoomsFor()` as the bulk version. Never check server membership

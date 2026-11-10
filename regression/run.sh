@@ -14,8 +14,10 @@ start() {
   echo "server did not start - see $LOG"; exit 1
 }
 stop() { pkill -x -f '(\S*/)?node server\.js' 2>/dev/null; sleep 1; }
-SUITES=${*:-v3_sessions v3_unread v3_files batch4_api ssrf bots_api bans setup_api calls_api batch1 batch2 batch4_ui previews_ui bots_ui setup_ui motion calls_ui v3_ui}
+SUITES=${*:-v3_sessions v3_unread v3_files permissions profiles batch4_api ssrf bots_api bans setup_api calls_api batch1 batch2 batch4_ui previews_ui bots_ui setup_ui motion calls_ui v3_ui roles_ui}
 FAILED=0
+# always test a server started here, on $DB - never one that happens to be running already
+stop
 for s in $SUITES; do
   curl -s -o /dev/null "$BASE/healthz" || start   # some suites restart the server; bring it back if one left it down
   out=$(timeout 600 node regression/$s.test.js 2>&1); code=$?

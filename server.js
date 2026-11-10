@@ -673,6 +673,31 @@ async function setupSchema() {
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`)
     .then(() => pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_text_trgm ON messages USING gin (text gin_trgm_ops)`))
     .catch(err => console.warn('Search index not created (pg_trgm unavailable?):', err.message));
+  // ---- role permissions ----
+  // server_roles.permissions: comma-separated keys from ROLE_PERMISSIONS.
+  await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS permissions TEXT DEFAULT ''`);
+  // ---- media banners + per-server profiles ----
+  // assets: small uploaded pictures/GIFs/videos for banners and server
+  // avatars, served from /assets/<key>.<ext>. Unused ones are cleared out.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS assets (
+      id SERIAL PRIMARY KEY,
+      key TEXT NOT NULL UNIQUE,
+      owner TEXT NOT NULL,
+      type TEXT NOT NULL,
+      data BYTEA NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_url TEXT`);
+  // a different name, picture, banner and bio inside one server
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS nickname TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_url TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS bio TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS hide_roles INTEGER DEFAULT 0`);
+  // roles that let their members hide their roles from everyone else
+  await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS allow_hide INTEGER DEFAULT 0`);
   // Two accounts whose names differ only by capitals ("Purple" / "purple")
   // are an impersonation tool. New names are checked in usernameTaken(); the
   // index backs that up, but can't be built if such a pair already exists.
@@ -769,7 +794,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, custom_status, pronouns, presence, avatar_version, created_at,
+  bio, banner_color, banner_url, custom_status, pronouns, presence, avatar_version, created_at,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -937,7 +962,7 @@ async function mentionFlags(username, room, text) {
   if (!wantsEveryone && !roleIds.length) return none;
   const channel = await channelForRoom(room);
   if (!channel) return none;
-  const admin = await isServerAdmin(username, channel.server_id);
+  const admin = await hasServerPerm(username, channel.server_id, 'mention_everyone');
   const roles = roleIds.length
     ? (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND id = ANY($2) AND ($3 OR mentionable = 1)`, [channel.server_id, roleIds, admin])).map(r => r.id)
     : [];
@@ -1295,6 +1320,91 @@ async function isServerOwnerLevel(username, serverId) {
   return (await isAdmin(username)) || srv.owner === username;
 }
 
+// ---- Role permissions ----
+// Roles can carry powers that used to belong only to server admins. The
+// owner, server admins (server_members.role = 'admin') and site admins
+// always have all of them; everyone else has the union of their roles'.
+// Bots never get powers from roles (a leaked bot token shouldn't run a
+// server - same reason bots can't be admins), and the open default server
+// stays site-admin-managed, so roles there grant nothing.
+const ROLE_PERMISSIONS = [
+  'manage_server',        // name, icon, banner, description, welcome channel, swear filter, invite reset
+  'manage_channels',      // create, edit, reorder and delete channels and categories; who sees private ones
+  'manage_roles',         // create, edit and hand out roles (only ones with powers they have themselves)
+  'manage_messages',      // delete and pin anyone's messages and files, end polls, threads; skip slowmode, post in announcement channels
+  'kick_members',         // kick members (not admins) and disconnect people from voice
+  'manage_integrations',  // webhooks, server slash commands, adding bots
+  'manage_events',        // create, edit and cancel events
+  'mention_everyone'      // @everyone, and roles that aren't mentionable
+];
+const ALL_PERMISSIONS = new Set(ROLE_PERMISSIONS);
+function cleanPermissions(list) {
+  return [...new Set((Array.isArray(list) ? list : String(list || '').split(',')).map(p => String(p).trim()).filter(p => ALL_PERMISSIONS.has(p)))];
+}
+function permissionsFromText(text) { return cleanPermissions(String(text || '').split(',')); }
+
+// Every power `username` has in this server, as a Set.
+async function serverPermissions(username, serverId) {
+  if (await isAdmin(username)) return new Set(ALL_PERMISSIONS);
+  const srv = await getServerById(serverId);
+  if (!srv || srv.is_default) return new Set();
+  if (srv.owner === username) return new Set(ALL_PERMISSIONS);
+  const member = await one(`SELECT role FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, username]);
+  if (!member) return new Set();
+  if (member.role === 'admin') return new Set(ALL_PERMISSIONS);
+  if (await isBotUser(username)) return new Set();
+  const rows = await q(
+    `SELECT r.permissions FROM server_roles r JOIN server_member_roles m ON m.role_id = r.id
+     WHERE m.server_id = $1 AND m.username = $2`,
+    [serverId, username]
+  );
+  const out = new Set();
+  for (const row of rows) for (const perm of permissionsFromText(row.permissions)) out.add(perm);
+  return out;
+}
+async function hasServerPerm(username, serverId, perm) {
+  return (await serverPermissions(username, serverId)).has(perm);
+}
+// For a handler: true, or answers 403 and returns false.
+async function requirePerm(req, res, serverId, perm, what) {
+  if (await hasServerPerm(req.username, serverId, perm)) return true;
+  res.status(403).json({ error: `you need the "${PERMISSION_LABELS[perm]}" permission to ${what}` });
+  return false;
+}
+const PERMISSION_LABELS = {
+  manage_server: 'Manage server', manage_channels: 'Manage channels', manage_roles: 'Manage roles',
+  manage_messages: 'Manage messages', kick_members: 'Kick members', manage_integrations: 'Manage bots & webhooks',
+  manage_events: 'Manage events', mention_everyone: 'Mention @everyone'
+};
+// No climbing: a role (and so a member) can only be given, taken or edited
+// by someone who already has every power that role carries.
+function coversRole(mine, rolePermissions) {
+  return permissionsFromText(rolePermissions).every(p => mine.has(p));
+}
+
+// ---- Per-server profiles ----
+// Inside one server someone can have their own nickname, picture, banner and
+// bio. The owner, admins and members of a role with "can hide their roles"
+// can also hide their roles: then everyone except people who manage roles
+// sees them as a plain member (no badge, colour or role list). Their powers
+// are unchanged - hiding is about how they look, not what they can do.
+async function canHideRoles(username, serverId) {
+  const srv = await getServerById(serverId);
+  if (!srv || srv.is_default) return false;
+  if (srv.owner === username || (await isAdmin(username))) return true;
+  const row = await one(
+    `SELECT (m.role = 'admin') AS admin, EXISTS (
+       SELECT 1 FROM server_member_roles mr JOIN server_roles r ON r.id = mr.role_id
+       WHERE mr.server_id = m.server_id AND mr.username = m.username AND r.allow_hide = 1) AS allowed
+     FROM server_members m WHERE m.server_id = $1 AND m.username = $2`,
+    [serverId, username]
+  );
+  return !!(row && (row.admin || row.allowed));
+}
+function serverProfileFromRow(m) {
+  return { nickname: m.nickname || '', avatarUrl: m.avatar_url || '', bannerUrl: m.banner_url || '', bio: m.bio || '', hideRoles: !!m.hide_roles };
+}
+
 // Everything the client needs to draw the server rail + sidebar. This used
 // to run ~6 permission queries per server (each re-reading the server and
 // the user), on every "serversChanged" event, for every member. Now it's
@@ -1306,11 +1416,12 @@ function serverIconUrlOf(s) {
 }
 function serverBannerUrlOf(s) {
   if (!s.banner_url) return '';
+  if (String(s.banner_url).startsWith('/assets/')) return s.banner_url;
   return `/server-banners/${s.id}?v=${s.banner_version || '0'}`;
 }
 
 function roleFromRow(r) {
-  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, mentionable: !!r.mentionable, autoAssign: !!r.auto_assign, position: r.position };
+  return { id: r.id, name: r.name, color: r.color || '', hoist: !!r.hoist, mentionable: !!r.mentionable, autoAssign: !!r.auto_assign, allowHide: !!r.allow_hide, position: r.position, permissions: permissionsFromText(r.permissions) };
 }
 
 async function serversForUser(username) {
@@ -1319,7 +1430,7 @@ async function serversForUser(username) {
     `SELECT s.id, s.name, s.owner, s.invite_code, s.is_default, s.censor_swears, s.icon_version,
             s.description, s.banner_color, s.banner_version, s.system_channel_id,
             CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
-            CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' ELSE 'data:' END AS banner_url
+            CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' WHEN left(s.banner_url, 8) = '/assets/' THEN s.banner_url ELSE 'data:' END AS banner_url
      FROM servers s
      WHERE (s.is_default = 1 AND NOT $2)
         OR s.id IN (SELECT server_id FROM server_members WHERE username = $1)
@@ -1327,9 +1438,10 @@ async function serversForUser(username) {
     [username, await isBotUser(username)]
   );
   if (!rows.length) return [];
+  const isBot = await isBotUser(username);
   const ids = rows.map(s => s.id);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
-    q(`SELECT server_id, role FROM server_members WHERE username = $1`, [username]),
+    q(`SELECT server_id, role, nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids]),
@@ -1342,6 +1454,7 @@ async function serversForUser(username) {
   const privateIds = visibleChannels.filter(c => c.is_private).map(c => c.id);
   const accessRows = privateIds.length ? await q(`SELECT * FROM channel_access WHERE channel_id = ANY($1)`, [privateIds]) : [];
   const roles = new Map(roleRows.map(r => [r.server_id, r.role]));
+  const myMemberRows = new Map(roleRows.map(r => [r.server_id, r]));
   const channelsBy = new Map();
   for (const c of visibleChannels) {
     if (!channelsBy.has(c.server_id)) channelsBy.set(c.server_id, []);
@@ -1356,6 +1469,14 @@ async function serversForUser(username) {
     const isOwner = s.owner === username;
     const role = isOwner ? 'owner' : roles.get(s.id);
     const canManage = admin || (!s.is_default && (isOwner || role === 'admin'));
+    let permissions = [];
+    if (canManage) permissions = [...ALL_PERMISSIONS];
+    else if (!s.is_default && !isBot) {
+      const mine = new Set(myRoleRows.filter(r => r.server_id === s.id).map(r => r.role_id));
+      const set = new Set();
+      for (const r of customRoleRows) if (r.server_id === s.id && mine.has(r.id)) for (const p of permissionsFromText(r.permissions)) set.add(p);
+      permissions = [...set];
+    }
     return {
       id: s.id,
       name: s.name,
@@ -1366,6 +1487,10 @@ async function serversForUser(username) {
       isServerAdmin: admin || role === 'admin' || role === 'owner',
       canManage,
       canManageOwnerLevel: admin || isOwner,
+      permissions,
+      myServerProfile: myMemberRows.has(s.id) ? serverProfileFromRow(myMemberRows.get(s.id)) : null,
+      canHideRoles: !s.is_default && (admin || isOwner || role === 'admin' ||
+        customRoleRows.some(r => r.server_id === s.id && r.allow_hide && myRoleRows.some(m => m.server_id === s.id && m.role_id === r.id))),
       censorSwears: !!s.censor_swears,
       inviteCode: (isOwner || admin || !s.is_default) ? s.invite_code : '',
       description: s.description || '',
@@ -1386,7 +1511,7 @@ async function serversForUser(username) {
         categoryId: c.category_id || null,
         isPrivate: !!c.is_private,
         kind: ['forum', 'voice'].includes(c.kind) ? c.kind : 'text',
-        access: canManage && c.is_private ? {
+        access: (canManage || permissions.includes('manage_channels')) && c.is_private ? {
           roleIds: accessRows.filter(a => a.channel_id === c.id && a.role_id).map(a => a.role_id),
           usernames: accessRows.filter(a => a.channel_id === c.id && a.username).map(a => a.username)
         } : null
@@ -1410,10 +1535,12 @@ async function notifyServerMembers(serverId, event, payload) {
 // room? True for a global admin anywhere, or a server admin/owner inside
 // their own server's channels. DMs and group chats aren't moderated by
 // server admins - only a global admin can act there.
-async function canModerateRoom(username, room) {
+// Moderation inside a server channel (or one of its threads): the given
+// role permission, which the owner, server admins and site admins always have.
+async function canModerateRoom(username, room, perm = 'manage_messages') {
   if (await isAdmin(username)) return true;
   const channel = await channelForRoom(room);
-  if (channel) return isServerAdmin(username, channel.server_id);
+  if (channel) return hasServerPerm(username, channel.server_id, perm);
   return false;
 }
 
@@ -1568,7 +1695,7 @@ async function channelPostBlock(username, room) {
   const channel = await getChannelByRoom(room);
   if (channel && channel.kind === 'forum') return 'This is a forum - start a new post instead.';
   if (!channel || (!channel.admins_only && !channel.slowmode_seconds)) return null;
-  if (await isServerAdmin(username, channel.server_id)) return null;
+  if (await hasServerPerm(username, channel.server_id, 'manage_messages')) return null;
   if (channel.admins_only) return 'Only admins can send messages in this channel.';
   const key = room + '\n' + username;
   const wait = (slowmodeLast.get(key) || 0) + channel.slowmode_seconds * 1000 - Date.now();
@@ -1599,6 +1726,7 @@ function profileFromRow(u) {
     censorSwears: !!u.censor_swears,
     bio: u.bio || '',
     bannerColor: u.banner_color || '',
+    bannerUrl: u.banner_url || '',
     customStatus: u.custom_status || '',
     pronouns: u.pronouns || '',
     memberSince: u.created_at || null,
@@ -1650,16 +1778,16 @@ async function replyPreviews(ids) {
   const out = new Map();
   const wanted = [...new Set(ids.filter(Boolean))];
   if (!wanted.length) return out;
-  const rows = await q(`SELECT id, "user", left(text, 180) AS text, deleted_at, webhook_id, author_name FROM messages WHERE id = ANY($1)`, [wanted]);
-  const authors = await getUsers(rows.map(r => r.user));
+  const rows = await q(`SELECT id, room, "user", left(text, 180) AS text, deleted_at, webhook_id, author_name FROM messages WHERE id = ANY($1)`, [wanted]);
+  const [authors, serverLooks] = await Promise.all([getUsers(rows.map(r => r.user)), serverLooksFor(rows)]);
   for (const row of rows) {
     const u = row.webhook_id ? null : authors.get(row.user);
     out.set(row.id, {
       id: row.id,
       user: row.user,
       bot: !!row.webhook_id,
-      displayName: row.webhook_id ? (row.author_name || 'Webhook') : (u ? (u.display_name || u.username) : row.user),
-      avatarUrl: u ? avatarUrlOf(u) : '',
+      displayName: row.webhook_id ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
+      avatarUrl: row.webhook_id ? '' : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
       text: row.deleted_at ? '[message deleted]' : String(row.text || '')
     });
   }
@@ -1707,6 +1835,34 @@ async function pollsFor(messageIds) {
   return out;
 }
 
+// Server nicknames and pictures for the authors of messages in server
+// channels and threads: Map of "room\nusername" -> { nickname, avatarUrl }.
+async function serverLooksFor(rows) {
+  const out = new Map();
+  const rooms = [...new Set(rows.filter(r => !r.webhook_id && !/^(dm|group):/.test(String(r.room))).map(r => r.room))];
+  if (!rooms.length) return out;
+  const roomServers = await q(
+    `SELECT room, server_id FROM server_channels WHERE room = ANY($1)
+     UNION ALL
+     SELECT 'thread:' || t.id, c.server_id FROM threads t JOIN server_channels c ON c.room = t.parent_room WHERE 'thread:' || t.id = ANY($1)`,
+    [rooms]
+  );
+  if (!roomServers.length) return out;
+  const looks = await q(
+    `SELECT server_id, username, nickname, avatar_url FROM server_members
+     WHERE server_id = ANY($1) AND username = ANY($2) AND (COALESCE(nickname, '') <> '' OR COALESCE(avatar_url, '') <> '')`,
+    [[...new Set(roomServers.map(r => r.server_id))], [...new Set(rows.map(r => r.user))]]
+  );
+  if (!looks.length) return out;
+  const serverOf = new Map(roomServers.map(r => [r.room, r.server_id]));
+  const byServer = new Map(looks.map(l => [l.server_id + '\n' + l.username, l]));
+  for (const row of rows) {
+    const look = byServer.get(serverOf.get(row.room) + '\n' + row.user);
+    if (look) out.set(row.room + '\n' + row.user, { nickname: look.nickname || '', avatarUrl: look.avatar_url || '' });
+  }
+  return out;
+}
+
 async function normaliseMessages(rows) {
   rows = rows.filter(Boolean);
   if (!rows.length) return [];
@@ -1719,6 +1875,7 @@ async function normaliseMessages(rows) {
     q(`SELECT message_id, emoji, role_id FROM reaction_roles WHERE message_id = ANY($1)`, [rows.map(r => r.id)])
   ]);
   const threadsBy = new Map(threadRows.map(t => [t.starter_message_id, threadFromRow(t)]));
+  const serverLooks = await serverLooksFor(rows);
   const reactionRolesBy = new Map();
   for (const r of roleRows) {
     if (!reactionRolesBy.has(r.message_id)) reactionRolesBy.set(r.message_id, []);
@@ -1735,8 +1892,8 @@ async function normaliseMessages(rows) {
       bot: !!row.webhook_id,
       botAccount: !!(u && u.is_bot), // written by a bot account (has a profile, unlike webhooks)
       webhookId: row.webhook_id || null,
-      displayName: row.webhook_id ? (row.author_name || 'Webhook') : (u ? (u.display_name || u.username) : row.user),
-      avatarUrl: u ? avatarUrlOf(u) : '',
+      displayName: row.webhook_id ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
+      avatarUrl: row.webhook_id ? '' : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
       commandName: row.command_name || '',
       invokedBy: row.invoked_by || '',
       reactionRoles: deleted ? [] : (reactionRolesBy.get(row.id) || []),
@@ -2051,6 +2208,84 @@ app.get('/healthz', route(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// ---------------- ASSETS (banners, server avatars) ----------------
+// Pictures, GIFs and short videos for profile banners, server banners and
+// per-server avatars. Only these types are accepted, and the type is
+// stored with the bytes, so nothing an asset serves can run as a page.
+const ASSET_TYPES = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif',
+  'video/mp4': 'mp4', 'video/webm': 'webm'
+};
+const ASSET_MAX_BYTES = Math.max(1, Number(process.env.ASSET_MAX_MB || 8)) * 1024 * 1024;
+const ASSET_URL_RE = /^\/assets\/([A-Za-z0-9_-]{16,40})\.(png|jpg|gif|webp|avif|mp4|webm)$/;
+// Why `url` can't be used as a banner (allowVideo) or avatar - or null if it can.
+async function assetProblem(url, owner, allowVideo) {
+  if (!url) return null;
+  const m = ASSET_URL_RE.exec(String(url));
+  if (!m) return 'upload the picture or video first';
+  const row = await one(`SELECT owner, type FROM assets WHERE key = $1`, [m[1]]);
+  if (!row) return 'that upload has expired - please upload it again';
+  if (row.owner !== owner) return 'that upload belongs to someone else';
+  if (!allowVideo && row.type.startsWith('video/')) return 'this needs a picture or GIF, not a video';
+  return null;
+}
+app.post('/assets', requireAuth, route(async (req, res) => {
+  const type = String(req.headers['x-file-type'] || '').toLowerCase();
+  if (!ASSET_TYPES[type]) return res.status(400).json({ error: 'use a PNG, JPG, GIF, WEBP or AVIF picture, or an MP4 or WEBM video' });
+  const length = Number(req.headers['content-length'] || 0);
+  if (length > ASSET_MAX_BYTES) return res.status(413).json({ error: `that file is too big - the limit is ${Math.round(ASSET_MAX_BYTES / 1048576)} MB` });
+  if (rateLimited('asset:' + req.username, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many uploads - wait a few minutes' });
+  let buffer;
+  try { buffer = await bufferUploadStream(req, ASSET_MAX_BYTES); }
+  catch (err) { return res.status(err.message === 'file is too large' ? 413 : 400).json({ error: err.message }); }
+  if (!buffer.length) return res.status(400).json({ error: 'the file is empty' });
+  const key = crypto.randomBytes(18).toString('base64url');
+  await pool.query(`INSERT INTO assets (key, owner, type, data, size) VALUES ($1, $2, $3, $4, $5)`, [key, req.username, type, buffer, buffer.length]);
+  res.status(201).json({ url: `/assets/${key}.${ASSET_TYPES[type]}`, type, size: buffer.length });
+}));
+const assetCache = new Map(); // key -> { type, buffer } (small LRU)
+app.get('/assets/:file', route(async (req, res) => {
+  const m = ASSET_URL_RE.exec('/assets/' + req.params.file);
+  if (!m) return res.status(404).end();
+  const key = m[1];
+  let entry = assetCache.get(key);
+  if (!entry) {
+    const row = await one(`SELECT type, data FROM assets WHERE key = $1`, [key]);
+    if (!row) return res.status(404).end();
+    entry = { type: row.type, buffer: row.data };
+    if (entry.buffer.length < 4 * 1024 * 1024) {
+      if (assetCache.size >= 40) assetCache.delete(assetCache.keys().next().value);
+      assetCache.set(key, entry);
+    }
+  }
+  res.setHeader('Content-Type', entry.type);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+  res.setHeader('Accept-Ranges', 'bytes');
+  const total = entry.buffer.length;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range || ''));
+  if (range && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, total - Number(range[2]));
+    const end = Math.min(range[1] && range[2] ? Number(range[2]) : total - 1, total - 1);
+    if (!(start >= 0) || start > end) { res.setHeader('Content-Range', `bytes */${total}`); return res.status(416).end(); }
+    res.status(206).setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+    return res.end(entry.buffer.subarray(start, end + 1));
+  }
+  res.end(entry.buffer);
+}));
+// Uploads nobody ended up using (a banner picked then cancelled, an old
+// banner that was replaced) are removed after a day.
+async function removeUnusedAssets() {
+  const removed = await q(
+    `DELETE FROM assets a WHERE a.created_at < NOW() - INTERVAL '1 day'
+       AND NOT EXISTS (SELECT 1 FROM users u WHERE u.banner_url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.banner_url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%')
+     RETURNING key`
+  );
+  for (const r of removed) assetCache.delete(r.key);
+}
+
 // ---------------- HTTP ROUTES ----------------
 const MIN_PASSWORD = 8; // for NEW passwords; older, shorter ones still log in
 const PASSWORD_RULE = `password must be at least ${MIN_PASSWORD} characters`;
@@ -2201,6 +2436,11 @@ app.post('/profile', requireAuth, route(async (req, res) => {
     const color = String(body.bannerColor || '');
     if (color && !validHexColor(color)) return res.status(400).json({ error: 'banner colour must look like #5865f2' });
     set('banner_color', color);
+  }
+  if ('bannerUrl' in body) {
+    const problem = await assetProblem(body.bannerUrl, req.username, true);
+    if (problem) return res.status(400).json({ error: problem });
+    set('banner_url', String(body.bannerUrl || ''));
   }
 
   if (sets.length) {
@@ -2575,7 +2815,7 @@ app.get('/servers/:id/events', requireAuth, route(async (req, res) => {
 
 app.post('/servers/:id/events', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can schedule events' });
+  if (!(await requirePerm(req, res, serverId, 'manage_events', 'schedule events'))) return;
   const input = await eventInput(serverId, req.username, req.body, null);
   if (input.error) return res.status(400).json({ error: input.error });
   const ev = await one(
@@ -2591,7 +2831,7 @@ app.post('/servers/:id/events', requireAuth, route(async (req, res) => {
 async function eventForManager(req, res) {
   const ev = await one(`SELECT * FROM server_events WHERE id = $1`, [Number(req.params.id)]);
   if (!ev || ev.cancelled || !(await canSeeEvent(req.username, ev))) { res.status(404).json({ error: 'event not found' }); return null; }
-  if (!(await canManageServer(req.username, ev.server_id))) { res.status(403).json({ error: 'only server admins can change events' }); return null; }
+  if (!(await requirePerm(req, res, ev.server_id, 'manage_events', 'change events'))) return null;
   return ev;
 }
 
@@ -2993,7 +3233,7 @@ app.post('/bots/:name/servers', requireAuth, route(async (req, res) => {
   const srv = await getServerById(Number(req.body.serverId) || 0);
   if (!srv || !(await isServerMember(req.username, srv.id))) return res.status(404).json({ error: 'server not found' });
   if (srv.is_default) return res.status(400).json({ error: 'bots can\'t join the open general server - add it to one of your own servers' });
-  if (!(await canManageServer(req.username, srv.id))) return res.status(403).json({ error: 'you can only add bots to servers you own or are an admin of' });
+  if (!(await requirePerm(req, res, srv.id, 'manage_integrations', 'add bots to this server'))) return;
   await addServerMember(srv, bot.username);
   res.json((await botsOf(req.username)).find(b => b.username === bot.username));
 }));
@@ -3120,7 +3360,7 @@ app.post('/api/webhooks/:id/:token', route(async (req, res) => {
 // ---- managing webhooks (server admins)
 async function managedWebhook(req, res) {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) { res.status(403).json({ error: 'only server admins can manage webhooks' }); return null; }
+  if (!(await requirePerm(req, res, serverId, 'manage_integrations', 'manage webhooks'))) return null;
   const hook = await one(`SELECT * FROM webhooks WHERE id = $1 AND server_id = $2`, [Number(req.params.hookId) || 0, serverId]);
   if (!hook) { res.status(404).json({ error: 'webhook not found' }); return null; }
   return hook;
@@ -3128,13 +3368,13 @@ async function managedWebhook(req, res) {
 
 app.get('/servers/:id/webhooks', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage webhooks' });
+  if (!(await requirePerm(req, res, serverId, 'manage_integrations', 'manage webhooks'))) return;
   res.json((await q(`SELECT * FROM webhooks WHERE server_id = $1 ORDER BY id`, [serverId])).map(webhookFromRow));
 }));
 
 app.post('/servers/:id/webhooks', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage webhooks' });
+  if (!(await requirePerm(req, res, serverId, 'manage_integrations', 'manage webhooks'))) return;
   const { channel, error } = await webhookChannel(serverId, req.body.channelId);
   if (error) return res.status(400).json({ error });
   const count = await one(`SELECT count(*)::int AS n FROM webhooks WHERE server_id = $1`, [serverId]);
@@ -3204,7 +3444,7 @@ function commandInputError(input) {
 }
 async function managedCommand(req, res) {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) { res.status(403).json({ error: 'only server admins can manage commands' }); return null; }
+  if (!(await requirePerm(req, res, serverId, 'manage_integrations', 'manage slash commands'))) return null;
   const cmd = await one(`SELECT * FROM server_commands WHERE id = $1 AND server_id = $2`, [Number(req.params.commandId) || 0, serverId]);
   if (!cmd) { res.status(404).json({ error: 'command not found' }); return null; }
   return cmd;
@@ -3226,7 +3466,7 @@ app.get('/servers/:id/commands', requireAuth, route(async (req, res) => {
 
 app.post('/servers/:id/commands', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage commands' });
+  if (!(await requirePerm(req, res, serverId, 'manage_integrations', 'manage slash commands'))) return;
   const input = cleanCommandInput({ description: '', ...req.body, name: req.body.name || '', response: req.body.response || '' });
   const problem = commandInputError(input);
   if (problem) return res.status(400).json({ error: problem });
@@ -3292,7 +3532,7 @@ async function reactionRoleMessage(req, res) {
   const row = await getMessageById(Number(req.params.id) || 0);
   const channel = row && !row.deleted_at ? await channelForRoom(row.room) : null;
   if (!channel || !(await isAllowedRoom(req.username, row.room))) { res.status(404).json({ error: 'message not found' }); return null; }
-  if (!(await canManageServer(req.username, channel.server_id))) { res.status(403).json({ error: 'only server admins can set up reaction roles' }); return null; }
+  if (!(await requirePerm(req, res, channel.server_id, 'manage_roles', 'set up reaction roles'))) return null;
   return { row, channel };
 }
 
@@ -3301,8 +3541,9 @@ app.post('/messages/:id/reaction-roles', requireAuth, route(async (req, res) => 
   if (!target) return;
   const emoji = String(req.body.emoji || '');
   if (!REACTION_EMOJIS.has(emoji)) return res.status(400).json({ error: 'pick one of the reaction emojis' });
-  const role = await one(`SELECT id FROM server_roles WHERE id = $1 AND server_id = $2`, [Number(req.body.roleId) || 0, target.channel.server_id]);
+  const role = await one(`SELECT id, permissions FROM server_roles WHERE id = $1 AND server_id = $2`, [Number(req.body.roleId) || 0, target.channel.server_id]);
   if (!role) return res.status(400).json({ error: 'that role is not in this server' });
+  if (permissionsFromText(role.permissions).length) return res.status(400).json({ error: "Roles with permissions can't be picked from a reaction menu - anyone could give themselves those powers. Hand them out in Members instead." });
   const count = await one(`SELECT count(*)::int AS n FROM reaction_roles WHERE message_id = $1 AND emoji <> $2`, [target.row.id, emoji]);
   if (count.n >= MAX_REACTION_ROLES_PER_MESSAGE) return res.status(400).json({ error: `a message can have up to ${MAX_REACTION_ROLES_PER_MESSAGE} reaction roles` });
   await pool.query(
@@ -3975,7 +4216,11 @@ async function applyServerBanner(serverId, body) {
   // "/server-banners/..." is our own cached URL echoed back = unchanged
   if ('bannerUrl' in body && !String(body.bannerUrl || '').startsWith('/server-banners/')) {
     const banner = cleanText(body.bannerUrl || '', 2100000);
-    if (banner && !banner.startsWith('data:image/')) return 'banner must be an uploaded image';
+    // an uploaded picture, GIF or video (see /assets), or an older inline picture
+    if (banner.startsWith('/assets/')) {
+      const problem = await assetProblem(banner, body._uploader, true);
+      if (problem) return problem;
+    } else if (banner && !banner.startsWith('data:image/')) return 'banner must be an uploaded picture, GIF or video';
     const version = banner ? crypto.createHash('md5').update(banner).digest('hex').slice(0, 10) : null;
     await pool.query(`UPDATE servers SET banner_url = $1, banner_version = $2 WHERE id = $3`, [banner, version, serverId]);
     imageCache.delete('b:' + serverId);
@@ -4004,7 +4249,7 @@ app.post('/servers', requireAuth, route(async (req, res) => {
   );
   const serverId = srv.id;
   await pool.query(`INSERT INTO server_members (server_id, username, role) VALUES ($1, $2, 'owner') ON CONFLICT DO NOTHING`, [serverId, req.username]);
-  await applyServerBanner(serverId, req.body);
+  await applyServerBanner(serverId, { ...req.body, _uploader: req.username });
 
   // categories + channels from the template
   let position = 0, categoryPosition = 0, generalId = null;
@@ -4050,7 +4295,7 @@ async function addServerMember(srv, username) {
   // and a reload that started before the insert would wipe the message.
   if (joined) {
     // auto-roles: given to everyone who joins (they can unlock private channels)
-    const autoRoles = (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND auto_assign = 1`, [srv.id])).map(r => r.id);
+    const autoRoles = (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND auto_assign = 1 AND COALESCE(permissions, '') = ''`, [srv.id])).map(r => r.id);
     if (autoRoles.length) {
       await pool.query(
         `INSERT INTO server_member_roles (server_id, role_id, username) SELECT $1, unnest($2::int[]), $3 ON CONFLICT DO NOTHING`,
@@ -4090,13 +4335,13 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
 
 app.post('/servers/:id/update', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can do that' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change the server'))) return;
   const srv = await getServerById(serverId);
   const name = cleanText(req.body.name || srv.name, 60) || srv.name;
   if ('description' in req.body) {
     await pool.query(`UPDATE servers SET description = $1 WHERE id = $2`, [cleanText(req.body.description || '', 300), serverId]);
   }
-  const bannerProblem = await applyServerBanner(serverId, req.body);
+  const bannerProblem = await applyServerBanner(serverId, { ...req.body, _uploader: req.username });
   if (bannerProblem) return res.status(400).json({ error: bannerProblem });
   if ('systemChannelId' in req.body) {
     const channelId = Number(req.body.systemChannelId) || null;
@@ -4125,7 +4370,7 @@ app.post('/servers/:id/update', requireAuth, route(async (req, res) => {
 // of anyone's personal setting.
 app.post('/servers/:id/censor', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only a server admin or owner can change this' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change the server'))) return;
   const enabled = req.body.enabled ? 1 : 0;
   await pool.query(`UPDATE servers SET censor_swears = $1 WHERE id = $2`, [enabled, serverId]);
   await notifyServerMembers(serverId, 'serversChanged', {});
@@ -4134,7 +4379,7 @@ app.post('/servers/:id/censor', requireAuth, route(async (req, res) => {
 
 app.post('/servers/:id/channels', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can add channels' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'add channels'))) return;
   const name = cleanText(req.body.name, 32).toLowerCase().replace(/^#/, '').replace(/\s+/g, '-');
   if (!validChannelName(name)) return res.status(400).json({ error: 'channel name must be 2-32 letters, numbers, hyphens or underscores' });
 
@@ -4162,7 +4407,7 @@ app.post('/servers/:id/channels', requireAuth, route(async (req, res) => {
 app.post('/servers/:id/channels/:channelId/delete', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const channelId = Number(req.params.channelId);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can delete channels' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'delete channels'))) return;
   const channel = await getChannelById(channelId);
   if (!channel || channel.server_id !== serverId) return res.status(404).json({ error: 'channel not found' });
   if (DEFAULT_CHANNELS.includes(channel.room)) return res.status(400).json({ error: 'default channels cannot be deleted' });
@@ -4224,6 +4469,44 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   res.json({ message: 'ok' });
 }));
 
+// Your own profile inside one server.
+app.post('/servers/:id/profile', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv || srv.is_default || !(await one(`SELECT 1 FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]))) {
+    return res.status(404).json({ error: 'server not found (server profiles work in servers you have joined, not the open general one)' });
+  }
+  const body = req.body || {};
+  const sets = [], values = [];
+  const set = (col, val) => { values.push(val); sets.push(`${col} = $${values.length}`); };
+  if ('nickname' in body) set('nickname', cleanText(body.nickname || '', 32));
+  if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
+  if ('avatarUrl' in body) {
+    const problem = await assetProblem(body.avatarUrl, req.username, false);
+    if (problem) return res.status(400).json({ error: problem });
+    set('avatar_url', String(body.avatarUrl || ''));
+  }
+  if ('bannerUrl' in body) {
+    const problem = await assetProblem(body.bannerUrl, req.username, true);
+    if (problem) return res.status(400).json({ error: problem });
+    set('banner_url', String(body.bannerUrl || ''));
+  }
+  if ('hideRoles' in body) {
+    if (body.hideRoles && !(await canHideRoles(req.username, serverId))) {
+      return res.status(403).json({ error: 'only admins, and roles that allow it, can hide their roles' });
+    }
+    set('hide_roles', body.hideRoles ? 1 : 0);
+  }
+  if (sets.length) {
+    values.push(serverId, req.username);
+    await pool.query(`UPDATE server_members SET ${sets.join(', ')} WHERE server_id = $${values.length - 1} AND username = $${values.length}`, values);
+  }
+  await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+  sendToUser(req.username, 'serversChanged', {});
+  const row = await one(`SELECT nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  res.json(serverProfileFromRow(row));
+}));
+
 app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   if (!(await isServerMember(req.username, serverId))) return res.status(403).json({ error: 'forbidden' });
@@ -4235,10 +4518,17 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
     if (!channel || channel.server_id !== serverId || !(await canViewChannel(req.username, channel))) return res.status(404).json({ error: 'channel not found' });
     names = await filterChannelViewers(channel, names);
   }
-  const [roleRows, customRows] = await Promise.all([
-    q(`SELECT username, role FROM server_members WHERE server_id = $1`, [serverId]),
-    q(`SELECT username, role_id FROM server_member_roles WHERE server_id = $1`, [serverId])
+  const [roleRows, customRows, hiders, viewerPerms] = await Promise.all([
+    q(`SELECT username, role, nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE server_id = $1`, [serverId]),
+    q(`SELECT username, role_id FROM server_member_roles WHERE server_id = $1`, [serverId]),
+    // who may hide their roles: admins, and members of a role that allows it
+    q(`SELECT DISTINCT mr.username FROM server_member_roles mr JOIN server_roles r ON r.id = mr.role_id
+       WHERE mr.server_id = $1 AND r.allow_hide = 1`, [serverId]),
+    serverPermissions(req.username, serverId)
   ]);
+  const memberRows = new Map(roleRows.map(r => [r.username, r]));
+  const mayHide = new Set(hiders.map(r => r.username));
+  const seesHidden = viewerPerms.has('manage_roles');
   const roles = new Map(roleRows.map(r => [r.username, r.role]));
   const customRoles = new Map();
   for (const r of customRows) {
@@ -4250,8 +4540,13 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
   for (const name of names) {
     const u = users.get(name);
     const profile = u ? profileFromRow(u) : { username: name, displayName: name, avatarUrl: '', isAdmin: false };
-    const role = srv.owner === name ? 'owner' : (roles.get(name) === 'admin' ? 'admin' : 'member');
-    out.push({ ...profile, role, roleIds: customRoles.get(name) || [], online: isVisiblyOnline(name) });
+    let role = srv.owner === name ? 'owner' : (roles.get(name) === 'admin' ? 'admin' : 'member');
+    let roleIds = customRoles.get(name) || [];
+    const row = memberRows.get(name);
+    const serverProfile = row ? serverProfileFromRow(row) : null;
+    const hidden = !!(row && row.hide_roles && (role !== 'member' || mayHide.has(name)));
+    if (hidden && name !== req.username && !seesHidden) { role = 'member'; roleIds = []; }
+    out.push({ ...profile, role, roleIds, rolesHidden: hidden, serverProfile, online: isVisiblyOnline(name) });
   }
   out.sort((a, b) => (Number(b.online) - Number(a.online)) || a.username.localeCompare(b.username));
   res.json(out);
@@ -4297,13 +4592,18 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
   const srv = await getServerById(serverId);
   if (!srv) return res.status(404).json({ error: 'server not found' });
   if (srv.is_default) return res.status(400).json({ error: 'everyone is in the general server - use a site-wide action instead' });
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can kick members' });
+  if (!(await requirePerm(req, res, serverId, 'kick_members', 'kick members'))) return;
   if (target === srv.owner) return res.status(400).json({ error: 'the owner cannot be kicked' });
   if (target === req.username) return res.status(400).json({ error: 'use Leave Server instead' });
   const role = await serverMemberRole(target, serverId);
   if (!role) return res.status(404).json({ error: 'user is not a member of this server' });
   if (role === 'admin' && !(await isServerOwnerLevel(req.username, serverId))) {
     return res.status(403).json({ error: 'only the owner can kick another server admin' });
+  }
+  // a moderator can't kick someone with powers they don't have themselves
+  const mine = await serverPermissions(req.username, serverId);
+  if ([...(await serverPermissions(target, serverId))].some(p => !mine.has(p))) {
+    return res.status(403).json({ error: 'you can only kick members whose permissions you have yourself' });
   }
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, target]);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
@@ -4318,7 +4618,7 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
 app.post('/servers/:id/channels/:channelId/update', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const channelId = Number(req.params.channelId);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can edit channels' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'edit channels'))) return;
   const channel = await getChannelById(channelId);
   if (!channel || channel.server_id !== serverId) return res.status(404).json({ error: 'channel not found' });
 
@@ -4373,7 +4673,7 @@ async function applyOrder(table, serverId, ids) {
 
 app.post('/servers/:id/channels/reorder', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can reorder channels' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'reorder channels'))) return;
   if (!(await applyOrder('server_channels', serverId, req.body.order))) return res.status(400).json({ error: 'order must list every channel in this server exactly once' });
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok' });
@@ -4382,7 +4682,7 @@ app.post('/servers/:id/channels/reorder', requireAuth, route(async (req, res) =>
 // ---- categories (collapsible groups of channels)
 app.post('/servers/:id/categories', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'manage categories'))) return;
   const name = cleanText(req.body.name, 40);
   if (!name) return res.status(400).json({ error: 'the category needs a name' });
   const count = await one(`SELECT count(*)::int AS n, COALESCE(max(position), -1) AS top FROM server_categories WHERE server_id = $1`, [serverId]);
@@ -4394,7 +4694,7 @@ app.post('/servers/:id/categories', requireAuth, route(async (req, res) => {
 
 app.post('/servers/:id/categories/reorder', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'manage categories'))) return;
   if (!(await applyOrder('server_categories', serverId, req.body.order))) return res.status(400).json({ error: 'order must list every category in this server exactly once' });
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok' });
@@ -4402,7 +4702,7 @@ app.post('/servers/:id/categories/reorder', requireAuth, route(async (req, res) 
 
 app.post('/servers/:id/categories/:catId/update', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'manage categories'))) return;
   const name = cleanText(req.body.name, 40);
   if (!name) return res.status(400).json({ error: 'the category needs a name' });
   const row = await one(`UPDATE server_categories SET name = $1 WHERE id = $2 AND server_id = $3 RETURNING id`, [name, Number(req.params.catId), serverId]);
@@ -4415,7 +4715,7 @@ app.post('/servers/:id/categories/:catId/update', requireAuth, route(async (req,
 app.post('/servers/:id/categories/:catId/delete', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const catId = Number(req.params.catId);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage categories' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'manage categories'))) return;
   const row = await one(`DELETE FROM server_categories WHERE id = $1 AND server_id = $2 RETURNING id`, [catId, serverId]);
   if (!row) return res.status(404).json({ error: 'category not found' });
   await pool.query(`UPDATE server_channels SET category_id = NULL WHERE category_id = $1`, [catId]);
@@ -4427,7 +4727,7 @@ app.post('/servers/:id/categories/:catId/delete', requireAuth, route(async (req,
 app.post('/servers/:id/channels/:channelId/access', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const channelId = Number(req.params.channelId);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can change who sees a channel' });
+  if (!(await requirePerm(req, res, serverId, 'manage_channels', 'change who sees a channel'))) return;
   const channel = await getChannelById(channelId);
   if (!channel || channel.server_id !== serverId) return res.status(404).json({ error: 'channel not found' });
   const isPrivate = req.body.isPrivate ? 1 : 0;
@@ -4460,6 +4760,8 @@ function cleanRoleInput(body) {
   if ('hoist' in body) out.hoist = body.hoist ? 1 : 0;
   if ('mentionable' in body) out.mentionable = body.mentionable ? 1 : 0;
   if ('autoAssign' in body) out.autoAssign = body.autoAssign ? 1 : 0;
+  if ('permissions' in body) out.permissions = cleanPermissions(body.permissions);
+  if ('allowHide' in body) out.allowHide = body.allowHide ? 1 : 0;
   return out;
 }
 function roleInputError(input) {
@@ -4468,17 +4770,28 @@ function roleInputError(input) {
   return null;
 }
 
+// Why a role can't have the powers being asked for (or null if it can).
+async function rolePowerProblem(username, serverId, input, existing) {
+  const mine = await serverPermissions(username, serverId);
+  if (existing && !coversRole(mine, existing.permissions)) return 'you can only edit roles whose permissions you have yourself';
+  if (input.permissions && !input.permissions.every(p => mine.has(p))) return 'you can only give a role permissions you have yourself';
+  const perms = input.permissions || (existing ? permissionsFromText(existing.permissions) : []);
+  const auto = 'autoAssign' in input ? input.autoAssign : (existing ? existing.auto_assign : 0);
+  if (perms.length && auto) return "A role with permissions can't be given to everyone who joins - turn off \"give to new members\" or remove its permissions.";
+  return null;
+}
+
 app.post('/servers/:id/roles', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  if (!(await requirePerm(req, res, serverId, 'manage_roles', 'manage roles'))) return;
   const input = cleanRoleInput({ name: 'new role', ...req.body });
-  const problem = roleInputError(input);
+  const problem = roleInputError(input) || await rolePowerProblem(req.username, serverId, input, null);
   if (problem) return res.status(400).json({ error: problem });
   const count = await one(`SELECT count(*)::int AS n, COALESCE(max(position), -1) AS top FROM server_roles WHERE server_id = $1`, [serverId]);
   if (count.n >= MAX_ROLES_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_ROLES_PER_SERVER} roles` });
   const role = await one(
-    `INSERT INTO server_roles (server_id, name, color, hoist, mentionable, auto_assign, position) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-    [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, input.autoAssign || 0, count.top + 1]
+    `INSERT INTO server_roles (server_id, name, color, hoist, mentionable, auto_assign, position, permissions, allow_hide) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    [serverId, input.name, input.color || '', input.hoist || 0, input.mentionable || 0, input.autoAssign || 0, count.top + 1, (input.permissions || []).join(','), input.allowHide || 0]
   );
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.status(201).json(roleFromRow(role));
@@ -4486,7 +4799,7 @@ app.post('/servers/:id/roles', requireAuth, route(async (req, res) => {
 
 app.post('/servers/:id/roles/reorder', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  if (!(await requirePerm(req, res, serverId, 'manage_roles', 'manage roles'))) return;
   if (!(await applyOrder('server_roles', serverId, req.body.order))) return res.status(400).json({ error: 'order must list every role in this server exactly once' });
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok' });
@@ -4495,17 +4808,21 @@ app.post('/servers/:id/roles/reorder', requireAuth, route(async (req, res) => {
 app.post('/servers/:id/roles/:roleId/update', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const roleId = Number(req.params.roleId);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  if (!(await requirePerm(req, res, serverId, 'manage_roles', 'manage roles'))) return;
   const role = await one(`SELECT * FROM server_roles WHERE id = $1 AND server_id = $2`, [roleId, serverId]);
   if (!role) return res.status(404).json({ error: 'role not found' });
   const input = cleanRoleInput(req.body);
-  const problem = roleInputError(input);
-  if (problem) return res.status(400).json({ error: problem });
-  const next = { name: role.name, color: role.color, hoist: role.hoist, mentionable: role.mentionable, autoAssign: role.auto_assign, ...input };
+  const problem = roleInputError(input) || await rolePowerProblem(req.username, serverId, input, role);
+  if (problem) return res.status(problem.startsWith('you ') ? 403 : 400).json({ error: problem });
+  const next = { name: role.name, color: role.color, hoist: role.hoist, mentionable: role.mentionable, autoAssign: role.auto_assign, allowHide: role.allow_hide, permissions: permissionsFromText(role.permissions), ...input };
   const updated = await one(
-    `UPDATE server_roles SET name = $1, color = $2, hoist = $3, mentionable = $4, auto_assign = $5 WHERE id = $6 RETURNING *`,
-    [next.name, next.color || '', next.hoist ? 1 : 0, next.mentionable ? 1 : 0, next.autoAssign ? 1 : 0, roleId]
+    `UPDATE server_roles SET name = $1, color = $2, hoist = $3, mentionable = $4, auto_assign = $5, permissions = $6, allow_hide = $7 WHERE id = $8 RETURNING *`,
+    [next.name, next.color || '', next.hoist ? 1 : 0, next.mentionable ? 1 : 0, next.autoAssign ? 1 : 0, next.permissions.join(','), next.allowHide ? 1 : 0, roleId]
   );
+  // powers changed: the people holding it see different buttons now
+  const holders = (await q(`SELECT username FROM server_member_roles WHERE role_id = $1`, [roleId])).map(r => r.username);
+  if (input.permissions && holders.length) await enforceCallAccess(holders).catch(() => {});
+  if (input.permissions) await pool.query(`DELETE FROM reaction_roles WHERE role_id = $1 AND $2 <> ''`, [roleId, next.permissions.join(',')]);
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json(roleFromRow(updated));
 }));
@@ -4513,7 +4830,12 @@ app.post('/servers/:id/roles/:roleId/update', requireAuth, route(async (req, res
 app.post('/servers/:id/roles/:roleId/delete', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const roleId = Number(req.params.roleId);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can manage roles' });
+  if (!(await requirePerm(req, res, serverId, 'manage_roles', 'manage roles'))) return;
+  const existing = await one(`SELECT permissions FROM server_roles WHERE id = $1 AND server_id = $2`, [roleId, serverId]);
+  if (!existing) return res.status(404).json({ error: 'role not found' });
+  if (!coversRole(await serverPermissions(req.username, serverId), existing.permissions)) {
+    return res.status(403).json({ error: 'you can only delete roles whose permissions you have yourself' });
+  }
   const role = await one(`DELETE FROM server_roles WHERE id = $1 AND server_id = $2 RETURNING id`, [roleId, serverId]);
   if (!role) return res.status(404).json({ error: 'role not found' });
   const holders = (await q(`DELETE FROM server_member_roles WHERE role_id = $1 RETURNING username`, [roleId])).map(r => r.username);
@@ -4529,11 +4851,19 @@ app.post('/servers/:id/roles/:roleId/delete', requireAuth, route(async (req, res
 app.post('/servers/:id/members/:username/roles', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   const target = cleanUsername(req.params.username);
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can give out roles' });
+  if (!(await requirePerm(req, res, serverId, 'manage_roles', 'give out roles'))) return;
   if (!(await isServerMember(target, serverId))) return res.status(404).json({ error: 'user is not a member of this server' });
   const wanted = [...new Set((Array.isArray(req.body.roleIds) ? req.body.roleIds : []).map(Number))];
-  const own = new Set((await q(`SELECT id FROM server_roles WHERE server_id = $1`, [serverId])).map(r => r.id));
-  if (!wanted.every(id => own.has(id))) return res.status(400).json({ error: 'one of those roles is not in this server' });
+  const serverRoles = new Map((await q(`SELECT id, permissions FROM server_roles WHERE server_id = $1`, [serverId])).map(r => [r.id, r]));
+  if (!wanted.every(id => serverRoles.has(id))) return res.status(400).json({ error: 'one of those roles is not in this server' });
+  // only roles whose powers you have yourself can be given or taken away
+  const mine = await serverPermissions(req.username, serverId);
+  const current = (await q(`SELECT role_id FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target])).map(r => r.role_id);
+  const changed = wanted.filter(id => !current.includes(id)).concat(current.filter(id => !wanted.includes(id)));
+  if (changed.some(id => serverRoles.has(id) && !coversRole(mine, serverRoles.get(id).permissions))) {
+    return res.status(403).json({ error: 'you can only give or take away roles whose permissions you have yourself' });
+  }
+
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
   if (wanted.length) {
     await pool.query(
@@ -4554,7 +4884,7 @@ app.post('/servers/:id/invite/regenerate', requireAuth, route(async (req, res) =
   const srv = await getServerById(serverId);
   if (!srv) return res.status(404).json({ error: 'server not found' });
   if (srv.is_default) return res.status(400).json({ error: 'the general server does not use invite codes' });
-  if (!(await canManageServer(req.username, serverId))) return res.status(403).json({ error: 'only server admins can reset the invite' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'reset the invite'))) return;
   const code = makeInviteCode();
   await pool.query(`UPDATE servers SET invite_code = $1 WHERE id = $2`, [code, serverId]);
   await notifyServerMembers(serverId, 'serversChanged', {});
@@ -5336,7 +5666,7 @@ io.on('connection', (socket) => {
     // a reaction role: reacting gives the role, un-reacting takes it away
     const roleMenu = await one(
       `SELECT rr.role_id, rr.server_id FROM reaction_roles rr JOIN server_roles r ON r.id = rr.role_id AND r.server_id = rr.server_id
-       WHERE rr.message_id = $1 AND rr.emoji = $2`,
+       WHERE rr.message_id = $1 AND rr.emoji = $2 AND COALESCE(r.permissions, '') = ''`,
       [id, emoji]
     );
     if (roleMenu && rateLimited('reactrole:' + socket.username, 6, 10 * 1000)) {
@@ -5605,7 +5935,7 @@ io.on('connection', (socket) => {
     const call = calls.get(String(data.key || ''));
     const target = String(data.username || '');
     if (!call || call.kind !== 'voice' || !call.participants.has(target)) { if (typeof ack === 'function') ack({ error: 'not in this call' }); return; }
-    if (!(await canModerateRoom(socket.username, call.room))) { if (typeof ack === 'function') ack({ error: 'only server admins can do that' }); return; }
+    if (!(await canModerateRoom(socket.username, call.room, 'kick_members'))) { if (typeof ack === 'function') ack({ error: 'you need the "Kick members" permission to do that' }); return; }
     await leaveCall(call.key, target, `You were disconnected by ${socket.username}.`);
     if (typeof ack === 'function') ack({ message: 'ok' });
   });
@@ -5640,6 +5970,8 @@ async function main() {
   await removeExpiredSessions();
   setTimeout(() => { hashLegacySessions().catch(err => console.error('hashLegacySessions failed:', err.message)); }, Number(process.env.SESSION_HASH_DELAY_MS || 5 * 60 * 1000)).unref();
   await removeOldFiles(true);
+  await removeUnusedAssets().catch(err => console.error('removeUnusedAssets failed:', err.message));
+  setInterval(() => { removeUnusedAssets().catch(err => console.error('removeUnusedAssets failed:', err.message)); }, 6 * 60 * 60 * 1000).unref();
   // a kept file whose message row is gone (e.g. its room was deleted) is just wasted space
   await pool.query(`DELETE FROM file_blobs WHERE file_id NOT IN (SELECT id FROM files)`);
   await scheduleEventReminders();

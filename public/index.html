@@ -3755,8 +3755,8 @@ function buildMessageEl(item, grouped){
       const note = document.createElement('div');
       note.className = 'fileExpiry';
       const left = parseTime(data.expiresAt) - Date.now();
-      note.textContent = left <= 0 ? 'This file has expired.' : 'Temporary file: removed in ' + (left > 3600000 ? Math.round(left / 3600000) + ' h' : Math.max(1, Math.round(left / 60000)) + ' min');
-      note.title = 'Files over ' + formatBytes(keepFileBytes) + ' are kept for ' + tempFileHours + ' hours. Smaller files stay.';
+      note.textContent = left <= 0 ? 'This file has expired.' : 'Temporary file: removed in ' + (left > 172800000 ? Math.round(left / 86400000) + ' days' : left > 3600000 ? Math.round(left / 3600000) + ' h' : Math.max(1, Math.round(left / 60000)) + ' min');
+      note.title = 'Files over ' + formatBytes(keepFileBytes) + ' are kept for ' + hoursText(tempFileHours) + '. Smaller files stay.';
       body.appendChild(note);
     }
   }
@@ -3767,6 +3767,7 @@ function buildMessageEl(item, grouped){
   return wrap;
 }
 
+function hoursText(h){ return h >= 48 ? Math.round(h / 24) + ' days' : h + ' hours'; }
 async function deleteFile(data){
   if(!confirm('Delete "' + (data.fileName || 'this file') + '"? It will be removed for everyone.')) return;
   try{
@@ -4531,7 +4532,7 @@ function renderAttachments(){
     size.textContent = formatBytes(file.size);
     if(file.size > keepFileBytes){
       size.textContent += ' · temporary';
-      size.title = 'Files over ' + formatBytes(keepFileBytes) + ' are removed after ' + tempFileHours + ' hours. Smaller files stay.';
+      size.title = 'Files over ' + formatBytes(keepFileBytes) + ' are removed after ' + hoursText(tempFileHours) + '. Smaller files stay.';
       chip.classList.add('temporary');
     }else if(file.shrunkFrom){
       size.title = 'Resized from ' + formatBytes(file.shrunkFrom) + ' to send faster. You can turn this off in Settings > Chat.';

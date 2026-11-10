@@ -1,0 +1,40 @@
+# The chat app on a Synology NAS, next to the Postgres you already run.
+# Fill in .env first (copy .env.example), then from this folder:
+#   sudo docker compose up -d --build
+# See README.md in this folder for the whole move.
+name: chat
+
+services:
+  chat:
+    build: ../..
+    image: chat-app:latest
+    container_name: chat
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets the app reach Postgres on the NAS
+    environment:
+      DATABASE_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${DB_HOST:-host.docker.internal}:${DB_PORT:-55432}/${DB_NAME:-chat}"
+      PGSSL: "false"            # the database is on this same machine
+      KEEP_FILE_MB: "${KEEP_FILE_MB:-25}"
+      MEDIA_BUDGET_MB: "${MEDIA_BUDGET_MB:-40000}"
+      FILE_EXPIRY_HOURS: "${FILE_EXPIRY_HOURS:-720}"
+    volumes:
+      - chat-files:/data
+
+  # Reach the chat from anywhere with HTTPS, without opening router ports.
+  # Only starts with:  sudo docker compose --profile tunnel up -d
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: chat-tunnel
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN}"
+    depends_on:
+      - chat
+
+volumes:
+  chat-files:

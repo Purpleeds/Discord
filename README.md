@@ -34,6 +34,8 @@ tables itself on startup, so an empty database is all it needs.
 | `DATA_DIR` | no | Where large temporary files are stored (default: this folder). |
 | `KEEP_FILE_MB` | no | Attachments up to this size are kept, in the database (default `8`). Bigger ones are temporary. |
 | `MEDIA_BUDGET_MB` | no | Total space kept attachments may use before the oldest are removed (default `250`). |
+| `FILE_EXPIRY_HOURS` | no | How long files over `KEEP_FILE_MB` live (default `6`; set it higher where the disk is permanent, e.g. a NAS). |
+| `MOVED_TO` | no | Set on an old copy of the app after moving it: pages redirect to this address and no more messages are accepted. |
 | `RATE_LIMITS` | no | Set to `off` to disable rate limits (for tests only). |
 | `LINK_PREVIEW_TEST_HOSTS` | no | Tests only (ignored unless `RATE_LIMITS=off`): exact `host:port` pairs link previews may fetch even though they're private. |
 | `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
@@ -99,6 +101,11 @@ default ports, at most 3 redirects (each re-checked), 6 seconds and 512 KB
 per page. See `fetchLinkPreview()` in server.js.
 
 ## Deploying
+
+To run it on a Synology NAS (or any Docker host) instead, with the database
+on the NAS, follow [deploy/synology/README.md](deploy/synology/README.md):
+a Dockerfile, a compose file and a script that copies the data from Neon.
+
 
 Render auto-deploys the `main` branch to the **Discords** web service
 (build `npm install`, start `npm start`, health check `/healthz`). The

@@ -1627,6 +1627,8 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 #loginCard h2{font-family:var(--font-display);font-size:30px;font-weight:800;letter-spacing:-.03em;text-align:left;}
 #loginCard .sub{text-align:left;margin-bottom:24px;}
 .loginFooter{text-align:left;line-height:1.5;}
+.formHint{font-size:13px;color:var(--text-muted);margin:-8px 0 14px;line-height:1.45;}
+#signupOnly[hidden]{display:none;}
 .rememberRow{margin:2px 0 18px;}
 
 /* ---------- desktop only ---------- */
@@ -1709,6 +1711,17 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
   .brandScene{display:none;}
   #loginCard{max-width:none;padding:24px;}
 }
+
+/* ---- v3: devices ---- */
+.deviceList{display:flex;flex-direction:column;gap:8px;}
+.deviceRow{display:flex;align-items:center;gap:14px;padding:14px 16px;background:var(--raised);border:1px solid var(--line);border-radius:var(--r-card);}
+.deviceRow.current{border-color:color-mix(in srgb,var(--brand) 55%,transparent);}
+.deviceIcon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--raised-2);color:var(--text-muted);}
+.deviceRow.current .deviceIcon{color:var(--brand);}
+.deviceInfo{flex:1;min-width:0;}
+.deviceName{font-weight:650;color:var(--text-bright);display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.deviceTag{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--brand);color:var(--on-brand);}
+.deviceSub{font-size:13px;color:var(--text-muted);margin-top:2px;}
 </style>
 </head>
 
@@ -1725,16 +1738,21 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
     </div>
   </section>
   <div id="loginCard">
-    <h2>Welcome back</h2>
-    <div class="sub">Log in with your username and password.</div>
+    <h2 id="loginTitle">Welcome back</h2>
+    <div class="sub" id="loginSub">Log in with your username and password.</div>
     <label class="formLabel" for="username">Username</label>
-    <input class="formInput" id="username" placeholder="Username" autocomplete="username">
+    <input class="formInput" id="username" placeholder="Username" autocomplete="username" autocapitalize="none" spellcheck="false">
     <label class="formLabel" for="password">Password</label>
     <input class="formInput" id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <div id="signupOnly" hidden>
+      <label class="formLabel" for="passwordAgain">Password again</label>
+      <input class="formInput" id="passwordAgain" type="password" placeholder="Type it once more" autocomplete="new-password">
+      <div class="formHint">At least 8 characters. There is no password reset, so pick one you will remember.</div>
+    </div>
     <label class="rememberRow"><input type="checkbox" id="rememberMe" checked> Keep me signed in on this device</label>
-    <button class="bigBtn" onclick="login()">Log in</button>
-    <div id="status"></div>
-    <div class="loginFooter">New here? <button class="linkBtn" onclick="registerUser()">Create an account</button> with the username and password above.</div>
+    <button class="bigBtn" id="loginSubmit" onclick="submitLogin()">Log in</button>
+    <div id="status" role="status" aria-live="polite"></div>
+    <div class="loginFooter"><span id="loginSwitchText">New here?</span> <button class="linkBtn" id="loginSwitch" onclick="setLoginMode(loginMode === 'login' ? 'signup' : 'login')">Create an account</button></div>
   </div>
 </div>
 
@@ -2173,29 +2191,65 @@ function toast(text){
 }
 
 /* ============================ auth ============================ */
+// The login card has two modes. Logging in never creates an account: a
+// username nobody has gets "no account called that" and an offer to make
+// one, which asks for the password twice (there's no password reset).
+let loginMode = 'login';
+function setLoginMode(mode, keepStatus){
+  loginMode = mode === 'signup' ? 'signup' : 'login';
+  const signup = loginMode === 'signup';
+  $('loginTitle').textContent = signup ? 'Create your account' : 'Welcome back';
+  $('loginSub').textContent = signup ? 'Pick a username and a password to get started.' : 'Log in with your username and password.';
+  $('signupOnly').hidden = !signup;
+  $('password').autocomplete = signup ? 'new-password' : 'current-password';
+  $('loginSubmit').textContent = signup ? 'Create account' : 'Log in';
+  $('loginSwitchText').textContent = signup ? 'Already have an account?' : 'New here?';
+  $('loginSwitch').textContent = signup ? 'Log in' : 'Create an account';
+  if(!signup) $('passwordAgain').value = '';
+  if(!keepStatus) setStatus('');
+}
+function submitLogin(){ return loginMode === 'signup' ? registerUser() : login(); }
+
+async function postAuth(path, body){
+  let response;
+  try{
+    response = await fetch(path, { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+  }catch(e){ throw new Error('Can\'t reach the server. Check your connection and try again.'); }
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok){ const err = new Error(data.error || 'Something went wrong. Try again.'); err.code = data.code; throw err; }
+  return data;
+}
+
 async function registerUser(){
   const name = $('username').value.trim();
   const password = $('password').value;
-  setStatus('Creating account...');
+  if(!name || !password){ setStatus('Enter a username and a password.'); return; }
+  if(password.length < 8){ setStatus('Use a password of at least 8 characters.'); return; }
+  if(password !== $('passwordAgain').value){ setStatus('The two passwords don\'t match.'); $('passwordAgain').focus(); return; }
+  setStatus('Creating your account…');
   try{
-    const response = await fetch('/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:name,password})});
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'register failed');
+    const data = await postAuth('/register', { username:name, password });
     completeLogin(data.username, data.token, data.profile);
-  }catch(err){ setStatus(err.message); }
+  }catch(err){
+    setStatus(err.message === 'user exists' ? 'That username is taken. Pick another, or log in if it\'s yours.' : capitalise(err.message));
+  }
 }
 
 async function login(){
   const name = $('username').value.trim();
   const password = $('password').value;
-  setStatus('Logging in...');
+  if(!name || !password){ setStatus('Enter your username and password.'); return; }
+  setStatus('Logging in…');
   try{
-    const response = await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:name,password})});
-    const data = await response.json();
-    if(!response.ok) throw new Error(data.error || 'login failed');
+    const data = await postAuth('/login', { username:name, password, create:false });
     completeLogin(data.username, data.token, data.profile);
-  }catch(err){ setStatus(err.message); }
+  }catch(err){
+    if(err.code === 'no_account') setStatus('There\'s no account called "' + name + '". Check the spelling, or create it below.');
+    else if(err.message === 'invalid username or password') setStatus('That password isn\'t right for this account.');
+    else setStatus(capitalise(err.message));
+  }
 }
+function capitalise(text){ text = String(text || ''); return text ? text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?…]$/.test(text) ? '' : '.') : ''; }
 
 function completeLogin(returnedUsername, returnedToken, profile){
   username = returnedUsername;
@@ -2203,6 +2257,8 @@ function completeLogin(returnedUsername, returnedToken, profile){
   if(profile) cacheProfile(username, profile);
   myProfile = profile || { username, displayName:username, avatarUrl:'', isAdmin:false };
   $('loginScreen').style.display = 'none';
+  $('password').value = ''; $('passwordAgain').value = '';
+  setLoginMode('login');
   $('app').classList.add('ready');
   rememberSession();
   renderUserPanel();
@@ -2234,6 +2290,7 @@ function resetToLoginScreen(message){
   innerEl().innerHTML='';
   $('app').classList.remove('ready');
   $('loginScreen').style.display = 'flex';
+  setLoginMode('login');
   setStatus(message);
 }
 
@@ -2269,6 +2326,7 @@ function connectSocket(){
     reportedIdle = false;
     await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends()]);
     socket.emit('syncRooms');
+    loadUnread(); // badges for everything that arrived while this device was away
     // a REconnect (phone waking up, wifi blip, server redeploy) keeps you
     // where you were - it used to throw everyone back to #general
     if(!everConnected || !restoreViewAfterReconnect()){
@@ -2343,6 +2401,13 @@ function connectSocket(){
     if(settingsState.mode === 'server' && settingsState.section === 'members' && data && settingsState.ctx.serverId === data.serverId) rerenderSettingsSection();
   });
   socket.on('adminNotice', data => toast(data && data.message ? data.message : 'Admin notice'));
+  // read somewhere else (another tab, your phone): clear the same badges here
+  socket.on('readSync', data => {
+    if(!data || data.from === socket.id) return;
+    let changed = false;
+    (data.rooms || []).forEach(room => { if(unread[room]){ unread[room] = 0; changed = true; } });
+    if(changed){ renderSidebar(); renderRail(); if(forumRoom) renderForum(forumRoom); }
+  });
 
   socket.on('globalCensorChanged', data => {
     globalCensorEnabled = !!(data && data.enabled);
@@ -2534,6 +2599,55 @@ function bumpUnread(room, msg){
   renderSidebar();
   renderRail();
   if(!isFocused && shouldAlert(msg, room)) startTabAlert(label);
+}
+
+/* ============================ unread ============================ */
+// The server works out what's unread from read receipts, so badges are
+// right the moment the app opens - not only for what arrived while this
+// tab was open. Muted rooms stay quiet, same as for live messages.
+async function loadUnread(){
+  try{
+    const response = await fetch('/unread', { headers: bearer() });
+    if(!response.ok) return;
+    const rooms = (await response.json()).rooms || {};
+    const next = {};
+    Object.keys(rooms).forEach(room => {
+      if(levelFor(room) === 'none') return;
+      if(room === currentRoom && canSeeChat() && !forumRoom) return; // looking at it right now
+      if(rooms[room].count > 0) next[room] = rooms[room].count;
+    });
+    unread = next;
+    renderSidebar();
+    renderRail();
+    if(forumRoom) renderForum(forumRoom);
+  }catch(e){}
+}
+
+// "Read" means someone actually looked: a tab left open in the background
+// no longer marks a channel read (which would hide those messages from
+// your phone). The receipt is sent when the tab is looked at again.
+let newestMessageId = 0;   // newest real message id in the open room
+let readDebt = false;      // something arrived while nobody was looking
+function canSeeChat(){ return !document.hidden && isFocused; }
+function markCurrentRead(){
+  if(!socket || !currentRoom || !username) return;
+  if(!canSeeChat()){ readDebt = true; return; }
+  readDebt = false;
+  socket.emit('markRead', { room: currentRoom, lastMessageId: newestMessageId || 0 });
+}
+function settleReadDebt(){ if(readDebt && canSeeChat()) markCurrentRead(); }
+
+async function markServerRead(server){
+  try{
+    const response = await fetch('/read-all', { method:'POST', headers:authHeaders(), body: JSON.stringify(server ? { serverId: server.id } : { all:true }) });
+    if(!response.ok) throw new Error();
+    if(server){
+      (server.channels || []).forEach(c => { unread[c.room] = 0; });
+      Object.values(threadIndex).forEach(t => { if((server.channels || []).some(c => c.room === t.parentRoom)) unread[t.room] = 0; });
+    }else unread = {};
+    renderSidebar(); renderRail();
+    toast(server ? 'Marked ' + server.name + ' as read' : 'Marked everything as read');
+  }catch(e){ toast('Could not mark as read. Try again.'); }
 }
 
 /* ============================ data loading ============================ */
@@ -2837,9 +2951,12 @@ function renderSidebar(){
 
     const people = directoryUsers.filter(p => p.username !== username && !isBlocked(p.username));
     people.sort((a,b) => {
+      // conversations with something new come first, then whoever is online
+      const ua = unread[roomNameForDM(username, a.username)] ? 0 : 1;
+      const ub = unread[roomNameForDM(username, b.username)] ? 0 : 1;
       const oa = onlineUserList.includes(a.username) ? 0 : 1;
       const ob = onlineUserList.includes(b.username) ? 0 : 1;
-      return oa - ob || a.username.localeCompare(b.username);
+      return ua - ub || oa - ob || a.username.localeCompare(b.username);
     });
     if(!people.length){
       const hint = document.createElement('div');
@@ -3083,6 +3200,7 @@ function enterRoom(room){
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
   timelineItems = [];
+  newestMessageId = 0; readDebt = false;
   historyState = { room, oldestId:null, hasMore:false, loading:false };
   cancelReply();
   clearAttachments();
@@ -3138,7 +3256,8 @@ async function loadHistory(room){
     updateJumpBar();
     if(pendingJump && pendingJump.room === room){ const id = pendingJump.id; pendingJump = null; goToMessage(id); }
     const lastMessage = messages[messages.length - 1];
-    if(lastMessage && socket) socket.emit('markRead', { room, lastMessageId: lastMessage.id });
+    newestMessageId = lastMessage ? lastMessage.id : 0;
+    if(combined.length) markCurrentRead();
   }catch(err){ showError(err.message); }
 }
 
@@ -3213,8 +3332,9 @@ function appendItem(item, bulk){
   else blockedRun = null;
   lastItem = item;
   if(!bulk && atBottom) scrollToBottom();
-  if(!bulk && item.kind === 'message' && socket && item.data.id){
-    socket.emit('markRead', { room: currentRoom, lastMessageId: item.data.id });
+  if(!bulk && socket && item.data.id && !item.data.pending){
+    if(item.kind === 'message' && typeof item.data.id === 'number') newestMessageId = Math.max(newestMessageId, item.data.id);
+    markCurrentRead();
   }
   return el;
 }
@@ -4658,6 +4778,7 @@ function showServerMenu(event, server){
     { label:'Open server', action:() => switchServer(server.id) },
     { label:'Copy invite code', action:() => copyText(server.inviteCode || '') }
   ];
+  if(serverUnreadCount(server)) items.push({ label:'Mark as read', action:() => markServerRead(server) });
   items.push(...levelMenuItems('server:' + server.id, 'Server notifications'));
   if(server.canManage){
     items.push({ sep:true });
@@ -7741,6 +7862,7 @@ function openSettings(sectionKey){
   openSettingsLayer('user', [
     { title:'User Settings', items:[
       { key:'account', label:'My Account', render:renderAccountSection },
+      { key:'devices', label:'Devices', render:renderDevicesSection },
       { key:'profile', label:'Profiles', render:renderProfileSection },
       { key:'privacy', label:'Privacy & Safety', render:renderPrivacySection },
       { key:'bots', label:'My Bots', render:renderBotsSection }
@@ -7787,7 +7909,7 @@ function renderAccountSection(c){
       '<button class="btn" id="pwSave" style="margin-top:14px">Change Password</button>' +
       '<div class="inlineMsg" id="pwMsg"></div>' +
       '<div class="switchDesc">Changing your password signs you out on every other device.</div>') +
-    section('Sign Out', '<div class="switchDesc" style="margin-bottom:12px">This device stays signed in until you log out (for up to 90 days).</div><button class="btn danger" id="accLogout">Log Out</button>');
+    section('Sign Out', '<div class="switchDesc" style="margin-bottom:12px">This device stays signed in until you log out, or until it has gone 90 days without being used. <button class="linkBtn" id="accDevices">See every device</button></div><button class="btn danger" id="accLogout">Log Out</button>');
 
   $('accBanner').style.background = myProfile.bannerColor || avatarColour(username);
   $('accAvatar').appendChild(createAvatar(username, 'lg'));
@@ -7798,10 +7920,12 @@ function renderAccountSection(c){
   $('accEditProfile').onclick = () => showSettingsSection('profile');
   $('accEditName').onclick = () => { showSettingsSection('profile'); setTimeout(() => { const i = $('profDisplayName'); if(i) i.focus(); }, 50); };
   $('accLogout').onclick = () => { closeSettings(true); logout(); };
+  $('accDevices').onclick = () => showSettingsSection('devices');
   $('pwSave').onclick = async () => {
     const current = $('pwCurrent').value, next = $('pwNew').value, confirmValue = $('pwConfirm').value;
     if(!current || !next){ inlineMessage($('pwMsg'), 'Fill in your current and new password.', true); return; }
     if(next !== confirmValue){ inlineMessage($('pwMsg'), 'The new passwords don\'t match.', true); return; }
+    if(next.length < 8){ inlineMessage($('pwMsg'), 'Use a new password of at least 8 characters.', true); return; }
     try{
       const response = await fetch('/settings/password', { method:'POST', headers:authHeaders(), body:JSON.stringify({ currentPassword:current, newPassword:next }) });
       const data = await response.json();
@@ -7810,6 +7934,76 @@ function renderAccountSection(c){
       inlineMessage($('pwMsg'), 'Password changed' + (data.signedOutSessions ? ' — signed out ' + data.signedOutSessions + ' other session' + (data.signedOutSessions === 1 ? '' : 's') : '') + '.');
     }catch(err){ inlineMessage($('pwMsg'), err.message, true); }
   };
+}
+
+// Settings > Devices: everywhere this account is logged in, with a way to
+// sign any of them out.
+async function renderDevicesSection(c){
+  c.innerHTML =
+    '<h2 class="settingsTitle">Devices</h2>' +
+    '<div class="settingsSub">Every browser and phone where you are logged in. If you don\'t recognise one, sign it out and change your password.</div>' +
+    '<div id="deviceList" class="deviceList"><div class="switchDesc">Loading…</div></div>' +
+    '<div class="rowFlex" style="margin-top:18px"><button class="btn danger" id="devSignOutOthers" hidden>Sign out all other devices</button></div>' +
+    '<div class="inlineMsg" id="devMsg"></div>';
+  const list = $('deviceList');
+  async function load(){
+    let rows;
+    try{
+      const response = await fetch('/sessions', { headers: bearer() });
+      if(!response.ok) throw new Error('Could not load your devices.');
+      rows = await response.json();
+    }catch(err){ list.innerHTML = ''; list.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: err.message })); return; }
+    if(!$('deviceList')) return; // settings closed while loading
+    list.innerHTML = '';
+    rows.forEach(row => {
+      const item = document.createElement('div');
+      item.className = 'deviceRow' + (row.current ? ' current' : '');
+      const icon = document.createElement('div');
+      icon.className = 'deviceIcon';
+      icon.innerHTML = /iPhone|Android|iPad/.test(row.device)
+        ? '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+      const info = document.createElement('div');
+      info.className = 'deviceInfo';
+      const name = document.createElement('div');
+      name.className = 'deviceName';
+      name.textContent = row.device;
+      if(row.current) name.appendChild(Object.assign(document.createElement('span'), { className:'deviceTag', textContent:'This device' }));
+      const sub = document.createElement('div');
+      sub.className = 'deviceSub';
+      sub.textContent = (row.current || row.online ? 'Active now' : 'Last used ' + timeAgo(row.lastSeenAt)) + ' · Logged in ' + parseTime(row.createdAt).toLocaleDateString([], { day:'numeric', month:'short', year:'numeric' });
+      info.appendChild(name); info.appendChild(sub);
+      item.appendChild(icon); item.appendChild(info);
+      if(!row.current){
+        const out = document.createElement('button');
+        out.className = 'btn grey';
+        out.textContent = 'Sign out';
+        out.onclick = async () => {
+          out.disabled = true;
+          try{
+            const response = await fetch('/sessions/' + encodeURIComponent(row.id) + '/revoke', { method:'POST', headers:authHeaders(), body:'{}' });
+            if(!response.ok && response.status !== 404) throw new Error('Could not sign that device out. Try again.');
+            inlineMessage($('devMsg'), 'Signed out ' + row.device + '.');
+            load();
+          }catch(err){ out.disabled = false; inlineMessage($('devMsg'), err.message, true); }
+        };
+        item.appendChild(out);
+      }
+      list.appendChild(item);
+    });
+    $('devSignOutOthers').hidden = rows.filter(r => !r.current).length < 1;
+  }
+  $('devSignOutOthers').onclick = async () => {
+    if(!confirm('Sign out every device except this one?')) return;
+    try{
+      const response = await fetch('/sessions/revoke-others', { method:'POST', headers:authHeaders(), body:'{}' });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'Could not sign the other devices out.');
+      inlineMessage($('devMsg'), 'Signed out ' + data.signedOutSessions + ' other device' + (data.signedOutSessions === 1 ? '' : 's') + '.');
+      load();
+    }catch(err){ inlineMessage($('devMsg'), err.message, true); }
+  };
+  load();
 }
 
 const BANNER_PRESETS = ['', '#5865f2', '#eb459e', '#23a55a', '#f0b132', '#ed4245', '#1abc9c', '#9b59b6', '#e67e22', '#4e5058'];
@@ -9873,7 +10067,8 @@ document.addEventListener('click', e => {
 });
 ['pinsPopout','profilePopout','inboxPopout','threadsPopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
 window.addEventListener('resize', () => { hideContextMenu(); hideEmojiPicker(); });
-window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); });
+window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); settleReadDebt(); });
+document.addEventListener('visibilitychange', () => { if(!document.hidden) settleReadDebt(); });
 window.addEventListener('blur', () => { isFocused = false; });
 window.addEventListener('beforeunload', stopTyping);
 
@@ -9913,7 +10108,8 @@ document.addEventListener('keydown', e => {
 });
 
 $('switcherInput').addEventListener('input', renderSwitcher);
-$('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); login(); } });
+$('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); if(loginMode === 'signup') $('passwordAgain').focus(); else login(); } });
+$('passwordAgain').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); registerUser(); } });
 $('username').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('password').focus(); } });
 
 // The service worker is needed for the app to be installable (and for

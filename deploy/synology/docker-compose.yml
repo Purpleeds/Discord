@@ -1,4 +1,5 @@
-# The chat app on a Synology NAS, next to the Postgres you already run.
+# The chat app on a NAS (Synology, UGREEN or any Docker host), next to the
+# Postgres you already run.
 # Fill in .env first (copy .env.example), then from this folder:
 #   sudo docker compose up -d --build
 # See README.md in this folder for the whole move.
@@ -36,5 +37,27 @@ services:
     depends_on:
       - chat
 
+  # Free alternative to the tunnel above: Tailscale Funnel gives the chat a
+  # public https://chat.<your-tailnet>.ts.net address. No domain, no router
+  # ports, and visitors don't need Tailscale. Only starts with:
+  #   sudo docker compose --profile funnel up -d
+  funnel:
+    image: tailscale/tailscale:latest
+    container_name: chat-funnel
+    hostname: chat                 # becomes the "chat" in chat.<tailnet>.ts.net
+    restart: unless-stopped
+    profiles: ["funnel"]
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY}"
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    volumes:
+      - funnel-state:/var/lib/tailscale
+      - ./tailscale:/config:ro
+    depends_on:
+      - chat
+
 volumes:
   chat-files:
+  funnel-state:

@@ -73,12 +73,14 @@ need Tailscale):
 4. Admin console > **Settings > Keys > Generate auth key** (defaults are
    fine). Put it in `TS_AUTHKEY` in `.env`.
 5. In step 5, start with `--profile funnel` (shown below).
-6. Once it's running, the NAS appears as **chat** under Machines: open its
+6. Once it's running, the NAS appears under Machines with that name: open its
    **...** menu and choose **Disable key expiry**, or the address stops
    working after a few months.
 
-The address is `https://chat.<your tailnet name>`, for example
-`https://chat.tail1234.ts.net`.
+The address is `https://<FUNNEL_NAME>.<your tailnet name>` (FUNNEL_NAME is
+set in `.env`, `discord` by default), for example
+`https://discord.tail1234.ts.net`. The tailnet part can't be typed freely,
+but DNS > Rename tailnet offers other names to pick from.
 
 Either way you now have the new address, e.g. `https://chat.yourdomain.com`.
 

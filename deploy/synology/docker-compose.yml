@@ -38,13 +38,13 @@ services:
       - chat
 
   # Free alternative to the tunnel above: Tailscale Funnel gives the chat a
-  # public https://chat.<your-tailnet>.ts.net address. No domain, no router
+  # public https://<FUNNEL_NAME>.<your-tailnet>.ts.net address. No domain, no router
   # ports, and visitors don't need Tailscale. Only starts with:
   #   sudo docker compose --profile funnel up -d
   funnel:
     image: tailscale/tailscale:latest
     container_name: chat-funnel
-    hostname: chat                 # becomes the "chat" in chat.<tailnet>.ts.net
+    hostname: "${FUNNEL_NAME:-chat}"   # the first part of the address: <this>.<tailnet>.ts.net
     restart: unless-stopped
     profiles: ["funnel"]
     environment:

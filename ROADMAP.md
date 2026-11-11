@@ -168,7 +168,8 @@ large, new system - also split it over several sessions).
   (Settings > Server Profiles, or the server menu). Roles can let their
   members hide their roles.
 - [x] **Picture, GIF and video banners** for profiles, server profiles and
-  servers (up to 8 MB; videos loop silently, still with reduced motion).
+  servers (up to 2 GB - over 8 MB they're stored on the NAS disk; videos loop
+  silently, still with reduced motion).
 
 - [x] **Files inside messages** - several per message, with the text; they
   can be replied to, reacted to and pinned.

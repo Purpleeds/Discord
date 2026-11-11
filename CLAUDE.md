@@ -66,7 +66,10 @@ to do next) - read it before a big upgrade and add an entry after one.
   `allow_hide`) are stripped from `/servers/:id/members` for viewers without
   `manage_roles`; powers are unaffected. Banner/avatar media go through
   `/assets` (allow-listed image/video types, `assetProblem()` checks the
-  uploader); unused assets are removed after a day.
+  uploader); unused assets are removed after a day. Assets up to 8 MB are in
+  Postgres (`storage 'db'`); bigger ones (up to `ASSET_MAX_MB`, 2 GB) stream to
+  `ASSET_DIR` on disk (`storage 'disk'`, `data` NULL) - delete both together.
+  `server.requestTimeout = 0` (server.js and relay.js) so big uploads aren't cut off.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
   `canViewChannel()` (private channels), with `readableChannelRooms()` /
   `allRoomsFor()` as the bulk version. Never check server membership

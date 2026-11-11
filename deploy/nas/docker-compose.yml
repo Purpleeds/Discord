@@ -77,7 +77,10 @@ services:
       KEEP_FILE_MB: "25"
       MEDIA_BUDGET_MB: "40000"
       FILE_EXPIRY_HOURS: "720"
-      CODE_URL: https://codeload.github.com/Purpleeds/Discord/tar.gz/refs/heads/main
+      CODE_REPO: Purpleeds/Discord
+      # checks GitHub every 3 minutes and restarts itself on a new version
+      # (waits while anyone is in a call); remove to update only on restart
+      AUTO_UPDATE_REPO: Purpleeds/Discord
       # calls on strict networks use the relay below ({host} = the public name)
       TURN_URLS: "turns:{host}:8443?transport=tcp"
       TURN_SECRET_FILE: /shared/turn-secret
@@ -93,11 +96,20 @@ services:
         set -e
         [ -s /shared/turn-secret ] || head -c 32 /dev/urandom | base64 > /shared/turn-secret
         chmod 644 /shared/turn-secret
-        if wget -qO /tmp/code.tgz "$$CODE_URL"; then
+        # newest commit on main (empty if GitHub can't be reached)
+        SHA=$$(wget -qO- --header "Accept: application/vnd.github.sha" "https://api.github.com/repos/$$CODE_REPO/commits/main" 2>/dev/null || true)
+        if [ -n "$$SHA" ] && [ "$$SHA" = "$$(cat /app/.version 2>/dev/null)" ] && [ -d /app/node_modules ]; then
+          echo "Already on $$SHA"
+        elif wget -qO /tmp/code.tgz "https://codeload.github.com/$$CODE_REPO/tar.gz/$${SHA:-refs/heads/main}"; then
           rm -rf /tmp/code && mkdir -p /tmp/code
           tar xzf /tmp/code.tgz -C /tmp/code --strip-components=1
+          # only reinstall packages when they changed (saves most of a restart)
+          FRESH=1
+          if [ -d /app/node_modules ] && cmp -s /tmp/code/package-lock.json /app/package-lock.json; then FRESH=0; fi
           cp -r /tmp/code/. /app/
-          npm ci --omit=dev --no-audit --no-fund --loglevel=error
+          if [ "$$FRESH" = 1 ]; then npm ci --omit=dev --no-audit --no-fund --loglevel=error; fi
+          if [ -n "$$SHA" ]; then echo "$$SHA" > /app/.version; else rm -f /app/.version; fi
+          echo "Updated to $${SHA:-latest}"
         elif [ ! -f /app/server.js ]; then
           echo "Could not download the app."; exit 1
         fi

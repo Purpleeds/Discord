@@ -27,7 +27,12 @@ Docker apps, or with `docker compose up -d` anywhere. No SSH needed.
 
 ## Good to know
 
-- Restarting the `chat` container downloads and runs the latest version.
+- **Updates are automatic:** the chat checks GitHub every 3 minutes and,
+  when `main` has a new commit, restarts itself on it (it waits while anyone
+  is in a call, up to 2 hours). Open pages reload onto the new version by
+  themselves. Restarting the `chat` container by hand also updates it, and a
+  restart with nothing new skips the download (seconds, not minutes).
+  To turn auto-update off, delete the `AUTO_UPDATE_REPO` line.
 - The copy from Neon only happens while the chat database is empty. It
   never changes Neon and never overwrites anything.
 - The chat uses its own Postgres container (`chat-db`), separate from any

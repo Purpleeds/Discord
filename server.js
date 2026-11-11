@@ -5870,6 +5870,7 @@ io.use((socket, next) => {
 
 // ---------------- SOCKET EVENTS ----------------
 io.on('connection', (socket) => {
+  socket.emit('serverInfo', { version: APP_VERSION });
   // Any error thrown inside a socket handler used to become an unhandled
   // promise rejection - which crashes the whole Node process (everyone
   // disconnected) on a single bad database moment. Wrap every handler so
@@ -6509,6 +6510,66 @@ main().catch(err => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });
+
+// ---------------- AUTO-UPDATE (NAS) ----------------
+// The NAS container downloads the code at the commit it finds on GitHub and
+// writes that commit to .version. With AUTO_UPDATE_REPO ("owner/repo") set,
+// the server asks GitHub every few minutes whether the branch has moved on;
+// if so it tells everyone, shuts down, and Docker starts it again on the new
+// code. It waits while calls are going on (up to AUTO_UPDATE_MAX_WAIT_MIN),
+// and tries each new commit only once, so a failed download can't loop.
+const APP_VERSION = (() => {
+  try { return fs.readFileSync(path.join(__dirname, '.version'), 'utf8').trim(); } catch (_) { return String(process.env.APP_VERSION || '').trim(); }
+})();
+const AUTO_UPDATE_REPO = String(process.env.AUTO_UPDATE_REPO || '').trim();
+const AUTO_UPDATE_BRANCH = String(process.env.AUTO_UPDATE_BRANCH || 'main').trim();
+const AUTO_UPDATE_EVERY_MS = Math.max(1, Number(process.env.AUTO_UPDATE_MINUTES || 3)) * 60 * 1000;
+const AUTO_UPDATE_MAX_WAIT_MS = Math.max(0, Number(process.env.AUTO_UPDATE_MAX_WAIT_MIN || 120)) * 60 * 1000;
+const UPDATE_ATTEMPT_FILE = path.join(DATA_DIR, 'update-attempt');
+let updateEtag = '';
+let pendingUpdate = null; // { sha, since }
+function callsInProgress() {
+  for (const call of calls.values()) if (call.participants && call.participants.size) return true;
+  return false;
+}
+async function checkForUpdate() {
+  if (pendingUpdate || shuttingDown) return;
+  const res = await fetch(`https://api.github.com/repos/${AUTO_UPDATE_REPO}/commits/${encodeURIComponent(AUTO_UPDATE_BRANCH)}`, {
+    // a 304 (nothing new) doesn't count against GitHub's hourly limit
+    headers: Object.assign({ accept: 'application/vnd.github.sha', 'user-agent': 'chat-auto-update' }, updateEtag ? { 'if-none-match': updateEtag } : {}),
+    signal: AbortSignal.timeout(15000)
+  });
+  if (res.status === 304) return;
+  if (!res.ok) throw new Error('GitHub answered ' + res.status);
+  updateEtag = res.headers.get('etag') || '';
+  const sha = (await res.text()).trim();
+  if (!/^[0-9a-f]{40}$/.test(sha) || sha === APP_VERSION) return;
+  let tried = '';
+  try { tried = fs.readFileSync(UPDATE_ATTEMPT_FILE, 'utf8').trim(); } catch (_) {}
+  if (tried === sha) return; // already restarted for this one and it didn't take
+  pendingUpdate = { sha, since: Date.now() };
+  console.log(`update available: ${APP_VERSION.slice(0, 7) || '?'} -> ${sha.slice(0, 7)}`);
+  applyUpdateWhenQuiet();
+}
+function applyUpdateWhenQuiet() {
+  if (!pendingUpdate || shuttingDown) return;
+  if (callsInProgress() && Date.now() - pendingUpdate.since < AUTO_UPDATE_MAX_WAIT_MS) {
+    setTimeout(applyUpdateWhenQuiet, 60 * 1000).unref(); // check again in a minute
+    return;
+  }
+  try { fs.writeFileSync(UPDATE_ATTEMPT_FILE, pendingUpdate.sha); } catch (_) {}
+  console.log('restarting to update to', pendingUpdate.sha.slice(0, 7));
+  io.emit('serverUpdating', { version: pendingUpdate.sha });
+  setTimeout(() => shutdown('update'), 1500);
+}
+if (AUTO_UPDATE_REPO) {
+  if (!/^[\w.-]+\/[\w.-]+$/.test(AUTO_UPDATE_REPO)) console.error('AUTO_UPDATE_REPO must look like owner/repo');
+  else {
+    const tick = () => checkForUpdate().catch(err => console.error('update check failed:', err.message));
+    setTimeout(tick, 30 * 1000).unref();
+    setInterval(tick, AUTO_UPDATE_EVERY_MS).unref();
+  }
+}
 
 // Render sends SIGTERM before replacing the process on every deploy -
 // finish in-flight requests and close database connections cleanly

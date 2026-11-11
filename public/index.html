@@ -4742,25 +4742,33 @@ function gifLzw(pixels){
   if(bits > 0) out.push(cur & 255);
   return out;
 }
+// Returns the GIF as a list of byte chunks (one per frame), so a long GIF
+// (2 minutes = 1200 frames) never sits in one giant array.
 function encodeGif(frames, width, height, delayCs){
-  const bytes = [];
+  const parts = [];
+  let bytes = [];
   const u16 = v => { bytes.push(v & 255, (v >> 8) & 255); };
   const str = t => { for(const c of t) bytes.push(c.charCodeAt(0)); };
+  const flush = () => { parts.push(new Uint8Array(bytes)); bytes = []; };
   str('GIF89a'); u16(width); u16(height); bytes.push(0xF7, 0, 0);
   bytes.push(...GIF_PALETTE);
   bytes.push(0x21, 0xFF, 11); str('NETSCAPE2.0'); bytes.push(3, 1, 0, 0, 0); // loop forever
+  flush();
   frames.forEach(indices => {
     bytes.push(0x21, 0xF9, 4, (2 << 2) | 1); u16(delayCs); bytes.push(255, 0); // restore to background, transparent 255
     bytes.push(0x2C); u16(0); u16(0); u16(width); u16(height); bytes.push(0);
     bytes.push(8);
     const data = gifLzw(indices);
-    for(let i = 0; i < data.length; i += 255){ const chunk = data.slice(i, i + 255); bytes.push(chunk.length, ...chunk); }
+    for(let i = 0; i < data.length; i += 255){ const chunk = data.slice(i, i + 255); bytes.push(chunk.length); for(const b of chunk) bytes.push(b); }
     bytes.push(0);
+    flush();
   });
   bytes.push(0x3B);
-  return new Uint8Array(bytes);
+  flush();
+  return parts;
 }
-// Up to 6 seconds of the video, 10 frames a second, at most 240px a side.
+// Up to 2 minutes of the video (GIF_MAX_SECONDS), 10 frames a second, at most 240px a side.
+const GIF_MAX_SECONDS = 120;
 async function videoToGif(file, onProgress){
   const url = URL.createObjectURL(file);
   const video = document.createElement('video');
@@ -4771,7 +4779,7 @@ async function videoToGif(file, onProgress){
       video.currentTime = 1e7;
       await new Promise(ok => { video.onseeked = ok; });
     }
-    const duration = Math.min(6, isFinite(video.duration) ? video.duration : 3);
+    const duration = Math.min(GIF_MAX_SECONDS, isFinite(video.duration) ? video.duration : 3);
     const scale = Math.min(1, 240 / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.max(1, Math.round(video.videoWidth * scale)), h = Math.max(1, Math.round(video.videoHeight * scale));
     const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
@@ -4789,7 +4797,7 @@ async function videoToGif(file, onProgress){
       frames.push(idx);
       if(onProgress) onProgress((i + 1) / count);
     }
-    return new File([encodeGif(frames, w, h, 10)], (file.name.replace(/\.[^.]+$/, '') || 'sticker') + '.gif', { type:'image/gif' });
+    return new File(encodeGif(frames, w, h, 10), (file.name.replace(/\.[^.]+$/, '') || 'sticker') + '.gif', { type:'image/gif' });
   }finally{ URL.revokeObjectURL(url); }
 }
 // Pictures larger than 320px are scaled down; GIFs are kept as they are (animated).
@@ -7067,6 +7075,11 @@ function handleLocationHash(){
   openMessageLink(match[1]);
 }
 window.addEventListener('hashchange', handleLocationHash);
+// a push notification clicked while the app is already open in a tab
+if('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', e => {
+  const m = e.data && e.data.type === 'openUrl' && /^\/#m\/(\d+)$/.exec(String(e.data.url || ''));
+  if(m) openMessageLink(m[1]);
+});
 
 /* ============================ quick switcher (Ctrl+K) ============================ */
 // Jump to any channel, DM, group chat or server by typing part of its
@@ -10231,7 +10244,7 @@ function renderServerEmoji(c, sid){
     (manage ? section('Add a sticker',
       '<div class="rowFlex"><input class="settingsInput" id="stickerName" maxlength="30" placeholder="name, e.g. happy dance" style="max-width:240px">' +
       '<button class="btn" id="stickerUpload">Upload picture, GIF or video</button></div>' +
-      '<div class="switchDesc" style="margin-top:8px">Stickers are sent on their own with the sticker button by the message box. A video becomes a looping GIF (the first 6 seconds). Up to 30 per server.</div><div class="inlineMsg" id="stickerMsg"></div>') : '') +
+      '<div class="switchDesc" style="margin-top:8px">Stickers are sent on their own with the sticker button by the message box. A video becomes a looping GIF (up to the first 2 minutes). Up to 30 per server.</div><div class="inlineMsg" id="stickerMsg"></div>') : '') +
     section('Stickers (' + stickers.length + ')', '<div id="stickerList" class="emojiManageGrid"></div>');
   const grid = $('emojiList');
   if(!list.length) grid.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: manage ? 'No custom emoji yet - add the first one above.' : 'No custom emoji yet.' }));

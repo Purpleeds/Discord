@@ -193,6 +193,16 @@ large, new system - also split it over several sessions).
   or [Image]/[GIF]/[Sticker]) in the corner, top on phones; click to open.
   Settings > Notifications > Pop-ups. OS notifications now show the sender's picture.
 
+- [x] **Richer push notifications** - the sender's picture, [Image]/[GIF]/
+  [Sticker] tags, a big picture preview where supported, and clicking opens
+  that exact message.
+
+## Next: desktop app (.exe)
+
+- [ ] **Windows desktop app** - Electron shell around the live chat with
+  desktop pop-ups, tray, push-to-talk in games, screen-share picker,
+  installer + auto-update. Plan: [DESKTOP_APP.md](DESKTOP_APP.md).
+
 ## Decided against
 
 - Admins posting as a real member while muting them - it's impersonation
@@ -205,7 +215,7 @@ large, new system - also split it over several sessions).
 - Music bots - break YouTube's terms of service.
 - Developer portal, OAuth2, SDKs, embedded activities - platform tooling,
   far too big for this app.
-- Native Windows/Mac/Android/iOS apps - the PWA (item 1) covers this.
+- Native Mac/Android/iOS apps - the PWA (item 1) covers these.
 
 ## Already built (Nov 2026)
 

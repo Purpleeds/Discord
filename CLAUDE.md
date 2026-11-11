@@ -27,6 +27,8 @@ to do next) - read it before a big upgrade and add an entry after one.
   the server polls GitHub and restarts itself after a merge (waits for calls),
   and open pages reload when `serverInfo.version` changes.
 - `public/sw.js`: Web Push service worker.
+- `desktop/`: the Chat Notifier, a Windows tray program (Electron) - see
+  desktop/README.md. Released by `.github/workflows/notifier.yml`.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
   Calls need a real browser to check audio/video: Playwright's Chromium
   with `--use-fake-ui-for-media-stream --use-fake-device-for-media-stream`.
@@ -180,6 +182,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   before every send (bad stored rows are deleted). Max 10 per person.
 - Push payloads come from `pushContent()` (text + tags, optional `image`) with
   `pushIcon()` and a `/#m/<id>` link; `sw.js` posts `openUrl` to an open tab.
+- The notifier connects with `auth: { background: true }`: such sockets live in
+  `backgroundSockets`, not `onlineUsers` - they never count as online
+  (presence, push skip), but `sendToUser()`, `endSessions()`,
+  `disconnectUser()` and the Devices list include them (`allSocketIdsOf()`).
+  Tabs report `appVisible`; `syncNotifierState()` tells notifiers
+  `foreground` and tabs `notifier` (tabs then skip desktop notifications).
+  Keep `desktop/lib/logic.js` in step with the client's alert rules.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

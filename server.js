@@ -1109,6 +1109,29 @@ const SESSION_DAYS = 90;
 const SESSION_MS = SESSION_DAYS * 24 * 60 * 60 * 1000;
 const onlineUsers = new Map(); // username -> Set(socketId)
 const socketToUser = new Map(); // socketId -> username
+// The desktop notifier (desktop/) connects as a "background" device: it gets
+// the same live events as a tab (so access rules are the same), but it is NOT
+// counted as being online - presence, "online" lists and the push-skip all
+// ignore it. sendToUser() and the session/disconnect helpers include it.
+const backgroundSockets = new Map(); // username -> Set(socketId)
+const visibleSockets = new Set();    // tab sockets whose page is open and focused
+// Ids of every socket this person has, tabs and notifiers.
+function allSocketIdsOf(username) {
+  return [...(onlineUsers.get(username) || []), ...(backgroundSockets.get(username) || [])];
+}
+// Is a chat tab open and in front of this person right now?
+function chatInFront(username) {
+  return [...(onlineUsers.get(username) || [])].some(id => visibleSockets.has(id));
+}
+// Tell the person's notifiers whether a tab is in front (they stay quiet
+// then), and their tabs whether a notifier is running (tabs then leave
+// desktop pop-ups to it, so nothing shows twice).
+function syncNotifierState(username) {
+  const active = chatInFront(username);
+  for (const id of backgroundSockets.get(username) || []) io.to(id).emit('foreground', { active });
+  const running = (backgroundSockets.get(username) || new Set()).size > 0;
+  for (const id of onlineUsers.get(username) || []) io.to(id).emit('notifier', { running });
+}
 
 function cleanUsername(value) {
   return String(value || '').trim();
@@ -1155,7 +1178,8 @@ function deviceLabel(userAgent) {
   const ua = String(userAgent || '');
   if (!ua) return 'Unknown device';
   let browser = 'Browser';
-  if (/Edg(e|A|iOS)?\//.test(ua)) browser = 'Edge';
+  if (/ChatNotifier\//.test(ua)) browser = 'Chat Notifier';
+  else if (/Edg(e|A|iOS)?\//.test(ua)) browser = 'Edge';
   else if (/OPR\/|Opera/.test(ua)) browser = 'Opera';
   else if (/SamsungBrowser\//.test(ua)) browser = 'Samsung Internet';
   else if (/Firefox\/|FxiOS\//.test(ua)) browser = 'Firefox';
@@ -1250,7 +1274,7 @@ async function endSessions(username, keys, notice) {
   for (const key of keys) tokens.delete(key);
   await pool.query(`DELETE FROM sessions WHERE username = $1 AND token = ANY($2)`, [username, keys]);
   const gone = new Set(keys);
-  for (const id of [...(onlineUsers.get(username) || [])]) {
+  for (const id of allSocketIdsOf(username)) {
     const s = io.sockets.sockets.get(id);
     if (s && gone.has(s.sessionKey)) {
       s.emit('adminNotice', { message: notice });
@@ -1338,15 +1362,11 @@ function broadcastPresence() {
 }
 
 function sendToUser(username, event, data) {
-  const sockets = onlineUsers.get(username);
-  if (!sockets) return;
-  for (const id of sockets) io.to(id).emit(event, data);
+  for (const id of allSocketIdsOf(username)) io.to(id).emit(event, data);
 }
 
 function disconnectUser(username, reason = 'Disconnected by admin') {
-  const sockets = onlineUsers.get(username);
-  if (!sockets) return;
-  for (const id of [...sockets]) {
+  for (const id of allSocketIdsOf(username)) {
     const s = io.sockets.sockets.get(id);
     if (s) {
       s.emit('adminNotice', { message: reason });
@@ -2581,7 +2601,7 @@ app.get('/sessions', requireAuth, route(async (req, res) => {
     [req.username, req.sessionKey || '']
   );
   const live = new Set();
-  for (const id of onlineUsers.get(req.username) || []) {
+  for (const id of allSocketIdsOf(req.username)) {
     const s = io.sockets.sockets.get(id);
     if (s && s.sessionKey) live.add(s.sessionKey);
   }
@@ -5858,6 +5878,7 @@ io.use((socket, next) => {
       if (!user || user.banned) return next(new Error('not authenticated'));
       socket.username = session.username;
       socket.sessionKey = session.key; // lets "sign out that device" find this socket
+      socket.background = !!(socket.handshake.auth && socket.handshake.auth.background) && !user.is_bot;
       next();
     });
   }).catch(err => {
@@ -5886,11 +5907,26 @@ io.on('connection', (socket) => {
     }
   });
 
-  addOnlineUser(socket.username, socket.id);
-  getUser(socket.username).then(u => {
-    presenceChoice.set(socket.username, u && PRESENCE_VALUES.has(u.presence) ? u.presence : 'online');
-    broadcastPresence();
-  }).catch(() => broadcastPresence());
+  if (socket.background) {
+    if (!backgroundSockets.has(socket.username)) backgroundSockets.set(socket.username, new Set());
+    backgroundSockets.get(socket.username).add(socket.id);
+    syncNotifierState(socket.username);
+  } else {
+    addOnlineUser(socket.username, socket.id);
+    getUser(socket.username).then(u => {
+      presenceChoice.set(socket.username, u && PRESENCE_VALUES.has(u.presence) ? u.presence : 'online');
+      broadcastPresence();
+    }).catch(() => broadcastPresence());
+    socket.emit('notifier', { running: (backgroundSockets.get(socket.username) || new Set()).size > 0 });
+  }
+
+  // a tab says whether it's open and focused (the notifier stays quiet then)
+  socket.on('appVisible', (data = {}) => {
+    if (socket.background) return;
+    const was = visibleSockets.has(socket.id);
+    if (data.visible) visibleSockets.add(socket.id); else visibleSockets.delete(socket.id);
+    if (was !== visibleSockets.has(socket.id)) syncNotifierState(socket.username);
+  });
 
   socket.on('setPresence', async (data = {}, ack) => {
     const status = String(data.status || '');
@@ -6470,9 +6506,17 @@ io.on('connection', (socket) => {
       const p = call.participants.get(socket.username);
       if (p && p.socketId === socket.id) leaveCall(call.key, socket.username).catch(err => console.error('leaveCall failed:', err.message));
     }
+    if (socket.background) {
+      const set = backgroundSockets.get(socket.username);
+      if (set) { set.delete(socket.id); if (!set.size) backgroundSockets.delete(socket.username); }
+      syncNotifierState(socket.username);
+      return;
+    }
     removeOnlineUser(socket.id);
     idleSockets.delete(socket.id);
+    const wasInFront = visibleSockets.delete(socket.id);
     broadcastPresence();
+    if (wasInFront) syncNotifierState(socket.username);
   });
 });
 

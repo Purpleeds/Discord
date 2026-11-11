@@ -44,3 +44,8 @@ check that people reconnect, so run them on a server only the tests use.
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
+
+`notifier_ui` drives the desktop notifier (desktop/) with Playwright's
+Electron support against its own server on port 4102. It needs `npm install`
+in `desktop/` (it skips itself otherwise) and a display: on Linux it starts
+`Xvfb :97` when `DISPLAY` isn't set.

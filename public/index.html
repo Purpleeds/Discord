@@ -2496,12 +2496,22 @@ window.addEventListener('pagehide', stashDraft);
 
 /* ============================ sockets ============================ */
 let serverVersion = ''; // the code version the server had when this page loaded
+let notifierRunning = false; // the desktop notifier is connected for this account
+let lastVisibleSent = null;
+function reportVisible(){
+  const visible = document.visibilityState === 'visible' && document.hasFocus();
+  if(!socket || !socket.connected || visible === lastVisibleSent) return;
+  lastVisibleSent = visible;
+  socket.emit('appVisible', { visible });
+}
+['focus', 'blur', 'visibilitychange'].forEach(ev => (ev === 'visibilitychange' ? document : window).addEventListener(ev, () => setTimeout(reportVisible, 0)));
 function connectSocket(){
   socket = io({ auth:{ token } });
   setupVoiceSocket();
 
   socket.on('connect', async () => {
     connectionBack();
+    lastVisibleSent = null; reportVisible();
     reportedIdle = false;
     await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends()]);
     socket.emit('syncRooms');
@@ -2529,6 +2539,9 @@ function connectSocket(){
     location.reload();
   });
   socket.on('serverUpdating', () => toast('Updating the chat - back in a moment…'));
+  // the desktop notifier: told when this page is in front; while one is
+  // running it shows the desktop pop-ups, so this page doesn't
+  socket.on('notifier', data => { notifierRunning = !!(data && data.running); });
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
     connectionLost();
@@ -2803,6 +2816,7 @@ function handleIncomingDM(msg, kind){
 // the person right now.
 function maybeNotifyDesktop(msg, kind, title, room){
   if(!desktopNotificationsEnabled || !msg || msg.user === username) return;
+  if(notifierRunning) return; // the desktop notifier shows it instead
   if(!shouldAlert(msg, room || msg.room)) return; // muted channel or Do Not Disturb
   if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   if(!(document.hidden || !document.hasFocus())) return;
@@ -9379,7 +9393,7 @@ async function renderNotificationsSection(c){
   c.innerHTML =
     '<h2 class="settingsTitle">Notifications</h2>' +
     (blocked ? '<div class="settingsCard" style="margin-bottom:20px;color:var(--text)">Your browser is blocking notifications for this site. Allow them in the browser\'s site settings (the icon left of the address bar), then come back here.</div>' : '') +
-    section('Desktop', switchRow('notifyToggle', 'Desktop notifications', 'While this site is open in a tab you\'re not looking at (even minimised). They always say which channel or DM they\'re from.', desktopNotificationsEnabled)) +
+    section('Desktop', switchRow('notifyToggle', 'Desktop notifications', 'While this site is open in a tab you\'re not looking at (even minimised). They always say which channel or DM they\'re from. While the Chat Notifier app is running, it shows them instead.', desktopNotificationsEnabled)) +
     section('Push', switchRow('pushToggle', 'Push notifications', 'Even with the browser fully closed — for direct messages and @mentions, delivered by your browser\'s push service.', pushNotificationsEnabled) +
       (pushNotificationsEnabled ? '<button class="btn grey" id="pushTestBtn" style="margin-top:12px">Send test notification</button>' : '')) +
     section('Install the App', installAppHtml()) +

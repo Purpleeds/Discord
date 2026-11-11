@@ -1,0 +1,49 @@
+{
+  "name": "chat-notifier",
+  "productName": "Chat Notifier",
+  "version": "1.0.0",
+  "description": "Desktop pop-ups for the chat, from the system tray.",
+  "main": "main.js",
+  "private": true,
+  "author": "Purpleeds",
+  "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/Purpleeds/Discord.git" },
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/logic.test.js",
+    "test:e2e": "node ../regression/notifier_ui.test.js",
+    "test:packaged": "node test/smoke-packaged.js",
+    "dist": "electron-builder --win nsis portable --x64 --publish never"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {
+    "electron": "38.8.6",
+    "electron-builder": "26.0.12",
+    "playwright-core": "1.64.1"
+  },
+  "build": {
+    "appId": "com.purpleeds.chatnotifier",
+    "productName": "Chat Notifier",
+    "copyright": "Purpleeds",
+    "directories": { "output": "dist", "buildResources": "assets" },
+    "files": ["main.js", "lib/**", "ui/**", "assets/**", "package.json"],
+    "win": {
+      "icon": "assets/icon.ico",
+      "artifactName": "Chat-Notifier-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Chat Notifier",
+      "artifactName": "Chat-Notifier-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Chat-Notifier-${version}-portable.${ext}"
+    }
+  }
+}

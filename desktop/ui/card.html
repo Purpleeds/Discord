@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- only this folder's own files, and pictures from the chat -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src https: http: data:">
+<title>Chat Notifier</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="card.css">
+</head>
+<body>
+<div class="card" id="card" role="button" aria-live="polite">
+  <div class="top">
+    <div class="avatar" id="avatar"></div>
+    <div class="who">
+      <div class="name"><span id="name"></span><span class="count" id="count" hidden></span></div>
+      <div class="where" id="where"></div>
+    </div>
+    <button class="close" id="close" aria-label="Dismiss" title="Dismiss">×</button>
+  </div>
+  <div class="body" id="body"></div>
+  <div class="app">Chat</div>
+  <div class="timer" id="timer"></div>
+</div>
+<script src="card.js"></script>
+</body>
+</html>

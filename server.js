@@ -747,6 +747,18 @@ async function setupSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_server ON audit_log (server_id, id DESC)`);
+  // ---- stickers ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_stickers (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      url TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_stickers_server ON server_stickers (server_id)`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sticker_id INTEGER`);
   // ---- custom emoji ----
   await pool.query(`
     CREATE TABLE IF NOT EXISTS server_emojis (
@@ -987,7 +999,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room, limit = 300) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, sticker_id, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2
      ) recent ORDER BY id ASC`,
     [room, limit]
@@ -996,7 +1008,7 @@ async function getMessagesForRoom(room, limit = 300) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, sticker_id, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
@@ -1413,7 +1425,7 @@ const ROLE_PERMISSIONS = [
   'manage_events',        // create, edit and cancel events
   'mention_everyone',     // @everyone, and roles that aren't mentionable
   'ban_members',          // ban from this server (and unban); time members out
-  'manage_emoji',         // add and remove this server's custom emoji
+  'manage_emoji',         // add and remove this server's custom emoji and stickers
   'use_personas'          // post under a made-up, clearly labelled name and picture
 ];
 const ALL_PERMISSIONS = new Set(ROLE_PERMISSIONS);
@@ -1454,7 +1466,7 @@ const PERMISSION_LABELS = {
   manage_server: 'Manage server', manage_channels: 'Manage channels', manage_roles: 'Manage roles',
   manage_messages: 'Manage messages', kick_members: 'Kick members', manage_integrations: 'Manage bots & webhooks',
   manage_events: 'Manage events', mention_everyone: 'Mention @everyone',
-  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji', use_personas: 'Post as a persona'
+  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji & stickers', use_personas: 'Post as a persona'
 };
 // No climbing: a role (and so a member) can only be given, taken or edited
 // by someone who already has every power that role carries.
@@ -1555,6 +1567,7 @@ async function serversForUser(username) {
   const isBot = await isBotUser(username);
   const ids = rows.map(s => s.id);
   const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
+  const stickerRows = await q(`SELECT id, server_id, name, url FROM server_stickers WHERE server_id = ANY($1) ORDER BY id`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
     q(`SELECT server_id, role, nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
@@ -1604,6 +1617,7 @@ async function serversForUser(username) {
       canManageOwnerLevel: admin || isOwner,
       permissions,
       emojis: emojiRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
+      stickers: stickerRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
       myServerProfile: myMemberRows.has(s.id) ? serverProfileFromRow(myMemberRows.get(s.id)) : null,
       canHideRoles: !s.is_default && (admin || isOwner || role === 'admin' ||
         customRoleRows.some(r => r.server_id === s.id && r.allow_hide && myRoleRows.some(m => m.server_id === s.id && m.role_id === r.id))),
@@ -2003,6 +2017,8 @@ async function normaliseMessages(rows) {
     if (!attachmentsBy.has(mid)) attachmentsBy.set(mid, []);
     attachmentsBy.get(mid).push(f);
   }
+  const stickerIds = [...new Set(rows.filter(r => r.sticker_id).map(r => r.sticker_id))];
+  const stickersBy = new Map(stickerIds.length ? (await q(`SELECT id, name, url FROM server_stickers WHERE id = ANY($1)`, [stickerIds])).map(t => [t.id, t]) : []);
   const reactionRolesBy = new Map();
   for (const r of roleRows) {
     if (!reactionRolesBy.has(r.message_id)) reactionRolesBy.set(r.message_id, []);
@@ -2024,6 +2040,8 @@ async function normaliseMessages(rows) {
       // a persona is labelled as one, and everyone can see who posted it
       persona: !!row.persona,
       attachments: deleted ? [] : (attachmentsBy.get(row.id) || []),
+      // a removed sticker still shows that one was sent
+      sticker: row.sticker_id && !deleted ? (stickersBy.get(row.sticker_id) || { id: row.sticker_id, name: 'Sticker', url: '', removed: true }) : null,
       commandName: row.command_name || '',
       invokedBy: row.invoked_by || '',
       reactionRoles: deleted ? [] : (reactionRolesBy.get(row.id) || []),
@@ -2420,6 +2438,7 @@ async function removeUnusedAssets() {
        AND NOT EXISTS (SELECT 1 FROM users u WHERE u.banner_url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.banner_url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_emojis e WHERE e.url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM server_stickers st WHERE st.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM messages pm WHERE pm.persona_avatar LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%')
      RETURNING key`
@@ -4839,6 +4858,43 @@ app.post('/servers/:id/emojis/:emojiId/delete', requireAuth, route(async (req, r
   auditLog(serverId, req.username, 'emoji_remove', ':' + row.name + ':');
   res.json({ message: 'ok' });
 }));
+// Stickers: a server's own pictures and animated GIFs, sent as a message of
+// their own. Videos are turned into GIFs in the browser before upload, so
+// the server only ever stores pictures.
+const MAX_STICKERS_PER_SERVER = 30;
+app.post('/servers/:id/stickers', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'add stickers'))) return;
+  const name = cleanText(req.body.name || '', 30);
+  if (name.length < 2) return res.status(400).json({ error: 'give the sticker a name (2-30 characters)' });
+  const problem = await assetProblem(req.body.url, req.username, false);
+  if (problem || !req.body.url) return res.status(400).json({ error: problem || 'upload a picture or GIF first' });
+  const count = await one(`SELECT count(*)::int AS n FROM server_stickers WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_STICKERS_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_STICKERS_PER_SERVER} stickers` });
+  const row = await one(`INSERT INTO server_stickers (server_id, name, url, created_by) VALUES ($1, $2, $3, $4) RETURNING id, name, url`, [serverId, name, String(req.body.url), req.username]);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'sticker_add', name);
+  res.status(201).json(row);
+}));
+app.post('/servers/:id/stickers/:stickerId/delete', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'remove stickers'))) return;
+  const row = await one(`DELETE FROM server_stickers WHERE id = $1 AND server_id = $2 RETURNING name`, [Number(req.params.stickerId), serverId]);
+  if (!row) return res.status(404).json({ error: 'sticker not found' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'sticker_remove', row.name);
+  res.json({ message: 'ok' });
+}));
+// A sticker someone may send in `room`: one of that server's, or in a DM or
+// group chat, one from any server they're in. Returns the row or null.
+async function usableSticker(username, room, stickerId) {
+  const sticker = await one(`SELECT id, server_id FROM server_stickers WHERE id = $1`, [Number(stickerId) || 0]);
+  if (!sticker) return null;
+  const channel = await channelForRoom(room);
+  if (channel) return channel.server_id === sticker.server_id ? sticker : null;
+  return (await isServerMember(username, sticker.server_id)) ? sticker : null;
+}
+
 // A reaction is one of the built-in emoji, or a custom emoji of the server
 // the message is in (written <:name:id>).
 async function validReaction(emoji, room) {
@@ -5805,7 +5861,12 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'forbidden room' });
       return;
     }
-    if (!text && !attached.ids.length) return;
+    let sticker = null;
+    if (data.stickerId) {
+      sticker = await usableSticker(socket.username, room, data.stickerId);
+      if (!sticker) { if (typeof ack === 'function') ack({ error: 'that sticker isn\'t available here' }); return; }
+    }
+    if (!text && !attached.ids.length && !sticker) return;
     const blocked = await channelPostBlock(socket.username, room);
     if (blocked) {
       if (typeof ack === 'function') ack({ error: blocked });
@@ -5827,6 +5888,7 @@ io.on('connection', (socket) => {
       if (channel) auditLog(channel.server_id, socket.username, 'persona_post', persona.name, 'message ' + created.id);
     }
     await claimAttachments(created.id, attached.ids);
+    if (sticker) created = await one(`UPDATE messages SET sticker_id = $1 WHERE id = $2 RETURNING *`, [sticker.id, created.id]);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
     await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
@@ -5953,7 +6015,12 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'invalid recipient' });
       return;
     }
-    if (!text && !attached.ids.length) return;
+    let sticker = null;
+    if (data.stickerId) {
+      sticker = validUsername(to) ? await usableSticker(socket.username, makeDMRoom(socket.username, to), data.stickerId) : null;
+      if (!sticker) { if (typeof ack === 'function') ack({ error: 'that sticker isn\'t available here' }); return; }
+    }
+    if (!text && !attached.ids.length && !sticker) return;
     const block = await blockBetween(socket.username, to);
     if (block) {
       if (typeof ack === 'function') ack({ error: dmBlockedError(block) });
@@ -5965,14 +6032,15 @@ io.on('connection', (socket) => {
     }
 
     const room = makeDMRoom(socket.username, to);
-    const created = await insertMessage(room, socket.username, text, to, 0, replyTo);
+    let created = await insertMessage(room, socket.username, text, to, 0, replyTo);
     await claimAttachments(created.id, attached.ids);
+    if (sticker) created = await one(`UPDATE messages SET sticker_id = $1 WHERE id = $2 RETURNING *`, [sticker.id, created.id]);
     const msg = await normaliseMessage(created);
     sendToUser(socket.username, 'dmMessage', msg);
     sendToUser(to, 'dmMessage', msg);
     sendPushToUser(to, {
       title: `${socket.username} sent you a message`,
-      body: text.slice(0, 140) || 'Sent a file',
+      body: text.slice(0, 140) || (sticker ? 'Sent a sticker' : 'Sent a file'),
       tag: 'dm:' + room,
       url: '/'
     }).catch(err => console.error('sendPushToUser failed:', err.message));
@@ -5987,7 +6055,7 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: 'message not found' });
       return;
     }
-    if (row.user !== socket.username || row.kind || !(await isAllowedRoom(socket.username, row.room))) {
+    if (row.user !== socket.username || row.kind || row.sticker_id || !(await isAllowedRoom(socket.username, row.room))) {
       if (typeof ack === 'function') ack({ error: 'you can only edit your own messages' });
       return;
     }

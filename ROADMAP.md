@@ -183,6 +183,10 @@ large, new system - also split it over several sessions).
 - [x] **Personas** ("Post as a persona" power): made-up name and picture,
   labelled, shows who posted, never a real member's name; audit-logged.
 
+- [x] **Stickers** - sticker button by the message box; admins (Manage emoji &
+  stickers) add pictures, GIFs or videos, which become looping GIFs in the
+  browser. Up to 30 per server.
+
 ## Decided against
 
 - Admins posting as a real member while muting them - it's impersonation

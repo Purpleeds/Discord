@@ -21,7 +21,10 @@ const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done, uid
   await page.fill('#username', o); await page.fill('#password', 'secret123'); await page.click('#loginSubmit');
   await page.waitForSelector('#app.ready'); await sleep(1200);
   await page.evaluate(([s, r]) => { switchServer(s); openChannel(r); }, [sid, general.room]); await sleep(800);
-  check('no sticker button while the server has none', await page.evaluate(() => document.getElementById('stickerBtn').hidden));
+  check('sticker button shows even before there are stickers', await page.evaluate(() => !document.getElementById('stickerBtn').hidden));
+  await page.click('#stickerBtn'); await sleep(300);
+  check('empty picker offers to add some (owner)', await page.evaluate(() => /Add stickers/.test(document.getElementById('stickerPicker').textContent)));
+  await page.keyboard.press('Escape'); await page.mouse.click(700, 300); await sleep(200);
 
   // a real 2-second video, recorded in the page
   const webm = await page.evaluate(async () => {

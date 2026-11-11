@@ -4501,7 +4501,8 @@ function availableStickers(){
   const found = channelByRoom(currentRoom);
   return found && (found.server.stickers || []).length ? [{ server:found.server, list:found.server.stickers }] : [];
 }
-function paintStickerButton(){ const b = $('stickerBtn'); if(b) b.hidden = !availableStickers().length; }
+// Always there in servers, DMs and groups; an empty picker says how to add some.
+function paintStickerButton(){ const b = $('stickerBtn'); if(b) b.hidden = !(activeDMUser || currentGroupRoom || channelByRoom(currentRoom)); }
 function openStickerPicker(event){
   event.stopPropagation();
   let pop = $('stickerPicker');
@@ -4517,7 +4518,19 @@ function openStickerPicker(event){
   }
   pop.innerHTML = '';
   const groups = availableStickers();
-  if(!groups.length){ pop.innerHTML = '<div class="switchDesc">No stickers yet. Admins add them in Server Settings &gt; Emoji &amp; Stickers.</div>'; }
+  if(!groups.length){
+    const here = channelByRoom(currentRoom);
+    const server = here && here.server;
+    pop.innerHTML = '<div class="switchDesc">No stickers yet. ' + (server && can(server, 'manage_emoji') ? '' : 'Admins add them in Server Settings &gt; Emoji &amp; Stickers.') + '</div>';
+    if(server && can(server, 'manage_emoji')){
+      const add = document.createElement('button');
+      add.className = 'btn';
+      add.style.marginTop = '10px';
+      add.textContent = 'Add stickers';
+      add.onclick = () => { pop.classList.remove('open'); openServerSettings(server.id, 'emoji'); };
+      pop.appendChild(add);
+    }
+  }
   groups.forEach(g => {
     pop.appendChild(Object.assign(document.createElement('div'), { className:'pickerTitle', textContent:g.server.name }));
     const grid = document.createElement('div');
@@ -9305,7 +9318,7 @@ function openServerSettings(serverId, sectionKey){
       { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
       { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!can(server, 'manage_integrations') },
-      { key:'emoji', label:'Emoji & Stickers', render:c => renderServerEmoji(c, sid), hidden:server.isDefault },
+      { key:'emoji', label:'Emoji & Stickers', render:c => renderServerEmoji(c, sid), hidden:!can(server, 'manage_emoji') && server.isDefault },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
     ]},

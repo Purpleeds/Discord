@@ -38,6 +38,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `v3_ui` | new login screen, unread badges and New line, attachments, drafts, failed sends, connection banner, Devices, phone |
 | `permissions` / `profiles` / `roles_ui` | role permissions and presets, no climbing; per-server profiles, hidden roles, picture/GIF/video banners |
 | `batch5_api` / `batch5_ui` | files inside messages, bans/timeouts/audit log, custom emoji, personas, unread dots vs mention numbers, TURN logins |
+| `stickers` | a recorded video becomes an animated GIF sticker, the sticker button, who may use which sticker |
 | `batch1` / `batch2` | polls, links, search, mentions, mutuals / private channels, threads, forums, events |
 | `batch4_api` / `batch4_ui` / `ssrf` / `previews_ui` | webhooks, commands, reaction roles, link previews and their SSRF guards |
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |

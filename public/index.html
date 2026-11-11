@@ -1785,6 +1785,18 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
 .modRow .grow{flex:1;min-width:0;}
 .modRow .rowTitle{font-weight:600;color:var(--text-bright);}
 .modRow .rowSub{font-size:12.5px;color:var(--text-muted);}
+
+/* ---- stickers ---- */
+.stickerMsg img{display:block;width:160px;height:160px;object-fit:contain;margin-top:4px;}
+.stickerMsg{color:var(--text-muted);font-size:13px;font-style:italic;}
+.stickerPicker{position:fixed;z-index:60;display:none;width:340px;max-height:380px;overflow:auto;padding:12px;border-radius:var(--r-card);background:var(--raised);border:1px solid var(--line-strong);box-shadow:var(--shadow-float);}
+.stickerPicker.open{display:block;}
+.stickerGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px;}
+.stickerGrid button{aspect-ratio:1;border:0;border-radius:12px;background:transparent;padding:4px;cursor:pointer;}
+.stickerGrid button:hover{background:var(--raised-2);}
+.stickerGrid img{width:100%;height:100%;object-fit:contain;}
+.stickerCell img{width:72px;height:72px;}
+@media (max-width:900px){.stickerPicker{width:calc(100vw - 24px);}}
 </style>
 </head>
 
@@ -1912,6 +1924,7 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
           <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
           <button id="personaBtn" title="Post as a persona" aria-label="Post as a persona" onclick="openPersonaPicker()" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5c3 1.3 5 1.3 8 0s5-1.3 8 0v6c0 4.5-3.6 8-8 8s-8-3.5-8-8z"/><path d="M8.5 10.5h1.5M14 10.5h1.5M9.5 14.5c1.6 1.2 3.4 1.2 5 0"/></svg></button>
+          <button id="stickerBtn" title="Stickers" aria-label="Stickers" onclick="openStickerPicker(event)" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h7.5L21 14.5V7a4 4 0 0 0-4-4z"/><path d="M14 21v-3.5a3.5 3.5 0 0 1 3.5-3.5H21"/><path d="M8.5 10h.01M14.5 10h.01M8.5 14.5c1 .9 2.2 1.3 3.5 1.3"/></svg></button>
           <button id="emojiBtn" title="Emoji" aria-label="Emoji" onclick="openEmojiPicker(event,'composer')"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.8 1.2 2 1.9 3.4 1.9s2.6-.7 3.4-1.9"/><circle cx="9.2" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="14.8" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></button>
           <button id="sendBtn" title="Send (Enter)" aria-label="Send message" onclick="sendMessage()"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.1 6.5L15 12 3.5 13.9z"/></svg></button>
         </div>
@@ -2835,6 +2848,7 @@ async function loadServers(){
     const response = await fetch('/servers', { headers: bearer() });
     if(!response.ok) return;
     servers = await response.json();
+    setTimeout(paintStickerButton, 0);
   }catch(e){}
 }
 
@@ -3462,7 +3476,7 @@ function enterRoom(room){
   closeFriends();
   closeForum();
   switchDraftTo(room);
-  setTimeout(paintPersonaUi, 0);
+  setTimeout(() => { paintPersonaUi(); paintStickerButton(); }, 0);
   unread[room] = 0;
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
@@ -3886,7 +3900,17 @@ function buildMessageEl(item, grouped){
       text.appendChild(edited);
     }
     if(data.pinned) text.appendChild(pinMarker());
-    if(!data.text && (data.attachments || []).length && !data.editedAt && !data.pinned) text.style.display = 'none';
+    if(!data.text && ((data.attachments || []).length || data.sticker) && !data.editedAt && !data.pinned) text.style.display = 'none';
+    if(data.sticker){
+      const st = document.createElement('div');
+      st.className = 'stickerMsg';
+      if(data.sticker.url){
+        const img = document.createElement('img');
+        img.src = data.sticker.url; img.alt = data.sticker.name; img.title = data.sticker.name;
+        st.appendChild(img);
+      }else st.textContent = 'This sticker was removed.';
+      body.appendChild(st);
+    }
     body.appendChild(text);
     if((data.attachments || []).length){
       const holder = document.createElement('div');
@@ -4452,6 +4476,158 @@ function sendReaction(id, emoji){
   socket.emit('reactMessage', { id, emoji }, result => { if(result && result.error) showError(result.error); });
 }
 
+/* ---- stickers ---- */
+// The stickers you can send here: this server's, or in a DM or group chat,
+// those of every server you're in.
+function availableStickers(){
+  if(activeDMUser || currentGroupRoom) return servers.filter(s => (s.stickers || []).length).map(s => ({ server:s, list:s.stickers }));
+  const found = channelByRoom(currentRoom);
+  return found && (found.server.stickers || []).length ? [{ server:found.server, list:found.server.stickers }] : [];
+}
+function paintStickerButton(){ const b = $('stickerBtn'); if(b) b.hidden = !availableStickers().length; }
+function openStickerPicker(event){
+  event.stopPropagation();
+  let pop = $('stickerPicker');
+  if(pop && pop.classList.contains('open')){ pop.classList.remove('open'); return; }
+  closePopouts();
+  if(!pop){
+    pop = document.createElement('div');
+    pop.id = 'stickerPicker';
+    pop.className = 'stickerPicker';
+    pop.addEventListener('click', e => e.stopPropagation());
+    document.body.appendChild(pop);
+    document.addEventListener('click', () => pop.classList.remove('open'));
+  }
+  pop.innerHTML = '';
+  const groups = availableStickers();
+  if(!groups.length){ pop.innerHTML = '<div class="switchDesc">No stickers yet. Admins add them in Server Settings &gt; Emoji &amp; Stickers.</div>'; }
+  groups.forEach(g => {
+    pop.appendChild(Object.assign(document.createElement('div'), { className:'pickerTitle', textContent:g.server.name }));
+    const grid = document.createElement('div');
+    grid.className = 'stickerGrid';
+    g.list.forEach(st => {
+      const b = document.createElement('button');
+      b.title = st.name;
+      b.setAttribute('aria-label', 'Send sticker ' + st.name);
+      const img = document.createElement('img'); img.src = st.url; img.alt = '';
+      b.appendChild(img);
+      b.onclick = () => {
+        pop.classList.remove('open');
+        postChatMessage('', replyTo, [], st);
+        cancelReply();
+      };
+      grid.appendChild(b);
+    });
+    pop.appendChild(grid);
+  });
+  const r = event.currentTarget.getBoundingClientRect();
+  pop.classList.add('open');
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  pop.style.left = Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + 'px';
+  pop.style.top = Math.max(12, r.top - h - 10) + 'px';
+}
+
+// ---- turning a short video into an animated GIF, in the browser ----
+// A small GIF89a writer: a fixed 256-colour palette (a 6x6x6 colour cube
+// plus greys) and LZW compression, so no library is needed.
+const GIF_PALETTE = (() => {
+  const p = [];
+  for(let r = 0; r < 6; r++) for(let g = 0; g < 6; g++) for(let b = 0; b < 6; b++) p.push(r * 51, g * 51, b * 51);
+  for(let i = 0; i < 39; i++){ const v = Math.round(i * 255 / 38); p.push(v, v, v); }
+  p.push(0, 0, 0); // 255: transparent
+  return p;
+})();
+function gifIndex(r, g, b, a){
+  if(a < 128) return 255;
+  if(Math.max(r, g, b) - Math.min(r, g, b) < 14) return 216 + Math.round(((r + g + b) / 3) * 38 / 255);
+  return Math.round(r / 51) * 36 + Math.round(g / 51) * 6 + Math.round(b / 51);
+}
+function gifLzw(pixels){
+  const out = [];
+  let cur = 0, bits = 0, size = 9, next = 258;
+  const dict = new Map();
+  const write = code => { cur |= code << bits; bits += size; while(bits >= 8){ out.push(cur & 255); cur >>>= 8; bits -= 8; } };
+  const emit = code => { write(code); if(next > (1 << size) - 1 && size < 12) size++; };
+  write(256);
+  let prefix = pixels[0];
+  for(let i = 1; i < pixels.length; i++){
+    const k = pixels[i];
+    const key = prefix * 256 + k;
+    const hit = dict.get(key);
+    if(hit !== undefined){ prefix = hit; continue; }
+    emit(prefix);
+    if(next < 4096) dict.set(key, next++);
+    else { write(256); dict.clear(); next = 258; size = 9; }
+    prefix = k;
+  }
+  emit(prefix);
+  emit(257);
+  if(bits > 0) out.push(cur & 255);
+  return out;
+}
+function encodeGif(frames, width, height, delayCs){
+  const bytes = [];
+  const u16 = v => { bytes.push(v & 255, (v >> 8) & 255); };
+  const str = t => { for(const c of t) bytes.push(c.charCodeAt(0)); };
+  str('GIF89a'); u16(width); u16(height); bytes.push(0xF7, 0, 0);
+  bytes.push(...GIF_PALETTE);
+  bytes.push(0x21, 0xFF, 11); str('NETSCAPE2.0'); bytes.push(3, 1, 0, 0, 0); // loop forever
+  frames.forEach(indices => {
+    bytes.push(0x21, 0xF9, 4, (2 << 2) | 1); u16(delayCs); bytes.push(255, 0); // restore to background, transparent 255
+    bytes.push(0x2C); u16(0); u16(0); u16(width); u16(height); bytes.push(0);
+    bytes.push(8);
+    const data = gifLzw(indices);
+    for(let i = 0; i < data.length; i += 255){ const chunk = data.slice(i, i + 255); bytes.push(chunk.length, ...chunk); }
+    bytes.push(0);
+  });
+  bytes.push(0x3B);
+  return new Uint8Array(bytes);
+}
+// Up to 6 seconds of the video, 10 frames a second, at most 240px a side.
+async function videoToGif(file, onProgress){
+  const url = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.muted = true; video.playsInline = true; video.preload = 'auto'; video.src = url;
+  try{
+    await new Promise((ok, bad) => { video.onloadeddata = ok; video.onerror = () => bad(new Error('This video format can\'t be read here. Try an MP4 or WEBM.')); });
+    if(!isFinite(video.duration)){ // recorded videos often don't know their length until the end is read
+      video.currentTime = 1e7;
+      await new Promise(ok => { video.onseeked = ok; });
+    }
+    const duration = Math.min(6, isFinite(video.duration) ? video.duration : 3);
+    const scale = Math.min(1, 240 / Math.max(video.videoWidth, video.videoHeight));
+    const w = Math.max(1, Math.round(video.videoWidth * scale)), h = Math.max(1, Math.round(video.videoHeight * scale));
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+    const g = canvas.getContext('2d', { willReadFrequently:true });
+    const fps = 10, count = Math.max(1, Math.floor(duration * fps));
+    const frames = [];
+    for(let i = 0; i < count; i++){
+      video.currentTime = Math.min(i / fps, Math.max(0, video.duration - 0.01 || 0));
+      await new Promise(ok => { video.onseeked = ok; });
+      g.clearRect(0, 0, w, h);
+      g.drawImage(video, 0, 0, w, h);
+      const px = g.getImageData(0, 0, w, h).data;
+      const idx = new Uint8Array(w * h);
+      for(let j = 0, k = 0; j < idx.length; j++, k += 4) idx[j] = gifIndex(px[k], px[k + 1], px[k + 2], px[k + 3]);
+      frames.push(idx);
+      if(onProgress) onProgress((i + 1) / count);
+    }
+    return new File([encodeGif(frames, w, h, 10)], (file.name.replace(/\.[^.]+$/, '') || 'sticker') + '.gif', { type:'image/gif' });
+  }finally{ URL.revokeObjectURL(url); }
+}
+// Pictures larger than 320px are scaled down; GIFs are kept as they are (animated).
+async function prepareStickerFile(file, onProgress){
+  if(file.type.startsWith('video/')) return videoToGif(file, onProgress);
+  if(file.type === 'image/gif') return file;
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 320 / Math.max(bmp.width, bmp.height));
+  if(scale === 1 && file.size < 1024 * 1024) return file;
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise(ok => c.toBlob(ok, 'image/png'));
+  return new File([blob], 'sticker.png', { type:'image/png' });
+}
+
 /* ---- personas ---- */
 // Someone with "Post as a persona" can post under a made-up name and picture
 // in a server's channels. It's always labelled, and shows who posted it.
@@ -4591,10 +4767,11 @@ function uploadAttachment(file, room, toUser, index, total){
 // Shows the message right away (greyed out) and sends it. While the
 // connection is down socket.io holds it and sends it on reconnect; the
 // banner over the chat says so. `reply` is the message being replied to.
-function postChatMessage(sendText, reply, attachments){
+function postChatMessage(sendText, reply, attachments, sticker){
   attachments = attachments || [];
   const dmUser = activeDMUser;
   const payload = { text: sendText, replyTo: reply ? reply.id : null, attachments: attachments.map(a => a.id) };
+  if(sticker) payload.stickerId = sticker.id;
   const persona = !dmUser ? activePersona() : null;
   if(persona) payload.persona = persona;
   const room = dmUser ? roomNameForDM(username, dmUser) : currentRoom;
@@ -4606,7 +4783,7 @@ function postChatMessage(sendText, reply, attachments){
       avatarUrl: avatarUrlFor(username), text: sendText, to: dmUser || '', dmTo: dmUser || '',
       isGroup: !!currentGroupRoom, replyTo: reply ? { id:reply.id, user:reply.user, displayName:reply.displayName, text:reply.text } : null,
       editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true,
-      attachments, persona: !!persona, ...(persona ? { displayName: persona.name, avatarUrl: persona.avatarUrl || '' } : {})
+      attachments, sticker: sticker || null, persona: !!persona, ...(persona ? { displayName: persona.name, avatarUrl: persona.avatarUrl || '' } : {})
     }
   };
   appendItem(pendingItem);
@@ -4616,7 +4793,7 @@ function postChatMessage(sendText, reply, attachments){
   // later message in the same room.
   setTimeout(() => pendingSends.delete(tempId), 15000);
   const onResult = result => {
-    if(result && result.error){ markSendFailed(tempId, { text: sendText, reply, room, dmUser, attachments }, result.error); pendingSends.delete(tempId); return; }
+    if(result && result.error){ markSendFailed(tempId, { text: sendText, reply, room, dmUser, attachments, sticker }, result.error); pendingSends.delete(tempId); return; }
     if(result && result.id) confirmPendingSendId(tempId, result.id);
   };
   if(dmUser){
@@ -4727,7 +4904,7 @@ function markSendFailed(tempId, again, reason){
         if(!stillThere){ toast('Go back to that conversation to send it again.'); return; }
         forgetFailedSend(tempId);
         el.remove();
-        postChatMessage(again.text, again.reply, again.attachments);
+        postChatMessage(again.text, again.reply, again.attachments, again.sticker);
       };
       text.appendChild(retry);
       const drop = document.createElement('button');
@@ -9118,7 +9295,7 @@ const PERMISSION_INFO = [
   { key:'manage_events', label:'Manage events', desc:'Create, edit and cancel events.' },
   { key:'mention_everyone', label:'Mention @everyone', desc:'Use @everyone, and mention roles that aren\'t open to everyone.' },
   { key:'ban_members', label:'Ban & time out members', desc:'Ban people from this server (they can\'t rejoin until unbanned) and time members out so they can\'t post for a while.' },
-  { key:'manage_emoji', label:'Manage emoji', desc:'Add and remove this server\'s custom emoji.' },
+  { key:'manage_emoji', label:'Manage emoji & stickers', desc:'Add and remove this server\'s custom emoji and stickers.' },
   { key:'use_personas', label:'Post as a persona', desc:'Post under a made-up name and picture. Always labelled as a persona, shows who posted it, and can never use a real member\'s name.' }
 ];
 const PERMISSION_PRESETS = [
@@ -9153,7 +9330,7 @@ function openServerSettings(serverId, sectionKey){
       { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
       { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!can(server, 'manage_integrations') },
-      { key:'emoji', label:'Emoji', render:c => renderServerEmoji(c, sid), hidden:server.isDefault },
+      { key:'emoji', label:'Emoji & Stickers', render:c => renderServerEmoji(c, sid), hidden:server.isDefault },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
     ]},
@@ -9850,7 +10027,7 @@ const AUDIT_LABELS = {
   message_delete:'deleted a message by', file_delete:'deleted a file by', role_create:'created the role', role_update:'changed the role',
   role_delete:'deleted a role', member_roles:'changed the roles of', channel_create:'created', channel_update:'edited', channel_delete:'deleted',
   server_update:'changed the server settings', webhook_delete:'deleted the webhook', emoji_add:'added the emoji', emoji_remove:'removed the emoji',
-  persona_post:'posted as the persona'
+  persona_post:'posted as the persona', sticker_add:'added the sticker', sticker_remove:'removed the sticker'
 };
 async function loadModerationLists(sid){
   const listRow = (main, sub, button) => {
@@ -9902,13 +10079,19 @@ function renderServerEmoji(c, sid){
   if(!server){ c.innerHTML = ''; return; }
   const manage = can(server, 'manage_emoji');
   const list = server.emojis || [];
-  c.innerHTML = '<h2 class="settingsTitle">Emoji</h2>' +
+  const stickers = server.stickers || [];
+  c.innerHTML = '<h2 class="settingsTitle">Emoji & Stickers</h2>' +
     '<div class="settingsSub">This server\'s own emoji. Type <b>:name:</b> in a message, or pick them from the emoji button. They work as reactions too.</div>' +
     (manage ? section('Add an emoji',
       '<div class="rowFlex"><input class="settingsInput" id="emojiName" maxlength="32" placeholder="name, e.g. party_cat" style="max-width:240px">' +
       '<button class="btn" id="emojiUpload">Upload picture or GIF</button></div>' +
       '<div class="switchDesc" style="margin-top:8px">Square pictures work best. Names use lowercase letters, numbers and _. Up to 50 per server.</div><div class="inlineMsg" id="emojiMsg"></div>') : '') +
-    section('Emoji (' + list.length + ')', '<div id="emojiList" class="emojiManageGrid"></div>');
+    section('Emoji (' + list.length + ')', '<div id="emojiList" class="emojiManageGrid"></div>') +
+    (manage ? section('Add a sticker',
+      '<div class="rowFlex"><input class="settingsInput" id="stickerName" maxlength="30" placeholder="name, e.g. happy dance" style="max-width:240px">' +
+      '<button class="btn" id="stickerUpload">Upload picture, GIF or video</button></div>' +
+      '<div class="switchDesc" style="margin-top:8px">Stickers are sent on their own with the sticker button by the message box. A video becomes a looping GIF (the first 6 seconds). Up to 30 per server.</div><div class="inlineMsg" id="stickerMsg"></div>') : '') +
+    section('Stickers (' + stickers.length + ')', '<div id="stickerList" class="emojiManageGrid"></div>');
   const grid = $('emojiList');
   if(!list.length) grid.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: manage ? 'No custom emoji yet - add the first one above.' : 'No custom emoji yet.' }));
   list.forEach(e => {
@@ -9928,6 +10111,49 @@ function renderServerEmoji(c, sid){
     }
     grid.appendChild(cell);
   });
+  const sGrid = $('stickerList');
+  if(!stickers.length) sGrid.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: manage ? 'No stickers yet - add the first one above.' : 'No stickers yet.' }));
+  stickers.forEach(st => {
+    const cell = document.createElement('div');
+    cell.className = 'emojiCell stickerCell';
+    const img = document.createElement('img'); img.src = st.url; img.alt = st.name;
+    cell.appendChild(img);
+    cell.appendChild(Object.assign(document.createElement('span'), { textContent:st.name }));
+    if(manage){
+      const del = Object.assign(document.createElement('button'), { className:'linkBtn', textContent:'Remove' });
+      del.onclick = async () => {
+        if(!confirm('Remove the "' + st.name + '" sticker?')) return;
+        const response = await fetch('/servers/' + sid + '/stickers/' + st.id + '/delete', { method:'POST', headers:authHeaders(), body:'{}' });
+        if(response.ok){ await refreshServers(); rerenderSettingsSection(); } else toast('Could not remove it.');
+      };
+      cell.appendChild(del);
+    }
+    sGrid.appendChild(cell);
+  });
+  if(manage) $('stickerUpload').onclick = () => {
+    const name = $('stickerName').value.trim();
+    if(name.length < 2){ inlineMessage($('stickerMsg'), 'Name it first (2-30 characters).', true); return; }
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime';
+    picker.onchange = async () => {
+      const file = picker.files && picker.files[0];
+      if(!file) return;
+      try{
+        inlineMessage($('stickerMsg'), file.type.startsWith('video/') ? 'Turning the video into a GIF…' : 'Uploading…');
+        const ready = await prepareStickerFile(file, f => inlineMessage($('stickerMsg'), 'Turning the video into a GIF… ' + Math.round(f * 100) + '%'));
+        inlineMessage($('stickerMsg'), 'Uploading…');
+        const url = await uploadAsset(ready);
+        const response = await fetch('/servers/' + sid + '/stickers', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name, url }) });
+        const data = await response.json();
+        if(!response.ok) throw new Error(capitalise(data.error || 'Could not add it.'));
+        await refreshServers();
+        rerenderSettingsSection();
+        toast('Added the "' + name + '" sticker');
+      }catch(err){ inlineMessage($('stickerMsg'), err.message, true); }
+    };
+    picker.click();
+  };
   if(manage) $('emojiUpload').onclick = () => {
     const name = $('emojiName').value.trim().toLowerCase().replace(/^:|:$/g, '');
     if(!/^[a-z0-9_]{2,32}$/.test(name)){ inlineMessage($('emojiMsg'), 'Name it first: 2-32 lowercase letters, numbers or _.', true); return; }

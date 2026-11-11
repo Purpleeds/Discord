@@ -2495,6 +2495,7 @@ function draftChanged(){ clearTimeout(draftSaveTimer); draftSaveTimer = setTimeo
 window.addEventListener('pagehide', stashDraft);
 
 /* ============================ sockets ============================ */
+let serverVersion = ''; // the code version the server had when this page loaded
 function connectSocket(){
   socket = io({ auth:{ token } });
   setupVoiceSocket();
@@ -2515,6 +2516,19 @@ function connectSocket(){
     handleLocationHash();
     syncVoiceAfterConnect();
   });
+  // The NAS updates itself: after it comes back on a new version, reload so
+  // this page runs the new code too (drafts are kept). Not mid-call - then
+  // it just offers a reload.
+  socket.on('serverInfo', info => {
+    const v = info && info.version;
+    if(!v) return;
+    if(!serverVersion){ serverVersion = v; return; }
+    if(v === serverVersion) return;
+    if(voice.key){ toast('The chat was updated - reload when your call ends.'); serverVersion = v; return; }
+    stashDraft();
+    location.reload();
+  });
+  socket.on('serverUpdating', () => toast('Updating the chat - back in a moment…'));
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
     connectionLost();

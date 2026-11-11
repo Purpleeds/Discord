@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>Chat Notifier</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+<header>
+  <img src="../assets/icon.png" alt="" class="logo">
+  <div>
+    <h1>Chat Notifier</h1>
+    <p class="sub">Pop-ups for your chat, while it isn't open.</p>
+  </div>
+</header>
+
+<!-- signed out -->
+<form id="signIn" hidden autocomplete="on">
+  <label>Chat address
+    <input id="server" type="text" inputmode="url" spellcheck="false" autocomplete="url" required>
+  </label>
+  <label>Username
+    <input id="username" type="text" spellcheck="false" autocomplete="username" required maxlength="30">
+  </label>
+  <label>Password
+    <input id="password" type="password" autocomplete="current-password" required maxlength="200">
+  </label>
+  <div class="msg" id="signInMsg" role="alert"></div>
+  <button type="submit" class="primary" id="signInBtn">Sign in</button>
+  <p class="fine">Your password is only sent to the chat to sign in. The notifier keeps the sign-in, encrypted by Windows, and shows up in the chat's Settings &gt; Devices.</p>
+</form>
+
+<!-- signed in -->
+<section id="signedIn" hidden>
+  <div class="account">
+    <div class="dot" id="statusDot"></div>
+    <div class="grow">
+      <div class="who" id="who"></div>
+      <div class="status" id="status"></div>
+    </div>
+    <button type="button" class="ghost" id="signOut">Sign out</button>
+  </div>
+
+  <fieldset>
+    <legend>Pop up for</legend>
+    <label class="radio"><input type="radio" name="mode" value="mentions"> Direct messages, group chats and @mentions</label>
+    <label class="radio"><input type="radio" name="mode" value="all"> Every message in every channel</label>
+  </fieldset>
+
+  <fieldset class="row">
+    <legend>Look</legend>
+    <label>Theme
+      <select id="theme">
+        <option value="afterhours">After hours</option>
+        <option value="ash">Graphite</option>
+        <option value="midnight">Midnight</option>
+        <option value="light">Daylight</option>
+      </select>
+    </label>
+    <label>Accent
+      <input id="accent" type="color">
+    </label>
+  </fieldset>
+
+  <label class="check"><input type="checkbox" id="autostart"> Start with Windows</label>
+  <div class="paused" id="paused" hidden><span id="pausedText"></span> <button type="button" class="link" id="resume">Resume</button></div>
+
+  <div class="actions">
+    <button type="button" class="primary" id="test">Show a test pop-up</button>
+    <button type="button" class="ghost" id="openChat">Open the chat</button>
+  </div>
+  <p class="fine">Pop-ups stay quiet while the chat is open in front of you, while you're on Do Not Disturb, and for people you blocked. While the notifier runs, the chat in your browser leaves desktop pop-ups to it.</p>
+</section>
+<footer class="fine" id="version"></footer>
+<script src="settings.js"></script>
+</body>
+</html>

@@ -199,8 +199,10 @@ large, new system - also split it over several sessions).
 
 ## Next: desktop app (.exe)
 
-- [ ] **Windows notifier** (Option A) - a small tray program that shows
-  desktop pop-ups and opens the chat in the browser. Plan: [DESKTOP_APP.md](DESKTOP_APP.md).
+- [x] **Windows notifier** (Option A) - *done Nov 2026*: `desktop/`, a tray
+  program (Electron) with desktop pop-up cards; opens the chat in the browser.
+  Tested end to end (`regression/notifier_ui.test.js`); built and smoke-tested
+  on Windows by `.github/workflows/notifier.yml`. See [DESKTOP_APP.md](DESKTOP_APP.md).
 - [ ] **Full Windows app** (Option B) - Electron shell with tray, push-to-talk
   in games, screen-share picker, installer + auto-update.
 

@@ -4,31 +4,30 @@ A Windows app for the chat, so it can do what a website can't: its own
 Steam/Teams-style pop-ups on the desktop, a tray icon, start with Windows,
 push-to-talk while you're in a game, and a proper screen-share picker.
 
-## Option A (William's pick to start with): a background notifier only
+## Option A: the background notifier - BUILT (Nov 2026)
 
-No chat window at all - a small program that sits in the tray, stays
-connected, and shows Steam/Teams-style pop-ups on the desktop. Clicking a
-pop-up opens the chat **in your normal browser** at that message (`/#m/<id>`).
+In `desktop/` (see [desktop/README.md](desktop/README.md)). A tray program
+with no chat window: it stays connected as a "background" device and shows
+the chat's pop-up cards on the desktop; clicking one opens that message in
+the normal browser.
 
-- **What it does:** log in once (the login is kept with Windows' own
-  encryption via `safeStorage`), connect like a browser tab does, and show a
-  pop-up card (picture circle, name, where, rounded message box - same design
-  as the in-app cards) for messages that would ping you. Tray menu: Open chat,
-  Do Not Disturb, Mute for 1 hour, Start with Windows, Sign out, Quit.
-- **Server changes:** the notifier connects as a "background" device, so it
-  doesn't make you look online, and the server still sends phone pushes as if
-  you were away. It only gets message summaries (who, where, short text,
-  picture), never whole histories.
-- **Which messages:** DMs, group chats, @mentions, plus anything your
-  per-channel settings say "All messages" for. Do Not Disturb is respected.
-  When a chat tab is already open and in front, the notifier stays quiet.
-- **Size:** built with **Tauri** (~8-10 MB, uses Windows' built-in WebView2)
-  since it's just a tray icon and pop-up windows. Electron would also work but
-  is ~90 MB for the same thing.
-- **Effort:** about 1-2 sessions, including the installer and auto-update
-  (phase 4 below applies the same way).
-- **Later:** it can grow into the full app (Option B) - the pop-up design and
-  installer carry over.
+- **Built with Electron, not Tauri** (the plan said Tauri). Electron runs the
+  same JavaScript as the chat and can be driven end to end by Playwright, so
+  the whole app was tested here against a real chat server (and the built
+  .exe is started on a real Windows machine by GitHub Actions). The cost is
+  size: the installer is ~80 MB instead of ~10.
+- Pops up for DMs, group chats, @mentions (@you, @everyone, your roles,
+  threads), or every message (a setting). Quiet while the chat is in front,
+  on Do Not Disturb, while paused, and for blocked people. Incoming calls
+  show a card that stays until the ringing stops.
+- Never shows you as online; appears in the chat's Settings > Devices as
+  "Chat Notifier on Windows" (signing it out there signs the app out).
+- Tray: open chat, settings, pop up for…, pause 1/8 hours, Do Not Disturb,
+  test pop-up, start with Windows, sign out, quit. Theme + accent follow the
+  chat's four themes.
+- Updates: checks the repo's `notifier-v*` releases and offers new ones.
+- Releases: `.github/workflows/notifier.yml` (Windows build + smoke test on
+  every PR; publish with Run workflow).
 
 ## Option B: a thin Electron shell around the live chat
 

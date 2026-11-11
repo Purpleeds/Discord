@@ -1425,8 +1425,7 @@ const ROLE_PERMISSIONS = [
   'manage_events',        // create, edit and cancel events
   'mention_everyone',     // @everyone, and roles that aren't mentionable
   'ban_members',          // ban from this server (and unban); time members out
-  'manage_emoji',         // add and remove this server's custom emoji and stickers
-  'use_personas'          // post under a made-up, clearly labelled name and picture
+  'manage_emoji'          // add and remove this server's custom emoji and stickers
 ];
 const ALL_PERMISSIONS = new Set(ROLE_PERMISSIONS);
 function cleanPermissions(list) {
@@ -1466,7 +1465,7 @@ const PERMISSION_LABELS = {
   manage_server: 'Manage server', manage_channels: 'Manage channels', manage_roles: 'Manage roles',
   manage_messages: 'Manage messages', kick_members: 'Kick members', manage_integrations: 'Manage bots & webhooks',
   manage_events: 'Manage events', mention_everyone: 'Mention @everyone',
-  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji & stickers', use_personas: 'Post as a persona'
+  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji & stickers'
 };
 // No climbing: a role (and so a member) can only be given, taken or edited
 // by someone who already has every power that role carries.
@@ -2037,7 +2036,7 @@ async function normaliseMessages(rows) {
       webhookId: row.webhook_id || null,
       displayName: row.webhook_id || row.persona ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
       avatarUrl: row.webhook_id ? '' : row.persona ? (row.persona_avatar || '') : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
-      // a persona is labelled as one, and everyone can see who posted it
+      // (personas were removed; messages posted as one keep their label)
       persona: !!row.persona,
       attachments: deleted ? [] : (attachmentsBy.get(row.id) || []),
       // a removed sticker still shows that one was sent
@@ -4801,31 +4800,6 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
   res.json({ message: 'ok' });
 }));
 
-// ---------------- PERSONAS ----------------
-// Someone with the "Post as a persona" power can post under a made-up name
-// and picture in a server channel - like a webhook, it is always labelled
-// as a persona and shows who posted it. It can never use a real member's
-// name, so nobody can be made to look like they said something.
-async function personaProblem(username, room, persona) {
-  const channel = await channelForRoom(room);
-  if (!channel) return 'personas only work in server channels';
-  if (!(await hasServerPerm(username, channel.server_id, 'use_personas'))) return 'you need the "Post as a persona" permission';
-  const name = cleanText(persona && persona.name, 32);
-  if (!name) return 'give the persona a name';
-  const lower = name.toLowerCase();
-  const clash = await one(
-    `SELECT 1 FROM users u LEFT JOIN server_members m ON m.username = u.username AND m.server_id = $2
-     WHERE LOWER(u.username) = $1 OR LOWER(u.display_name) = $1 OR LOWER(COALESCE(m.nickname, '')) = $1 LIMIT 1`,
-    [lower, channel.server_id]
-  );
-  if (clash) return 'that is a real person\'s name - personas can\'t pretend to be real people';
-  if (persona.avatarUrl) {
-    const problem = await assetProblem(persona.avatarUrl, username, false);
-    if (problem) return problem;
-  }
-  return null;
-}
-
 // ---------------- CUSTOM EMOJI ----------------
 // A server's own emoji: a picture or GIF from /assets with a short name.
 // In messages they're written <:name:id>; the client draws the picture.
@@ -5872,21 +5846,8 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: blocked });
       return;
     }
-    // a persona: a made-up name and picture, always labelled as one
-    let persona = null;
-    if (data.persona) {
-      const problem = await personaProblem(socket.username, room, data.persona);
-      if (problem) { if (typeof ack === 'function') ack({ error: problem }); return; }
-      persona = { name: cleanText(data.persona.name, 32), avatar: String(data.persona.avatarUrl || '') };
-    }
-
     const mentions = await mentionFlags(socket.username, room, text);
     let created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
-    if (persona) {
-      created = await one(`UPDATE messages SET persona = 1, author_name = $1, persona_avatar = $2 WHERE id = $3 RETURNING *`, [persona.name, persona.avatar || null, created.id]);
-      const channel = await channelForRoom(room);
-      if (channel) auditLog(channel.server_id, socket.username, 'persona_post', persona.name, 'message ' + created.id);
-    }
     await claimAttachments(created.id, attached.ids);
     if (sticker) created = await one(`UPDATE messages SET sticker_id = $1 WHERE id = $2 RETURNING *`, [sticker.id, created.id]);
     const msg = await normaliseMessage(created);

@@ -1772,8 +1772,6 @@ select.settingsInput{max-width:360px;}
 .msgAttachments .attachment{margin-top:0;}
 .tagChip.persona{background:color-mix(in srgb,var(--brand) 22%,transparent);color:var(--brand);}
 .personaBy{font-size:12px;color:var(--text-muted);margin-left:2px;}
-.personaBar{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 8px;padding:7px 14px;border-radius:12px;font-size:13px;background:color-mix(in srgb,var(--brand) 14%,var(--raised));color:var(--text-bright);}
-#personaBtn.on{color:var(--brand);}
 img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-0.3em;}
 .reaction img.customEmoji{width:18px;height:18px;vertical-align:-4px;}
 .emojiGrid button img.customEmoji{width:26px;height:26px;}
@@ -1923,7 +1921,6 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
         <div id="composer">
           <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
-          <button id="personaBtn" title="Post as a persona" aria-label="Post as a persona" onclick="openPersonaPicker()" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5c3 1.3 5 1.3 8 0s5-1.3 8 0v6c0 4.5-3.6 8-8 8s-8-3.5-8-8z"/><path d="M8.5 10.5h1.5M14 10.5h1.5M9.5 14.5c1.6 1.2 3.4 1.2 5 0"/></svg></button>
           <button id="stickerBtn" title="Stickers" aria-label="Stickers" onclick="openStickerPicker(event)" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h7.5L21 14.5V7a4 4 0 0 0-4-4z"/><path d="M14 21v-3.5a3.5 3.5 0 0 1 3.5-3.5H21"/><path d="M8.5 10h.01M14.5 10h.01M8.5 14.5c1 .9 2.2 1.3 3.5 1.3"/></svg></button>
           <button id="emojiBtn" title="Emoji" aria-label="Emoji" onclick="openEmojiPicker(event,'composer')"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.8 1.2 2 1.9 3.4 1.9s2.6-.7 3.4-1.9"/><circle cx="9.2" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="14.8" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></button>
           <button id="sendBtn" title="Send (Enter)" aria-label="Send message" onclick="sendMessage()"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.1 6.5L15 12 3.5 13.9z"/></svg></button>
@@ -3476,7 +3473,7 @@ function enterRoom(room){
   closeFriends();
   closeForum();
   switchDraftTo(room);
-  setTimeout(() => { paintPersonaUi(); paintStickerButton(); }, 0);
+  setTimeout(paintStickerButton, 0);
   unread[room] = 0;
   closePopouts();
   if($('searchPanel').classList.contains('open')) clearSearch();
@@ -4628,32 +4625,8 @@ async function prepareStickerFile(file, onProgress){
   return new File([blob], 'sticker.png', { type:'image/png' });
 }
 
-/* ---- personas ---- */
-// Someone with "Post as a persona" can post under a made-up name and picture
-// in a server's channels. It's always labelled, and shows who posted it.
-const personas = {}; // serverId -> { name, avatarUrl } while switched on
-function activePersona(){
-  const found = channelByRoom(currentRoom);
-  return found && personas[found.server.id] && can(found.server, 'use_personas') ? personas[found.server.id] : null;
-}
-function paintPersonaUi(){
-  const found = !activeDMUser && !currentGroupRoom ? channelByRoom(currentRoom) : null;
-  const allowed = !!(found && can(found.server, 'use_personas'));
-  $('personaBtn').hidden = !allowed;
-  const persona = allowed ? personas[found.server.id] : null;
-  $('personaBtn').classList.toggle('on', !!persona);
-  let bar = $('personaBar');
-  if(!persona){ if(bar) bar.remove(); return; }
-  if(!bar){
-    bar = document.createElement('div');
-    bar.id = 'personaBar';
-    bar.className = 'personaBar';
-    $('composerBox').before(bar);
-  }
-  bar.innerHTML = '<span>Posting as <b></b> (persona - labelled, and shows it\'s you)</span><button class="linkBtn">Stop</button>';
-  bar.querySelector('b').textContent = persona.name;
-  bar.querySelector('button').onclick = () => { delete personas[found.server.id]; paintPersonaUi(); };
-}
+// Old messages posted as a persona (a feature since removed) keep their own
+// picture and label.
 function personaAvatar(data){
   const wrap = document.createElement('div');
   wrap.className = 'avatarWrap onChat';
@@ -4664,34 +4637,6 @@ function personaAvatar(data){
   else avatar.textContent = (data.displayName || '?').charAt(0).toUpperCase();
   wrap.appendChild(avatar);
   return wrap;
-}
-function openPersonaPicker(){
-  const found = channelByRoom(currentRoom);
-  if(!found) return;
-  const sid = found.server.id;
-  const current = personas[sid] || { name:'', avatarUrl:'' };
-  let avatarUrl = current.avatarUrl;
-  openModal('<div class="modalHead"><h2>Post as a persona</h2></div><div class="modalBody">' +
-    '<div class="switchDesc" style="margin-bottom:12px">Post under a made-up name - a narrator, a character, the server\'s mascot. Every message is labelled PERSONA and shows that you posted it. It can\'t be a real member\'s name.</div>' +
-    '<label class="formLabel" for="personaName">Name</label><input class="formInput" id="personaName" maxlength="32" placeholder="The Narrator">' +
-    '<div class="rowFlex" style="margin:12px 0"><button class="btn grey" id="personaPic">Picture</button><span class="switchDesc" id="personaPicNote"></span></div>' +
-    '<div class="rowFlex"><button class="btn" id="personaOn">Start posting as this persona</button>' + (personas[sid] ? '<button class="btn grey" id="personaOff">Post as myself</button>' : '') + '</div>' +
-    '<div class="modalMsg" id="modalMsg"></div></div>');
-  $('personaName').value = current.name;
-  $('personaPicNote').textContent = avatarUrl ? 'Picture chosen' : 'Optional';
-  $('personaPic').onclick = () => pickMediaFile(false, url => { avatarUrl = url; $('personaPicNote').textContent = 'Picture chosen'; }, msg => modalMessage(msg, true));
-  $('personaOn').onclick = () => {
-    const name = $('personaName').value.trim();
-    if(!name){ modalMessage('Give the persona a name.', true); return; }
-    const lower = name.toLowerCase();
-    const real = directoryUsers.some(u => u.username.toLowerCase() === lower || String(u.displayName || '').toLowerCase() === lower);
-    if(real){ modalMessage('That\'s a real person\'s name - pick a made-up one.', true); return; }
-    personas[sid] = { name, avatarUrl };
-    closeModal();
-    paintPersonaUi();
-    $('messageInput').focus();
-  };
-  if($('personaOff')) $('personaOff').onclick = () => { delete personas[sid]; closeModal(); paintPersonaUi(); };
 }
 
 async function sendMessage(){
@@ -4772,8 +4717,6 @@ function postChatMessage(sendText, reply, attachments, sticker){
   const dmUser = activeDMUser;
   const payload = { text: sendText, replyTo: reply ? reply.id : null, attachments: attachments.map(a => a.id) };
   if(sticker) payload.stickerId = sticker.id;
-  const persona = !dmUser ? activePersona() : null;
-  if(persona) payload.persona = persona;
   const room = dmUser ? roomNameForDM(username, dmUser) : currentRoom;
   const tempId = 'pending:' + (++pendingSendSeq);
   const pendingItem = {
@@ -4783,7 +4726,7 @@ function postChatMessage(sendText, reply, attachments, sticker){
       avatarUrl: avatarUrlFor(username), text: sendText, to: dmUser || '', dmTo: dmUser || '',
       isGroup: !!currentGroupRoom, replyTo: reply ? { id:reply.id, user:reply.user, displayName:reply.displayName, text:reply.text } : null,
       editedAt: '', deleted:false, deletedBy:'', reactions: [], createdAt: new Date().toISOString(), pending: true,
-      attachments, sticker: sticker || null, persona: !!persona, ...(persona ? { displayName: persona.name, avatarUrl: persona.avatarUrl || '' } : {})
+      attachments, sticker: sticker || null
     }
   };
   appendItem(pendingItem);
@@ -5450,9 +5393,22 @@ function showMenu(event, items){
 }
 function hideContextMenu(){ $('contextMenu').style.display = 'none'; }
 
+// Settings for how you look: the in-server profile for `server`, or your
+// main profile when there's no server (DMs, the open general server).
+function editMyProfile(server){
+  if(server){ serverProfileTarget = server.id; openSettings('serverprofile'); }
+  else openSettings('profile');
+}
 function showUserMenu(event, user, room){
   if(!user) return;
-  const items = [{ label:'Profile', action:() => openProfilePopout(null, user, room) }, { label:'Message', action:() => openDM(user) }];
+  const items = [{ label:'Profile', action:() => openProfilePopout(null, user, room) }];
+  if(user === username){
+    // yourself: inside a server, edit how you look there; anywhere else, your main profile
+    const here = room ? channelByRoom(room) : (view === 'server' ? { server: currentServer() } : null);
+    const inServer = here && here.server && !here.server.isDefault ? here.server : null;
+    items.push({ label: inServer ? 'Edit profile (in this server)' : 'Edit profile', action:() => editMyProfile(inServer) });
+    if(inServer) items.push({ label:'Edit main profile', action:() => openSettings('profile') });
+  }else items.push({ label:'Message', action:() => openDM(user) });
   if(user !== username){
     items.push({ label:'Mention', action:() => { insertEmoji('@' + user + ' '); } });
     items.push({ label:'Copy username', action:() => copyText(user) });
@@ -5545,7 +5501,7 @@ function showServerMenu(event, server){
     { label:'Copy invite code', action:() => copyText(server.inviteCode || '') }
   ];
   if(serverUnreadCount(server)) items.push({ label:'Mark as read', action:() => markServerRead(server) });
-  if(!server.isDefault) items.push({ label:'Edit server profile', action:() => { serverProfileTarget = server.id; openSettings('serverprofile'); } });
+  if(!server.isDefault) items.push({ label:'Edit in-server profile', action:() => editMyProfile(server) });
   items.push(...levelMenuItems('server:' + server.id, 'Server notifications'));
   if(canManageAnything(server)){
     items.push({ sep:true });
@@ -8660,7 +8616,7 @@ function openSettings(sectionKey){
       { key:'account', label:'My Account', render:renderAccountSection },
       { key:'devices', label:'Devices', render:renderDevicesSection },
       { key:'profile', label:'Profiles', render:renderProfileSection },
-      { key:'serverprofile', label:'Server Profiles', render:renderServerProfileSection },
+      { key:'serverprofile', label:'In-server profile', render:renderServerProfileSection },
       { key:'privacy', label:'Privacy & Safety', render:renderPrivacySection },
       { key:'bots', label:'My Bots', render:renderBotsSection }
     ]},
@@ -8809,7 +8765,7 @@ let serverProfileTarget = null;
 function renderServerProfileSection(c){
   const choices = servers.filter(s => !s.isDefault);
   if(!choices.length){
-    c.innerHTML = '<h2 class="settingsTitle">Server Profiles</h2><div class="panelEmpty">Join or create a server to give yourself a different name or picture there. (The open general server uses your main profile.)</div>';
+    c.innerHTML = '<h2 class="settingsTitle">In-server profile</h2><div class="panelEmpty">Join or create a server to give yourself a different name or picture there. (The open general server uses your main profile.)</div>';
     return;
   }
   if(!choices.some(s => s.id === serverProfileTarget)) serverProfileTarget = (choices.find(s => s.id === currentServerId) || choices[0]).id;
@@ -8818,8 +8774,8 @@ function renderServerProfileSection(c){
   const original = Object.assign({}, mine);
   let draft = Object.assign({}, mine);
   c.innerHTML =
-    '<h2 class="settingsTitle">Server Profiles</h2>' +
-    '<div class="settingsSub">Look different in one server. Anything left empty uses your main profile.</div>' +
+    '<h2 class="settingsTitle">In-server profile</h2>' +
+    '<div class="settingsSub">How you look in one server: a nickname, picture, banner and about me just for there. Anything left empty uses your main profile.</div>' +
     '<div class="profileLayout"><div class="profileEditor">' +
       section('Server', '<select class="settingsInput" id="spServer">' + choices.map(s => '<option value="' + s.id + '"' + (s.id === server.id ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('') + '</select>') +
       section('Nickname', '<input class="settingsInput" id="spNick" maxlength="32" placeholder="' + escapeHtml(displayNameFor(username)) + '">') +
@@ -9295,12 +9251,11 @@ const PERMISSION_INFO = [
   { key:'manage_events', label:'Manage events', desc:'Create, edit and cancel events.' },
   { key:'mention_everyone', label:'Mention @everyone', desc:'Use @everyone, and mention roles that aren\'t open to everyone.' },
   { key:'ban_members', label:'Ban & time out members', desc:'Ban people from this server (they can\'t rejoin until unbanned) and time members out so they can\'t post for a while.' },
-  { key:'manage_emoji', label:'Manage emoji & stickers', desc:'Add and remove this server\'s custom emoji and stickers.' },
-  { key:'use_personas', label:'Post as a persona', desc:'Post under a made-up name and picture. Always labelled as a persona, shows who posted it, and can never use a real member\'s name.' }
+  { key:'manage_emoji', label:'Manage emoji & stickers', desc:'Add and remove this server\'s custom emoji and stickers.' }
 ];
 const PERMISSION_PRESETS = [
   { key:'moderator', label:'Moderator', color:'#2ecc71', perms:['manage_messages', 'kick_members', 'ban_members', 'mention_everyone', 'manage_emoji'] },
-  { key:'manager', label:'Manager', color:'#3498db', perms:['manage_server', 'manage_channels', 'manage_roles', 'manage_messages', 'kick_members', 'ban_members', 'manage_integrations', 'manage_events', 'mention_everyone', 'manage_emoji', 'use_personas'] },
+  { key:'manager', label:'Manager', color:'#3498db', perms:['manage_server', 'manage_channels', 'manage_roles', 'manage_messages', 'kick_members', 'ban_members', 'manage_integrations', 'manage_events', 'mention_everyone', 'manage_emoji'] },
   { key:'bots', label:'Bots & webhooks', color:'#9b59b6', perms:['manage_integrations'] },
   { key:'events', label:'Event host', color:'#e67e22', perms:['manage_events', 'mention_everyone'] },
   { key:'none', label:'No powers', color:'', perms:[] }
@@ -9802,7 +9757,7 @@ function renderServerRoles(c, sid){
       switchRow('roleHoist' + role.id, 'Display role members separately', 'Online members with this role get their own section in the member list.', role.hoist, false) +
       switchRow('roleMention' + role.id, 'Allow anyone to @mention this role', 'Admins can always mention every role. Everyone with the role gets notified.', role.mentionable, false) +
       switchRow('roleAuto' + role.id, 'Give to new members automatically', 'Everyone who joins the server from now on gets this role. Not for roles with powers.', role.autoAssign, false) +
-      switchRow('roleHide' + role.id, 'Members can hide this role', 'People with this role can choose to look like a plain member (Settings > Server Profiles). Handy for moderators who\'d rather not stand out.', role.allowHide, false) +
+      switchRow('roleHide' + role.id, 'Members can hide this role', 'People with this role can choose to look like a plain member (right-click yourself > Edit profile). Handy for moderators who\'d rather not stand out.', role.allowHide, false) +
       '<div class="permBlock"><div class="fieldLabel">Permissions</div>' +
         '<div class="presetRow" data-f="presets">' + PERMISSION_PRESETS.map(p => '<button type="button" class="presetChip" data-preset="' + p.key + '">' + escapeHtml(p.label) + '</button>').join('') +
         '<span class="presetChip custom" data-f="customTag">Custom</span></div>' +
@@ -10027,7 +9982,7 @@ const AUDIT_LABELS = {
   message_delete:'deleted a message by', file_delete:'deleted a file by', role_create:'created the role', role_update:'changed the role',
   role_delete:'deleted a role', member_roles:'changed the roles of', channel_create:'created', channel_update:'edited', channel_delete:'deleted',
   server_update:'changed the server settings', webhook_delete:'deleted the webhook', emoji_add:'added the emoji', emoji_remove:'removed the emoji',
-  persona_post:'posted as the persona', sticker_add:'added the sticker', sticker_remove:'removed the sticker'
+  persona_post:'posted as the persona (old)', sticker_add:'added the sticker', sticker_remove:'removed the sticker'
 };
 async function loadModerationLists(sid){
   const listRow = (main, sub, button) => {

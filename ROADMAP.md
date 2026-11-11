@@ -180,8 +180,9 @@ large, new system - also split it over several sessions).
   Manager presets), in messages and reactions.
 - [x] **TURN relay** on the NAS (coturn behind Funnel on port 8443) for calls
   on strict networks.
-- [x] **Personas** ("Post as a persona" power): made-up name and picture,
-  labelled, shows who posted, never a real member's name; audit-logged.
+- [x] ~~Personas~~ - removed at the owner's request; old persona messages keep
+  their label. Per-server looks are the in-server profile (right-click
+  yourself > Edit profile).
 
 - [x] **Stickers** - sticker button by the message box; admins (Manage emoji &
   stickers) add pictures, GIFs or videos, which become looping GIFs in the
@@ -191,7 +192,7 @@ large, new system - also split it over several sessions).
 
 - Admins posting as a real member while muting them - it's impersonation
   (members would believe someone said what they didn't). Built instead:
-  labelled personas (see Extras).
+  per-server profiles instead.
 - Game detection / Rich Presence, game overlays, PlayStation/Xbox linking -
   need a desktop app or console access, impossible from a website.
 - Spotify / Steam / Twitch / YouTube connections - each needs developer

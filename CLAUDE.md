@@ -151,16 +151,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   need `ban_members`; `moderationProblem()` decides who can be moderated.
   Log moderator actions with `auditLog()` (never blocks the action).
 - Custom emoji (`server_emojis`, `manage_emoji`) are written `<:name:id>` in
-  text and reactions; `validReaction()` checks reactions. Personas
-  (`use_personas`) are always labelled and show the real poster;
-  `personaProblem()` refuses real members' names - don't weaken that.
+  text and reactions; `validReaction()` checks reactions. Personas were
+  removed: old persona messages keep their label (`persona` flag); don't
+  bring back posting under another name.
 - Stickers (`server_stickers`, `manage_emoji`): only pictures/GIFs are stored -
   videos are turned into GIFs in the browser (`videoToGif()`). A sticker
   message has `sticker_id` (history column lists include it), no text, can't
   be edited; `usableSticker()` allows a server's stickers there, and in DMs
   stickers from servers the sender is in.
 - In server channels the client must not cache message names/avatars as
-  profiles (`cacheFromPayload()` skips them): they can be nicknames or personas.
+  profiles (`cacheFromPayload()` skips them): they can be nicknames (or old personas).
 - TURN: `/voice/ice` gives coturn time-limited logins from `TURN_SECRET` /
   `TURN_SECRET_FILE`; `{host}` in `TURN_URLS` becomes the public name.
 - `/healthz` must not touch the database (it would keep Neon awake).

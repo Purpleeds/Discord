@@ -199,9 +199,10 @@ large, new system - also split it over several sessions).
 
 ## Next: desktop app (.exe)
 
-- [ ] **Windows desktop app** - Electron shell around the live chat with
-  desktop pop-ups, tray, push-to-talk in games, screen-share picker,
-  installer + auto-update. Plan: [DESKTOP_APP.md](DESKTOP_APP.md).
+- [ ] **Windows notifier** (Option A) - a small tray program that shows
+  desktop pop-ups and opens the chat in the browser. Plan: [DESKTOP_APP.md](DESKTOP_APP.md).
+- [ ] **Full Windows app** (Option B) - Electron shell with tray, push-to-talk
+  in games, screen-share picker, installer + auto-update.
 
 ## Decided against
 

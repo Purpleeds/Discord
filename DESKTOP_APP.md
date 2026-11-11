@@ -4,7 +4,33 @@ A Windows app for the chat, so it can do what a website can't: its own
 Steam/Teams-style pop-ups on the desktop, a tray icon, start with Windows,
 push-to-talk while you're in a game, and a proper screen-share picker.
 
-## The approach: a thin Electron shell around the live chat
+## Option A (William's pick to start with): a background notifier only
+
+No chat window at all - a small program that sits in the tray, stays
+connected, and shows Steam/Teams-style pop-ups on the desktop. Clicking a
+pop-up opens the chat **in your normal browser** at that message (`/#m/<id>`).
+
+- **What it does:** log in once (the login is kept with Windows' own
+  encryption via `safeStorage`), connect like a browser tab does, and show a
+  pop-up card (picture circle, name, where, rounded message box - same design
+  as the in-app cards) for messages that would ping you. Tray menu: Open chat,
+  Do Not Disturb, Mute for 1 hour, Start with Windows, Sign out, Quit.
+- **Server changes:** the notifier connects as a "background" device, so it
+  doesn't make you look online, and the server still sends phone pushes as if
+  you were away. It only gets message summaries (who, where, short text,
+  picture), never whole histories.
+- **Which messages:** DMs, group chats, @mentions, plus anything your
+  per-channel settings say "All messages" for. Do Not Disturb is respected.
+  When a chat tab is already open and in front, the notifier stays quiet.
+- **Size:** built with **Tauri** (~8-10 MB, uses Windows' built-in WebView2)
+  since it's just a tray icon and pop-up windows. Electron would also work but
+  is ~90 MB for the same thing.
+- **Effort:** about 1-2 sessions, including the installer and auto-update
+  (phase 4 below applies the same way).
+- **Later:** it can grow into the full app (Option B) - the pop-up design and
+  installer carry over.
+
+## Option B: a thin Electron shell around the live chat
 
 The app is a small window that loads the real chat (the same address as the
 website). All the chat code stays in `public/index.html` and the server, so

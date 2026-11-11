@@ -189,6 +189,10 @@ large, new system - also split it over several sessions).
   stickers) add pictures, GIFs or videos, which become looping GIFs in the
   browser. Up to 30 per server.
 
+- [x] **Message pop-ups** - in-app cards (picture, name, where, the message
+  or [Image]/[GIF]/[Sticker]) in the corner, top on phones; click to open.
+  Settings > Notifications > Pop-ups. OS notifications now show the sender's picture.
+
 ## Decided against
 
 - Admins posting as a real member while muting them - it's impersonation

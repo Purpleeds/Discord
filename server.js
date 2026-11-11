@@ -21,6 +21,10 @@ const compression = require('compression');
 
 const app = express();
 const server = http.createServer(app);
+// Big uploads (2 GB banners, 10 GB files) can take far longer than Node's
+// default 5-minute limit for a whole request. Slow or stuck headers are
+// still cut off by headersTimeout.
+server.requestTimeout = 0;
 const io = new Server(server, {
   maxHttpBufferSize: 1024 * 1024
 });
@@ -36,6 +40,8 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
+// big banners/GIFs (over ASSET_DB_MAX_BYTES) are kept here, not in Postgres
+const ASSET_DIR = path.resolve(DATA_DIR, 'assets');
 const MAX_FILE_BYTES = 10 * 1024 * 1024 * 1024; // 10GB
 // Avatars/server icons are stored as data: URIs directly in Postgres, so
 // they must stay small - 1.5MB of raw image data (before it grows ~33%
@@ -99,6 +105,7 @@ const IMAGE_MIME = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif',
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(PUBLIC_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+fs.mkdirSync(ASSET_DIR, { recursive: true });
 
 // The database: DATABASE_URL, or the standard PGHOST / PGUSER / PGPASSWORD /
 // PGDATABASE / PGPORT settings (handy in a compose file, where a password
@@ -699,6 +706,11 @@ async function setupSchema() {
       size INTEGER NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);
+  // big assets live on disk (storage 'disk', data NULL); size can pass 2^31
+  await pool.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS storage TEXT NOT NULL DEFAULT 'db'`);
+  await pool.query(`ALTER TABLE assets ALTER COLUMN data DROP NOT NULL`);
+  const assetSize = await one(`SELECT data_type FROM information_schema.columns WHERE table_name = 'assets' AND column_name = 'size'`);
+  if (assetSize && assetSize.data_type !== 'bigint') await pool.query(`ALTER TABLE assets ALTER COLUMN size TYPE BIGINT`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_url TEXT`);
   // a different name, picture, banner and bio inside one server
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS nickname TEXT`);
@@ -2372,7 +2384,13 @@ const ASSET_TYPES = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif',
   'video/mp4': 'mp4', 'video/webm': 'webm'
 };
-const ASSET_MAX_BYTES = Math.max(1, Number(process.env.ASSET_MAX_MB || 8)) * 1024 * 1024;
+const ASSET_MAX_BYTES = Math.max(1, Number(process.env.ASSET_MAX_MB || 2048)) * 1024 * 1024;
+// Up to this size an asset is kept in Postgres (backed up with everything
+// else); bigger ones are streamed to ASSET_DIR on disk.
+const ASSET_DB_MAX_BYTES = 8 * 1024 * 1024;
+// All assets together (unused ones are removed after a day).
+const ASSET_BUDGET_BYTES = Math.max(1, Number(process.env.ASSET_BUDGET_MB || 30000)) * 1024 * 1024;
+function assetDiskPath(key) { return path.join(ASSET_DIR, key); }
 const ASSET_URL_RE = /^\/assets\/([A-Za-z0-9_-]{16,40})\.(png|jpg|gif|webp|avif|mp4|webm)$/;
 // Why `url` can't be used as a banner (allowVideo) or avatar - or null if it can.
 async function assetProblem(url, owner, allowVideo) {
@@ -2391,13 +2409,26 @@ app.post('/assets', requireAuth, route(async (req, res) => {
   const length = Number(req.headers['content-length'] || 0);
   if (length > ASSET_MAX_BYTES) return res.status(413).json({ error: `that file is too big - the limit is ${Math.round(ASSET_MAX_BYTES / 1048576)} MB` });
   if (rateLimited('asset:' + req.username, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many uploads - wait a few minutes' });
-  let buffer;
-  try { buffer = await bufferUploadStream(req, ASSET_MAX_BYTES); }
-  catch (err) { return res.status(err.message === 'file is too large' ? 413 : 400).json({ error: err.message }); }
-  if (!buffer.length) return res.status(400).json({ error: 'the file is empty' });
+  const used = await one(`SELECT COALESCE(sum(size), 0)::bigint AS n FROM assets`);
+  if (Number(used.n) + Math.max(length, 1) > ASSET_BUDGET_BYTES) return res.status(507).json({ error: 'the chat\'s banner storage is full - remove some old banners or ask the owner to raise ASSET_BUDGET_MB' });
   const key = crypto.randomBytes(18).toString('base64url');
-  await pool.query(`INSERT INTO assets (key, owner, type, data, size) VALUES ($1, $2, $3, $4, $5)`, [key, req.username, type, buffer, buffer.length]);
-  res.status(201).json({ url: `/assets/${key}.${ASSET_TYPES[type]}`, type, size: buffer.length });
+  // small ones (size known up front) go in the database, the rest to disk
+  if (length > 0 && length <= ASSET_DB_MAX_BYTES) {
+    let buffer;
+    try { buffer = await bufferUploadStream(req, ASSET_DB_MAX_BYTES); }
+    catch (err) { return res.status(err.message === 'file is too large' ? 413 : 400).json({ error: err.message }); }
+    if (!buffer.length) return res.status(400).json({ error: 'the file is empty' });
+    await pool.query(`INSERT INTO assets (key, owner, type, data, size) VALUES ($1, $2, $3, $4, $5)`, [key, req.username, type, buffer, buffer.length]);
+    return res.status(201).json({ url: `/assets/${key}.${ASSET_TYPES[type]}`, type, size: buffer.length });
+  }
+  let size;
+  try { size = await saveUploadStream(req, assetDiskPath(key), ASSET_MAX_BYTES); }
+  catch (err) { return res.status(err.message === 'file is too large' ? 413 : 400).json({ error: err.message === 'file is too large' ? `that file is too big - the limit is ${Math.round(ASSET_MAX_BYTES / 1048576)} MB` : err.message }); }
+  if (!size) { fs.unlink(assetDiskPath(key), () => {}); return res.status(400).json({ error: 'the file is empty' }); }
+  try {
+    await pool.query(`INSERT INTO assets (key, owner, type, data, size, storage) VALUES ($1, $2, $3, NULL, $4, 'disk')`, [key, req.username, type, size]);
+  } catch (err) { fs.unlink(assetDiskPath(key), () => {}); throw err; }
+  res.status(201).json({ url: `/assets/${key}.${ASSET_TYPES[type]}`, type, size });
 }));
 const assetCache = new Map(); // key -> { type, buffer } (small LRU)
 app.get('/assets/:file', route(async (req, res) => {
@@ -2406,8 +2437,15 @@ app.get('/assets/:file', route(async (req, res) => {
   const key = m[1];
   let entry = assetCache.get(key);
   if (!entry) {
-    const row = await one(`SELECT type, data FROM assets WHERE key = $1`, [key]);
+    const row = await one(`SELECT type, storage, CASE WHEN storage = 'db' THEN data END AS data FROM assets WHERE key = $1`, [key]);
     if (!row) return res.status(404).end();
+    if (row.storage === 'disk') {
+      // big ones stream from disk (sendFile handles ranges for videos)
+      return res.sendFile(assetDiskPath(key), {
+        headers: { 'Content-Type': row.type, 'Content-Security-Policy': "sandbox; default-src 'none'", 'X-Content-Type-Options': 'nosniff' },
+        maxAge: 31536000 * 1000, immutable: true, dotfiles: 'deny'
+      }, err => { if (err && !res.headersSent) res.status(404).end(); });
+    }
     entry = { type: row.type, buffer: row.data };
     if (entry.buffer.length < 4 * 1024 * 1024) {
       if (assetCache.size >= 40) assetCache.delete(assetCache.keys().next().value);
@@ -2440,9 +2478,20 @@ async function removeUnusedAssets() {
        AND NOT EXISTS (SELECT 1 FROM server_stickers st WHERE st.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM messages pm WHERE pm.persona_avatar LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%')
-     RETURNING key`
+     RETURNING key, storage`
   );
-  for (const r of removed) assetCache.delete(r.key);
+  for (const r of removed) {
+    assetCache.delete(r.key);
+    if (r.storage === 'disk') fs.unlink(assetDiskPath(r.key), () => {});
+  }
+  // disk files whose row is gone (an upload cut off by a restart)
+  const names = await fs.promises.readdir(ASSET_DIR).catch(() => []);
+  const known = new Set((await q(`SELECT key FROM assets WHERE storage = 'disk'`)).map(r => r.key));
+  for (const name of names) {
+    if (known.has(name)) continue;
+    const stat = await fs.promises.stat(path.join(ASSET_DIR, name)).catch(() => null);
+    if (stat && Date.now() - stat.mtimeMs > 24 * 60 * 60 * 1000) fs.unlink(path.join(ASSET_DIR, name), () => {});
+  }
 }
 
 // ---------------- HTTP ROUTES ----------------

@@ -35,7 +35,8 @@ tables itself on startup, so an empty database is all it needs.
 | `KEEP_FILE_MB` | no | Attachments up to this size are kept, in the database (default `8`). Bigger ones are temporary. |
 | `MEDIA_BUDGET_MB` | no | Total space kept attachments may use before the oldest are removed (default `250`). |
 | `FILE_EXPIRY_HOURS` | no | How long files over `KEEP_FILE_MB` live (default `6`; set it higher where the disk is permanent, e.g. a NAS). |
-| `ASSET_MAX_MB` | no | Largest banner picture/GIF/video people can upload (default `8`). |
+| `ASSET_MAX_MB` | no | Largest banner/avatar/sticker picture, GIF or video people can upload (default `2048` = 2 GB). Over 8 MB they're kept on disk in `DATA_DIR/assets`, not in Postgres. |
+| `ASSET_BUDGET_MB` | no | Total space for all of those together (default `30000`); uploads are refused once it's full. |
 | `RELAY_TO` | no | Relay mode: this copy runs no chat and no database, it just passes everything (pages, uploads, live connections) to the real chat at this address, e.g. a NAS. Keeps the old address working. See relay.js. |
 | `MOVED_TO` | no | Set on an old copy of the app after moving it: pages redirect to this address and no more messages are accepted. |
 | `RATE_LIMITS` | no | Set to `off` to disable rate limits (for tests only). |

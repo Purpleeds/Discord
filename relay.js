@@ -71,6 +71,8 @@ const server = http.createServer((req, res) => {
   req.on('aborted', () => upstream.destroy());
   req.pipe(upstream);
 });
+// big uploads (2 GB banners) take longer than Node's 5-minute request limit
+server.requestTimeout = 0;
 
 // The chat's live connection (Socket.IO over WebSocket): open the same
 // upgrade to the real server, then join the two connections end to end.

@@ -1,6 +1,6 @@
 // Part of the regression suites - see regression/README.md.
 // Browser: several files in one message, unread dots vs mention numbers,
-// custom emoji, personas, and the moderation lists.
+// custom emoji, Edit profile on yourself, and the moderation lists.
 const { chromium } = require('playwright-core');
 const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done, uid } = require('./lib');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
@@ -64,21 +64,22 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   check(':sun: becomes the picture', await page.evaluate(() => [...document.querySelectorAll('#messagesInner .message')].some(e => e.textContent.includes('good morning') && e.querySelector('img.customEmoji'))));
   check('others see it too', /<:sun:\d+>/.test((await get('/history?room=' + encodeURIComponent(general.room), X)).data.messages.pop().text));
 
-  // ---- persona
-  check('persona button shows for the owner', await page.isVisible('#personaBtn'));
-  await page.click('#personaBtn'); await sleep(300);
-  await page.fill('#personaName', x);
-  await page.click('#personaOn'); await sleep(200);
-  check("a member's name is refused", /real person/.test(await page.textContent('#modalMsg')));
-  await page.fill('#personaName', 'The Narrator'); await page.click('#personaOn'); await sleep(300);
-  check('a bar says who you are posting as', /Posting as The Narrator/.test(await page.textContent('#personaBar')));
-  await page.fill('#messageInput', 'Once upon a time...'); await page.press('#messageInput', 'Enter'); await sleep(900);
-  const p = await page.evaluate(() => { const el = [...document.querySelectorAll('#messagesInner .message')].find(e => e.textContent.includes('Once upon')); return el ? { name: el.querySelector('.msgAuthor').textContent, tag: !!el.querySelector('.tagChip.persona'), by: (el.querySelector('.personaBy') || {}).textContent } : null; });
-  check('persona message: its name, a PERSONA tag and who posted it', p && p.name === 'The Narrator' && p.tag && /by /.test(p.by), p);
-  await page.screenshot({ path: SHOTS + 'persona.png' });
-  check("the persona never becomes the poster's own name", await page.evaluate(u => displayNameFor(u) !== 'The Narrator' && ![...document.querySelectorAll('#members .memberName')].some(e => e.textContent === 'The Narrator'), o));
-  await page.click('#personaBar button'); await sleep(200);
-  check('stop posting as the persona', !(await page.$('#personaBar')));
+  // ---- no persona button; right-click yourself > Edit profile opens the in-server profile
+  check('no persona button', !(await page.$('#personaBtn')));
+  await page.click('#members .memberRow:has-text("' + o + '")', { button: 'right' }); await sleep(300);
+  const items = await page.$$eval('#contextMenu .contextItem', els => els.map(e => e.textContent));
+  check('right-click yourself offers Edit profile', items.includes('Edit profile (in this server)') && items.includes('Edit main profile'), items);
+  await page.click('#contextMenu .contextItem:has-text("Edit profile (in this server)")'); await sleep(600);
+  check('…which opens your in-server profile for this server', /In-server profile/.test(await page.textContent('.settingsTitle')) && await page.evaluate(s => Number(document.getElementById('spServer').value) === s, sid));
+  await page.fill('#spNick', 'Captain'); await page.click('#spSave'); await sleep(900);
+  await page.screenshot({ path: SHOTS + 'in_server_profile.png' });
+  await page.evaluate(() => closeSettings(true)); await sleep(300);
+  await page.evaluate(() => { const g = servers.find(s => s.isDefault); switchServer(g.id); }); await sleep(800);
+  await page.click('#members .memberRow:has-text("' + o + '")', { button: 'right' }).catch(() => {}); await sleep(300);
+  const items2 = await page.$$eval('#contextMenu .contextItem', els => els.map(e => e.textContent));
+  check('in the general server it is just Edit profile', items2.includes('Edit profile') && !items2.includes('Edit main profile'), items2);
+  await page.keyboard.press('Escape'); await page.mouse.click(700, 300);
+  await page.evaluate(([s, r]) => { switchServer(s); openChannel(r); }, [sid, general.room]); await sleep(800);
 
   // ---- moderation
   await page.evaluate(s => openServerSettings(s, 'members'), sid); await sleep(800);
@@ -87,7 +88,7 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
   check('timeout from the members page', /timed out/.test((await emit(sX, 'message', { room: general.room, text: 'x' })).error || ''));
   await page.evaluate(s => openServerSettings(s, 'moderation'), sid); await sleep(1200);
   check('Timeouts list shows them', (await page.textContent('#modTimeouts')).includes(x));
-  check('Audit log shows the timeout and the persona', /timed out/.test(await page.textContent('#modAudit')) && /persona/.test(await page.textContent('#modAudit')));
+  check('Audit log shows the timeout', /timed out/.test(await page.textContent('#modAudit')));
   await page.screenshot({ path: SHOTS + 'moderation.png' });
   await page.click('#modTimeouts .btn:has-text("Lift")'); await sleep(800);
   check('lift it from the list', !(await emit(sX, 'message', { room: general.room, text: 'back' })).error);

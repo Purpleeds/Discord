@@ -1,5 +1,5 @@
 // Part of the regression suites - see regression/README.md.
-// Attachments inside messages, bans/timeouts/audit log, custom emoji, personas, TURN logins.
+// Attachments inside messages, bans/timeouts/audit log, custom emoji, no personas, TURN logins.
 const { BASE, check, sleep, get, post, reg, sock, emit, done, uid } = require('./lib');
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 async function attach(token, room, name, body, to) {
@@ -62,7 +62,7 @@ async function asset(token) {
   check('bans list', (await get(`/servers/${sid}/bans`, M)).data[0].reason === 'rude');
   check('unban, then they can rejoin', (await post(`/servers/${sid}/bans/${x}/unban`, M)).status === 200 && (await post('/servers/join', X, { code: srv.inviteCode })).status === 200);
   const audit = (await get(`/servers/${sid}/audit`, O)).data.map(a => a.action);
-  check('audit log records it all', ['timeout', 'timeout_lifted', 'ban', 'unban', 'message_delete', 'role_create', 'member_roles'].every(a => audit.includes(a)) || ['timeout', 'ban', 'unban'].every(a => audit.includes(a)), audit);
+  check('audit log records it all', ['timeout', 'timeout_lifted', 'ban', 'unban', 'role_create', 'member_roles'].every(a => audit.includes(a)), audit);
   check('plain members cannot read the audit log', (await get(`/servers/${sid}/audit`, X)).status === 403);
 
   // ---- custom emoji
@@ -78,13 +78,10 @@ async function asset(token) {
   check("…but not another server's or a made-up one", !!(await emit(sX2, 'reactMessage', { id: target.id, emoji: '<:party_cat:999999>' })).error);
   check('remove an emoji', (await post(`/servers/${sid}/emojis/${em.data.id}/delete`, M)).status === 200);
 
-  // ---- personas
-  check('persona needs the permission', /permission/.test((await emit(sM, 'message', { room: general.room, text: 'hi', persona: { name: 'Narrator' } })).error || ''));
-  const pr = await emit(sO, 'message', { room: general.room, text: 'The story begins', persona: { name: 'The Narrator', avatarUrl: await asset(O) } });
+  // ---- personas were removed: the field is ignored, the message is the real poster's
+  const pr = await emit(sO, 'message', { room: general.room, text: 'just me', persona: { name: 'The Narrator' } });
   const pm = (await hist(X)).messages.find(mm => mm.id === pr.id);
-  check('persona message: labelled, with its name, and who posted it', pm.persona === true && pm.displayName === 'The Narrator' && pm.user === o && /^\/assets\//.test(pm.avatarUrl), pm);
-  check("can't use a real member's name", /real person/.test((await emit(sO, 'message', { room: general.room, text: 'hi', persona: { name: x.toUpperCase() } })).error || ''));
-  check('persona use is in the audit log', (await get(`/servers/${sid}/audit`, O)).data.some(a => a.action === 'persona_post'));
+  check('no posting under another name any more', pm && !pm.persona && pm.user === o && pm.displayName !== 'The Narrator', pm);
 
   // ---- TURN logins (only when the server has TURN set up)
   const ice = (await get('/voice/ice', X)).data;

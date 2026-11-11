@@ -173,6 +173,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   rules as the chime, off via `notifPrefs.popups`. They always show where the
   message was sent. OS notifications can't be restyled - they only get the
   sender's picture as their icon.
+- Push subscriptions: only browser push services (`PUSH_SERVICE_HOSTS`, https,
+  default port) are accepted - `pushEndpointProblem()` runs on subscribe AND
+  before every send (bad stored rows are deleted). Max 10 per person.
 - Push payloads come from `pushContent()` (text + tags, optional `image`) with
   `pushIcon()` and a `/#m/<id>` link; `sw.js` posts `openUrl` to an open tab.
 - `/healthz` must not touch the database (it would keep Neon awake).

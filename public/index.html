@@ -1795,6 +1795,38 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
 .stickerGrid img{width:100%;height:100%;object-fit:contain;}
 .stickerCell img{width:72px;height:72px;}
 @media (max-width:900px){.stickerPicker{width:calc(100vw - 24px);}}
+
+/* ---- pop-up message cards (in-app notifications) ---- */
+#notiStack{position:fixed;right:22px;bottom:22px;z-index:9000;display:flex;flex-direction:column;gap:10px;width:356px;max-width:calc(100vw - 32px);pointer-events:none;}
+.notiCard{position:relative;pointer-events:auto;cursor:pointer;background:var(--bg-floating);border:1px solid var(--line-strong);border-radius:var(--r-card);box-shadow:var(--shadow-float);padding:12px 12px 14px;overflow:hidden;
+  animation:notiIn .32s var(--ease-out);transition:transform .16s var(--ease-out), border-color .16s;}
+.notiCard::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--brand);}
+.notiCard.leaving{animation:notiOut .22s ease-in forwards;}
+.notiCard:focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
+@media (hover:hover) and (pointer:fine){.notiCard:hover{border-color:var(--brand);transform:translateY(-2px);}}
+.notiTop{display:flex;align-items:center;gap:11px;padding-left:4px;}
+.notiAvatar{flex:none;width:42px;height:42px;border-radius:50%;display:grid;place-items:center;overflow:hidden;font-weight:700;font-size:17px;color:#fff;box-shadow:0 0 0 2px var(--bg-floating), 0 0 0 4px var(--line-strong);}
+.notiAvatar img{width:100%;height:100%;object-fit:cover;}
+.notiWho{min-width:0;flex:1;}
+.notiName{font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--text-bright);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.notiWhere{font-size:12.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;}
+.notiClose{flex:none;align-self:flex-start;width:26px;height:26px;border:0;border-radius:8px;background:transparent;color:var(--text-muted);font-size:18px;line-height:1;cursor:pointer;}
+.notiClose:hover{background:var(--hover);color:var(--text);}
+.notiBody{margin:10px 0 0 4px;padding:9px 12px;border-radius:12px;background:var(--bg-input);border:1px solid var(--line);color:var(--text);font-size:14px;line-height:1.4;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;}
+.notiTag{display:inline-block;padding:1px 8px;margin-right:4px;border-radius:999px;background:var(--mention);color:var(--mention-text);font-size:12px;font-weight:700;}
+.notiCount{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;background:var(--brand);color:var(--on-brand);font-size:11.5px;font-weight:700;vertical-align:2px;}
+.notiTimer{position:absolute;left:0;bottom:0;height:3px;width:100%;background:var(--brand);opacity:.55;transform-origin:left;animation:notiTimer linear forwards;}
+.notiCard:hover .notiTimer{animation-play-state:paused;}
+@keyframes notiIn{from{opacity:0;transform:translateX(28px) scale(.97);}to{opacity:1;transform:none;}}
+@keyframes notiOut{to{opacity:0;transform:translateX(28px);}}
+@keyframes notiTimer{from{transform:scaleX(1);}to{transform:scaleX(0);}}
+@media (max-width:900px){
+  #notiStack{right:auto;left:50%;transform:translateX(-50%);bottom:auto;top:calc(12px + env(safe-area-inset-top, 0px));flex-direction:column-reverse;}
+  @keyframes notiIn{from{opacity:0;transform:translateY(-18px);}to{opacity:1;transform:none;}}
+  @keyframes notiOut{to{opacity:0;transform:translateY(-18px);}}
+}
+html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !important;}
 </style>
 </head>
 
@@ -1999,6 +2031,7 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
   <div id="lightboxBar"><span id="lightboxName"></span><a id="lightboxOpen" target="_blank" rel="noopener">Open original</a></div>
 </div>
 <div id="toast"></div>
+<div id="notiStack" aria-live="polite"></div>
 <div id="incomingCall" class="incomingCall" role="dialog" aria-label="Incoming call"></div>
 <div id="voiceAudio" hidden></div>
 
@@ -2717,6 +2750,7 @@ function handleIncoming(msg, kind){
     return;
   }
   maybeNotifyDesktop(msg, kind, '#' + roomLabel(msg.room) + ' - ' + senderName(msg));
+  showMessageCard(msg, kind, msg.room);
   alertForIncoming(msg, msg.room);
   if(msg.room === currentRoom){
     appendItem({ kind, data:msg });
@@ -2740,6 +2774,7 @@ function handleIncomingDM(msg, kind){
     return;
   }
   maybeNotifyDesktop(msg, kind, displayNameFor(msg.user) + ' (DM)', room);
+  showMessageCard(msg, kind, room);
   alertForIncoming(msg, room);
   if(room === currentRoom){
     appendItem({ kind, data:msg });
@@ -2758,12 +2793,124 @@ function maybeNotifyDesktop(msg, kind, title, room){
   if(typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   if(!(document.hidden || !document.hasFocus())) return;
   try{
-    let body;
-    if(kind === 'file') body = displayNameFor(msg.user) + ' sent a file: ' + (msg.fileName || 'attachment');
-    else body = displayText(plainMentions(msg.text || ''), msg.room).slice(0, 140) || (senderName(msg) + ' sent a message');
-    const note = new Notification(title, { body });
-    note.onclick = () => { window.focus(); note.close(); };
+    const parts = messageCardParts(msg, kind);
+    const body = ((parts.tags.length ? parts.tags.map(t => '[' + t + ']').join(' ') + ' ' : '') + parts.text).trim().slice(0, 160) || (senderName(msg) + ' sent a message');
+    const options = { body, tag: 'chat:' + (room || msg.room), renotify: true };
+    const pic = cardAvatarUrl(msg);
+    if(pic) options.icon = new URL(pic, location.href).href;
+    const note = new Notification(title, options);
+    note.onclick = () => { window.focus(); note.close(); openRoomFromCard(room || msg.room, msg); };
   }catch(e){}
+}
+
+// Pop-up cards: while the app is on screen, a message for somewhere else
+// slides in at the corner (top on phones) - the sender's picture and name,
+// where it was sent, and the message (or [Image] / [GIF] / [Sticker]).
+// Clicking opens it. Same rules as the chime (muted channels, Do Not
+// Disturb); turned off in Settings > Notifications. Shown inside the app
+// only, so it can't be mistaken for anything else.
+const NOTI_MS = 6500, NOTI_MAX = 3;
+function cardAvatarUrl(msg){
+  if(msg.bot) return msg.avatarUrl || '';
+  return msg.avatarUrl || avatarUrlFor(msg.user);
+}
+function messageCardParts(msg, kind){
+  const tags = [];
+  const fileTag = f => {
+    const type = String(f.fileType || ''), name = String(f.fileName || '');
+    if(type === 'image/gif' || /\.gif$/i.test(name)) return 'GIF';
+    if(type.startsWith('image/') || IMAGE_EXT.test(name)) return 'Image';
+    if(type.startsWith('video/')) return 'Video';
+    if(type.startsWith('audio/')) return 'Audio';
+    return 'File';
+  };
+  if(kind === 'file') tags.push(fileTag(msg));
+  (msg.attachments || []).forEach(f => { const t = fileTag(f); if(!tags.includes(t)) tags.push(t); });
+  if(msg.sticker) tags.push('Sticker');
+  if(msg.kind === 'poll') tags.push('Poll');
+  let text = kind === 'file' ? (msg.caption || msg.fileName || '') : displayText(plainMentions(msg.text || ''), msg.room);
+  text = String(text || '').replace(/<a?:([\w-]+):\d+>/g, ':$1:').replace(/\s+/g, ' ').trim();
+  return { tags, text: text.slice(0, 300) };
+}
+function cardWhere(room){
+  if(isDMRoom(room)) return 'Direct message';
+  if(isGroupRoom(room)) return groupByRoom[room] ? groupByRoom[room].name : 'Group chat';
+  const found = channelByRoom(room);
+  return found ? '#' + roomLabel(room) + ' · ' + found.server.name : '#' + roomLabel(room);
+}
+function openRoomFromCard(room, msg){
+  if(isDMRoom(room)){ const other = msg.user === username ? (msg.to || msg.dmTo) : msg.user; if(other) openDM(other); }
+  else if(isGroupRoom(room)) openGroup(room);
+  else if(isThreadRoom(room)) openThread(threadIdOf(room));
+  else openChannel(room);
+  if(typeof closeNav === 'function') closeNav();
+}
+function closeMessageCard(card){
+  if(!card || card.classList.contains('leaving')) return;
+  clearTimeout(card._timer);
+  card.classList.add('leaving');
+  setTimeout(() => card.remove(), 230);
+}
+function armMessageCard(card){
+  clearTimeout(card._timer);
+  card._left = NOTI_MS; card._since = Date.now();
+  const timer = card.querySelector('.notiTimer');
+  timer.style.animation = 'none'; void timer.offsetWidth;
+  timer.style.animation = '';
+  timer.style.animationDuration = NOTI_MS + 'ms';
+  card._timer = setTimeout(() => closeMessageCard(card), NOTI_MS);
+}
+function showMessageCard(msg, kind, room, example){
+  if(!example){
+    if(notifPrefs.popups === false || !msg || msg.user === username || document.hidden) return;
+    if(room === currentRoom && document.hasFocus()) return;
+    if(!shouldAlert(msg, room)) return;
+  }
+  const stack = $('notiStack');
+  if(!stack) return;
+  const parts = messageCardParts(msg, kind);
+  const name = msg.bot ? (msg.displayName || 'Webhook') : (msg.displayName || displayNameFor(msg.user));
+  // another message from the same place and person: update that card
+  let card = [...stack.children].find(c => c.dataset.room === room && c.dataset.user === String(msg.user) && !c.classList.contains('leaving'));
+  if(!card){
+    card = document.createElement('div');
+    card.className = 'notiCard';
+    card.tabIndex = 0;
+    card.setAttribute('role', 'button');
+    card.dataset.room = room; card.dataset.user = String(msg.user); card.dataset.count = '0';
+    card.innerHTML = '<div class="notiTop"><div class="notiAvatar"></div><div class="notiWho"><div class="notiName"></div><div class="notiWhere"></div></div>' +
+      '<button class="notiClose" aria-label="Dismiss">×</button></div><div class="notiBody"></div><div class="notiTimer"></div>';
+    const avatar = card.querySelector('.notiAvatar');
+    const pic = cardAvatarUrl(msg);
+    avatar.style.background = avatarColour(msg.user || name);
+    if(pic){ const img = document.createElement('img'); img.src = pic; img.alt = ''; img.onerror = () => { img.remove(); avatar.textContent = name.charAt(0).toUpperCase(); }; avatar.appendChild(img); }
+    else avatar.textContent = (name.trim().charAt(0) || '?').toUpperCase();
+    card.querySelector('.notiWhere').textContent = example ? '#example · Settings' : cardWhere(room);
+    const open = () => { closeMessageCard(card); if(!example) openRoomFromCard(room, msg); };
+    card.onclick = e => { if(!e.target.closest('.notiClose')) open(); };
+    card.onkeydown = e => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); open(); } if(e.key === 'Escape') closeMessageCard(card); };
+    card.querySelector('.notiClose').onclick = e => { e.stopPropagation(); closeMessageCard(card); };
+    // hovering holds the card (and its timer bar) until the mouse leaves
+    card.onmouseenter = () => { clearTimeout(card._timer); };
+    card.onmouseleave = () => { card._timer = setTimeout(() => closeMessageCard(card), 2500); };
+    stack.appendChild(card);
+    const live = [...stack.children].filter(c => !c.classList.contains('leaving'));
+    if(live.length > NOTI_MAX) closeMessageCard(live[0]);
+  }
+  const count = Number(card.dataset.count) + 1;
+  card.dataset.count = String(count);
+  const nameEl = card.querySelector('.notiName');
+  nameEl.textContent = name + (msg.bot ? ' (bot)' : '');
+  const colour = msg.bot ? '' : roleColorFor(msg.user, room);
+  nameEl.style.color = colour || '';
+  if(count > 1){ const n = document.createElement('span'); n.className = 'notiCount'; n.textContent = count + ' new'; nameEl.appendChild(n); }
+  const body = card.querySelector('.notiBody');
+  body.textContent = '';
+  parts.tags.forEach(t => body.appendChild(Object.assign(document.createElement('span'), { className:'notiTag', textContent:t })));
+  if(parts.text) body.appendChild(document.createTextNode(parts.text));
+  if(!parts.tags.length && !parts.text) body.textContent = 'Sent a message';
+  card.setAttribute('aria-label', 'New message from ' + name + ' in ' + (example ? 'an example' : cardWhere(room)) + '. Open it.');
+  armMessageCard(card);
 }
 
 function bumpUnreadQuietly(room){
@@ -5598,7 +5745,7 @@ function modalMessage(text, isError){
 // Per-device, like appearance: mute a noisy channel on your phone without
 // muting it on your laptop. levels: 'room:<room>' or 'server:<id>' ->
 // 'all' | 'mentions' | 'none'. A channel's own setting beats its server's.
-const DEFAULT_NOTIF = { sound:true, volume:0.5, levels:{} };
+const DEFAULT_NOTIF = { sound:true, volume:0.5, popups:true, levels:{} };
 let notifPrefs = Object.assign({}, DEFAULT_NOTIF);
 try{ notifPrefs = Object.assign({}, DEFAULT_NOTIF, JSON.parse(localStorage.getItem('notifPrefs') || '{}')); }catch(e){}
 if(!notifPrefs.levels || typeof notifPrefs.levels !== 'object') notifPrefs.levels = {};
@@ -9209,6 +9356,8 @@ async function renderNotificationsSection(c){
     section('Push', switchRow('pushToggle', 'Push notifications', 'Even with the browser fully closed — for direct messages and @mentions, delivered by your browser\'s push service.', pushNotificationsEnabled) +
       (pushNotificationsEnabled ? '<button class="btn grey" id="pushTestBtn" style="margin-top:12px">Send test notification</button>' : '')) +
     section('Install the App', installAppHtml()) +
+    section('Pop-ups', switchRow('popupToggle', 'Message pop-ups', 'While the app is open, new messages from other channels and DMs slide in at the corner with the sender\'s picture. Click one to open it.', notifPrefs.popups !== false) +
+      '<button class="btn grey" id="popupTest" style="margin-top:12px">Show an example</button>') +
     section('Sounds', switchRow('soundToggle', 'Message sound', 'A short chime when a message arrives in a channel you\'re not looking at.', notifPrefs.sound) +
       '<div class="rangeRow" style="margin-top:12px"><span class="switchDesc" style="margin:0;min-width:60px">Volume</span><input type="range" min="5" max="100" id="soundVolume"><button class="btn grey" id="soundTest" style="padding:6px 12px">Test</button></div>') +
     section('Per-Channel Settings',
@@ -9218,6 +9367,10 @@ async function renderNotificationsSection(c){
   $('pushToggle').onchange = async e => { await setPushNotifications(e.target.checked, e.target); rerenderSettingsSection(); };
   if($('pushTestBtn')) $('pushTestBtn').onclick = sendTestPush;
   $('soundToggle').onchange = e => { notifPrefs.sound = e.target.checked; saveNotifPrefs(); };
+  $('popupToggle').onchange = e => { notifPrefs.popups = e.target.checked; saveNotifPrefs(); };
+  $('popupTest').onclick = () => {
+    showMessageCard({ user:username, displayName:displayNameFor(username), text:'This is how new messages pop up. Click one to open it.', attachments:[{ fileType:'image/gif', fileName:'wave.gif' }] }, 'message', '__example', true);
+  };
   $('soundVolume').value = Math.round((notifPrefs.volume || 0.5) * 100);
   $('soundVolume').oninput = e => { notifPrefs.volume = Number(e.target.value) / 100; saveNotifPrefs(); };
   $('soundTest').onclick = () => playPing(true);

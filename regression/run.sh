@@ -14,7 +14,7 @@ start() {
   echo "server did not start - see $LOG"; exit 1
 }
 stop() { pkill -x -f '(\S*/)?node server\.js' 2>/dev/null; sleep 1; }
-SUITES=${*:-v3_sessions v3_unread v3_files permissions profiles batch5_api batch4_api ssrf bots_api bans setup_api calls_api batch1 batch2 batch4_ui previews_ui bots_ui setup_ui motion calls_ui v3_ui roles_ui batch5_ui stickers big_assets}
+SUITES=${*:-v3_sessions v3_unread v3_files permissions profiles batch5_api batch4_api ssrf bots_api bans setup_api calls_api batch1 batch2 batch4_ui previews_ui bots_ui setup_ui motion calls_ui v3_ui roles_ui batch5_ui stickers big_assets popups}
 FAILED=0
 # always test a server started here, on $DB - never one that happens to be running already
 stop

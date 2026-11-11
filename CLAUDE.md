@@ -168,6 +168,11 @@ to do next) - read it before a big upgrade and add an entry after one.
   profiles (`cacheFromPayload()` skips them): they can be nicknames (or old personas).
 - TURN: `/voice/ice` gives coturn time-limited logins from `TURN_SECRET` /
   `TURN_SECRET_FILE`; `{host}` in `TURN_URLS` becomes the public name.
+- Pop-up message cards (`showMessageCard()`, `#notiStack`): in-app only, while
+  the app is on screen, for rooms you're not looking at; same `shouldAlert()`
+  rules as the chime, off via `notifPrefs.popups`. They always show where the
+  message was sent. OS notifications can't be restyled - they only get the
+  sender's picture as their icon.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

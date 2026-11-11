@@ -21,6 +21,11 @@ self.addEventListener('push', event => {
   const title = data.title || 'New message';
   const options = {
     body: data.body || '',
+    // the sender's picture, and a big preview of a picture/sticker where the
+    // device shows one (Chrome/Edge on Windows and Android)
+    icon: data.icon || '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    image: data.image || undefined,
     tag: data.tag || undefined,
     renotify: !!data.tag,
     data: { url: data.url || '/' }
@@ -33,8 +38,12 @@ self.addEventListener('notificationclick', event => {
   const url = (event.notification.data && event.notification.data.url) || '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windowClients => {
+      // an open tab: bring it forward and tell it which message to show
       for (const client of windowClients) {
-        if ('focus' in client) return client.focus();
+        if ('focus' in client) {
+          client.postMessage({ type: 'openUrl', url });
+          return client.focus();
+        }
       }
       if (self.clients.openWindow) return self.clients.openWindow(url);
     })

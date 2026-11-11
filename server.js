@@ -4033,7 +4033,7 @@ app.post('/threads', requireAuth, route(async (req, res) => {
     const mentions = await mentionFlags(req.username, room, firstText);
     const created = await insertMessage(room, req.username, firstText, null, 0, null, mentions);
     await touchThread(room);
-    pushMentions(room, firstText, req.username, mentions).catch(err => console.error('pushMentions failed:', err.message));
+    pushMentions(room, firstText, req.username, mentions, created).catch(err => console.error('pushMentions failed:', err.message));
     io.to(room).emit('message', await normaliseMessage(created));
   }
   if (starter) io.to(parentRoom).emit('messageUpdated', await normaliseMessage(await getMessageById(starter.id)));
@@ -4279,6 +4279,34 @@ async function ensureVapidKeys() {
 // specifically for "the browser is fully closed" which in-tab notifications
 // can never reach. A push always says plainly it's from this chat app -
 // title/body are provided by the caller and are never disguised.
+// What a push says about a message: the text (custom emoji as :name:, role
+// mentions as @role) with [Image] / [GIF] / [Video] / [Sticker] / [File]
+// tags, plus a picture to show big where the device supports it.
+function pushContent(text, msg) {
+  const tags = [];
+  let image = '';
+  const tagFor = f => {
+    const type = String(f.fileType || ''), name = String(f.fileName || '');
+    if (type === 'image/gif' || /\.gif$/i.test(name)) return 'GIF';
+    if (type.startsWith('image/')) return 'Image';
+    if (type.startsWith('video/')) return 'Video';
+    if (type.startsWith('audio/')) return 'Audio';
+    return 'File';
+  };
+  for (const f of (msg && msg.attachments) || []) {
+    const tag = tagFor(f);
+    if (!tags.includes(tag)) tags.push(tag);
+    if (!image && (tag === 'Image' || tag === 'GIF') && String(f.fileUrl || '').startsWith('/media/')) image = f.fileUrl;
+  }
+  if (msg && msg.sticker && msg.sticker.url) { tags.push('Sticker'); if (!image) image = msg.sticker.url; }
+  const clean = String(text || '').replace(/<a?:([\w-]+):\d+>/g, ':$1:').replace(/<@&\d+>/g, '@role').replace(/\s+/g, ' ').trim();
+  const body = ((tags.length ? tags.map(t => '[' + t + ']').join(' ') + ' ' : '') + clean).trim().slice(0, 160);
+  return { body, image };
+}
+// The sender's picture for a push (the app icon when they have none).
+async function pushIcon(username) {
+  return avatarUrlOf(await getUser(username)) || '/icons/icon-192.png';
+}
 async function sendPushToUser(username, payload) {
   if (onlineUsers.has(username)) return; // already reachable live, skip push
   const target = await getUser(username);
@@ -4325,7 +4353,10 @@ async function deliverPush(username, payload) {
 // they were mentioned even with the app fully closed, without pushing
 // every channel message to every member (which would be spammy).
 const MAX_GROUP_MENTION_PUSHES = 100; // @everyone/@role in a big server: don't push to hundreds
-async function pushMentions(room, text, fromUser, mentions) {
+async function pushMentions(room, text, fromUser, mentions, msg) {
+  const content = pushContent(text, msg);
+  const icon = await pushIcon(fromUser);
+  const url = msg && msg.id ? '/#m/' + msg.id : '/';
   const names = new Set();
   const re = /@([a-zA-Z0-9_.-]{2,30})/g;
   let match;
@@ -4341,9 +4372,10 @@ async function pushMentions(room, text, fromUser, mentions) {
     if (await blockBetween(name, fromUser)) continue;
     await sendPushToUser(name, {
       title: `${fromUser} mentioned you in #${roomLabel}`,
-      body: text.slice(0, 140),
+      body: content.body,
+      icon, image: content.image || undefined,
       tag: 'mention:' + room,
-      url: '/'
+      url
     });
   }
   if (!channel || !mentions || (!mentions.everyone && !mentions.roles)) return;
@@ -4364,9 +4396,10 @@ async function pushMentions(room, text, fromUser, mentions) {
     if (await blockBetween(name, fromUser)) continue;
     await sendPushToUser(name, {
       title: `${fromUser} mentioned ${label} in #${roomLabel}`,
-      body: text.replace(/<@&\d+>/g, '@role').slice(0, 140),
+      body: content.body,
+      icon, image: content.image || undefined,
       tag: 'mention:' + room,
-      url: '/'
+      url
     });
   }
 }
@@ -5902,7 +5935,7 @@ io.on('connection', (socket) => {
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
     await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
-    pushMentions(room, text, socket.username, mentions).catch(err => console.error('pushMentions failed:', err.message));
+    pushMentions(room, text, socket.username, mentions, msg).catch(err => console.error('pushMentions failed:', err.message));
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });
   });
 
@@ -6048,12 +6081,14 @@ io.on('connection', (socket) => {
     const msg = await normaliseMessage(created);
     sendToUser(socket.username, 'dmMessage', msg);
     sendToUser(to, 'dmMessage', msg);
-    sendPushToUser(to, {
+    const content = pushContent(text, msg);
+    pushIcon(socket.username).then(icon => sendPushToUser(to, {
       title: `${socket.username} sent you a message`,
-      body: text.slice(0, 140) || (sticker ? 'Sent a sticker' : 'Sent a file'),
+      body: content.body || 'Sent a message',
+      icon, image: content.image || undefined,
       tag: 'dm:' + room,
-      url: '/'
-    }).catch(err => console.error('sendPushToUser failed:', err.message));
+      url: '/#m/' + msg.id
+    })).catch(err => console.error('sendPushToUser failed:', err.message));
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });
   });
 

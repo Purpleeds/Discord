@@ -80,6 +80,33 @@ async function reg(u) { const r = await fetch(BASE + '/register', { method: 'POS
   check('hanging server times out (~6s)', r.data.none === true && r.ms < 8000, r.ms);
   const noAuth = await fetch(BASE + '/link-preview?url=' + encodeURIComponent(`http://127.0.0.1:${P1}/ok`));
   check('needs login', noAuth.status === 401, noAuth.status);
+  // ---- push subscriptions: only the browsers' push services, never an internal address
+  const keys = { p256dh: 'BNcRdreALRFXTkOOUHK1EtK2wtaz5Ry4YfYCA_0QTpQtUbVlUls0VJXg7A8u-Ts1XbjhazAkj7I99e8QcYP7DkM', auth: 'tBHItJI5svbpez7KI4CCXg' };
+  const subscribe = endpoint => fetch(BASE + '/push/subscribe', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + T }, body: JSON.stringify({ subscription: { endpoint, keys } }) }).then(r => r.status);
+  for (const endpoint of [`https://127.0.0.1:${P2}/secret`, `http://127.0.0.1:${P2}/secret`, 'https://192.168.48.76/x', 'https://localhost/x',
+    'https://169.254.169.254/latest', 'https://fcm.googleapis.com.evil.example/x', 'https://evil.example/fcm.googleapis.com', 'https://fcm.googleapis.com:8443/x',
+    'https://user:pw@fcm.googleapis.com/x', 'file:///etc/passwd', 'not a url']) {
+    check('push endpoint refused: ' + endpoint, (await subscribe(endpoint)) === 400);
+  }
+  for (const endpoint of ['https://fcm.googleapis.com/fcm/send/abc', 'https://updates.push.services.mozilla.com/wpush/v2/abc',
+    'https://wns2-par02p.notify.windows.com/w/?token=abc', 'https://web.push.apple.com/abc']) {
+    check('push endpoint accepted: ' + endpoint, (await subscribe(endpoint)) === 200);
+  }
+  // a bad row stored by an older version is dropped instead of contacted
+  const { Client } = require('pg');
+  const db = new Client({ connectionString: require('./lib').DB }); await db.connect();
+  const me = (await (await fetch(BASE + '/profile', { headers: { authorization: 'Bearer ' + T } })).json()).username;
+  await db.query(`DELETE FROM push_subscriptions WHERE username = $1`, [me]);
+  await db.query(`INSERT INTO push_subscriptions (username, endpoint, p256dh, auth) VALUES ($1, $2, $3, $4)`, [me, `https://127.0.0.1:${P2}/old`, keys.p256dh, keys.auth]);
+  const test = await (await fetch(BASE + '/push/test', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + T }, body: '{}' })).json();
+  const left = (await db.query(`SELECT count(*)::int AS n FROM push_subscriptions WHERE username = $1`, [me])).rows[0].n;
+  check('old internal subscription removed, not contacted', left === 0 && hits2 === 0, [test, left, hits2]);
+  // at most 10 per person
+  for (let i = 0; i < 13; i++) await subscribe('https://fcm.googleapis.com/fcm/send/many' + i);
+  const kept = (await db.query(`SELECT count(*)::int AS n FROM push_subscriptions WHERE username = $1`, [me])).rows[0].n;
+  check('at most 10 subscriptions each', kept === 10, kept);
+  await db.query(`DELETE FROM push_subscriptions WHERE username = $1`, [me]);
+  await db.end();
   s1.close(); s2.close(); globalThis.s80.close();
   console.log(`passed ${pass}, failed ${fail}`);
   process.exit(fail ? 1 : 0);

@@ -4321,6 +4321,26 @@ async function sendPushToUser(username, payload) {
 // testing it is wide open. Returns one result per subscription so a caller
 // (the test endpoint) can show the person exactly what happened instead of
 // a single "sent" that hides delivery failures.
+// Push subscriptions come from the browser, but a person could send any
+// address instead - and the server would then POST to it (into the home
+// network, say). So only the browsers' own push services are accepted, over
+// https on the normal port, both when subscribing and before each send.
+// (Their DNS isn't something a user controls, so the host name is the check.)
+const PUSH_SERVICE_HOSTS = [
+  /^fcm\.googleapis\.com$/,                 // Chrome, Edge on Android, Opera, Brave, Samsung
+  /^([a-z0-9-]+\.)*push\.services\.mozilla\.com$/, // Firefox
+  /^([a-z0-9-]+\.)*notify\.windows\.com$/,  // Edge on Windows
+  /^([a-z0-9-]+\.)*push\.apple\.com$/       // Safari, iPhone home-screen apps
+];
+const MAX_PUSH_SUBSCRIPTIONS = 10; // per person (each browser/device is one)
+function pushEndpointProblem(endpoint) {
+  let url;
+  try { url = new URL(String(endpoint || '')); } catch (_) { return 'not a web address'; }
+  if (url.protocol !== 'https:' || url.username || url.password || url.port) return 'must be a plain https address';
+  if (String(endpoint).length > 1000) return 'too long';
+  if (!PUSH_SERVICE_HOSTS.some(re => re.test(url.hostname.toLowerCase()))) return 'not a browser push service';
+  return null;
+}
 async function deliverPush(username, payload) {
   if (!vapidPublicKey) return { sent: 0, failed: 0, details: [{ error: 'server has no VAPID keys yet - restart the server' }] };
   const subs = await q(`SELECT * FROM push_subscriptions WHERE username = $1`, [username]);
@@ -4329,6 +4349,13 @@ async function deliverPush(username, payload) {
   const details = [];
   let sent = 0, failed = 0;
   for (const sub of subs) {
+    if (pushEndpointProblem(sub.endpoint)) {
+      // stored before endpoints were checked: never send there, drop it
+      await pool.query(`DELETE FROM push_subscriptions WHERE id = $1`, [sub.id]);
+      failed++;
+      details.push({ endpoint: '(removed)', ok: false, error: 'not a browser push service' });
+      continue;
+    }
     const subscription = { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } };
     try {
       await webpush.sendNotification(subscription, body);
@@ -4413,10 +4440,19 @@ app.post('/push/subscribe', requireAuth, route(async (req, res) => {
   if (!sub || !sub.endpoint || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
     return res.status(400).json({ error: 'invalid subscription' });
   }
+  const problem = pushEndpointProblem(sub.endpoint);
+  if (problem) return res.status(400).json({ error: 'invalid subscription: ' + problem });
+  if (String(sub.keys.p256dh).length > 200 || String(sub.keys.auth).length > 100) return res.status(400).json({ error: 'invalid subscription' });
   await pool.query(
     `INSERT INTO push_subscriptions (username, endpoint, p256dh, auth) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (endpoint) DO UPDATE SET username = EXCLUDED.username, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth`,
-    [req.username, sub.endpoint, sub.keys.p256dh, sub.keys.auth]
+     ON CONFLICT (endpoint) DO UPDATE SET username = EXCLUDED.username, p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, created_at = NOW()`,
+    [req.username, String(sub.endpoint), String(sub.keys.p256dh), String(sub.keys.auth)]
+  );
+  // keep only the newest few per person (old browsers that never unsubscribed)
+  await pool.query(
+    `DELETE FROM push_subscriptions WHERE username = $1 AND id NOT IN
+       (SELECT id FROM push_subscriptions WHERE username = $1 ORDER BY created_at DESC, id DESC LIMIT $2)`,
+    [req.username, MAX_PUSH_SUBSCRIPTIONS]
   );
   res.json({ message: 'ok' });
 }));

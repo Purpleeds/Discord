@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('notifier', {
   signOut: () => ipcRenderer.invoke('settings:signOut'),
   set: (key, value) => ipcRenderer.invoke('settings:set', key, value),
   test: () => ipcRenderer.invoke('settings:test'),
-  openChat: () => ipcRenderer.invoke('settings:openChat')
+  openChat: () => ipcRenderer.invoke('settings:openChat'),
+  installUpdate: () => ipcRenderer.invoke('settings:installUpdate')
 });

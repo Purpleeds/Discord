@@ -25,8 +25,16 @@ in your browser leaves desktop notifications to it, so nothing shows twice.
 It appears as **Chat Notifier on Windows** in the chat's Settings > Devices,
 where you can also sign it out.
 
-New versions: it checks the Releases page and offers updates from a pop-up
-and the tray menu.
+**How long pop-ups stay:** Settings > Pop-ups (or the tray's "Pop-ups stay
+for"): 4, 6.5 (default), 10 or 20 seconds, or until you close them. Hovering
+always holds a card.
+
+**Updates (from 1.1.0):** the installed app updates itself - it downloads a
+new release in the background, says so with a pop-up, and installs it when
+the app next closes, or right away with "Restart to update" (pop-up, tray or
+Settings). Turn it off with Settings > Update automatically. The portable
+.exe can't replace itself, so it offers the download instead. (1.0.0 has no
+auto-update: install 1.1.0 by hand once.)
 
 ## How it works
 
@@ -67,5 +75,6 @@ packaged build (`npx electron-builder --linux dir`).
 (`.github/workflows/notifier.yml`): every PR that touches `desktop/` builds
 the installer and starts the built .exe as a smoke test. To publish: bump
 `version` in `package.json`, merge, then Actions → *Chat Notifier (Windows)* →
-Run workflow (release ticked). That creates the `notifier-v<version>` release
-the app's update check looks for.
+Run workflow (release ticked). That creates the `notifier-v<version>` release,
+marked latest, with `latest.yml`: installed copies (electron-updater, generic
+feed `releases/latest/download`) pick it up within a few hours.

@@ -33,6 +33,7 @@ async function until(fn, ms = 20000) { const end = Date.now() + ms; let v; while
   check('sign-in form is showing', !!(await until(() => page.isVisible('#signIn'))));
   check('default chat address', (await page.inputValue('#server')) === 'https://discords-zf2n.onrender.com');
   check('version shown', /Version \d+\.\d+\.\d+/.test(await page.textContent('#version')));
+  check('built with an update feed (app-update.yml)', /releases\/latest\/download/.test(fs.readFileSync(path.join(path.dirname(exe), 'resources', 'app-update.yml'), 'utf8')));
   await page.screenshot({ path: path.join(out, 'settings.png') });
   check('tray program running', await app.evaluate(() => typeof global.__notifier === 'object'));
   await app.evaluate(() => global.__notifier.test());

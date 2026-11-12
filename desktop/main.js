@@ -15,7 +15,10 @@ const TEST = process.env.CHAT_NOTIFIER_TEST === '1';
 if (process.env.CHAT_NOTIFIER_DATA) app.setPath('userData', process.env.CHAT_NOTIFIER_DATA);
 const DEFAULT_SERVER = process.env.CHAT_NOTIFIER_SERVER || 'https://discords-zf2n.onrender.com';
 const RELEASES_URL = process.env.CHAT_NOTIFIER_RELEASES_URL || 'https://api.github.com/repos/Purpleeds/Discord/releases?per_page=20';
-const CARD_MS = Number(process.env.CHAT_NOTIFIER_CARD_MS) || 6500;
+const DEFAULT_CARD_MS = Number(process.env.CHAT_NOTIFIER_CARD_MS) || 6500;
+// how long a pop-up stays: the person's choice (seconds; 0 = until closed), or the default
+const CARD_CHOICES = [4, 6.5, 10, 20, 0];
+const cardMs = () => (CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds * 1000 : DEFAULT_CARD_MS);
 const CALL_MS = 45000;       // a ringing call's card stays until answered elsewhere, or this long
 const MAX_CARDS = 3;
 const CARD_WIDTH = 384;
@@ -28,7 +31,7 @@ const gotLock = TEST || app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
 /* ---------------- settings on disk ---------------- */
-const DEFAULTS = { server: DEFAULT_SERVER, username: '', token: '', tokenEnc: '', mode: 'mentions', theme: 'afterhours', accent: '#ffb648', autostart: true, pausedUntil: 0 };
+const DEFAULTS = { server: DEFAULT_SERVER, username: '', token: '', tokenEnc: '', mode: 'mentions', theme: 'afterhours', accent: '#ffb648', autostart: true, pausedUntil: 0, cardSeconds: null, autoUpdate: true };
 let cfg = { ...DEFAULTS };
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
 function loadConfig() {
@@ -237,7 +240,7 @@ function testCard() {
 
 const cards = []; // { key, win, data, url, external, sticky, height, timer, hovered, closing }
 function cardPayload(card) {
-  return { ...card.data, theme: cfg.theme, accent: cfg.accent, onAccent: L.onAccent(cfg.accent), duration: card.sticky ? 0 : CARD_MS };
+  return { ...card.data, theme: cfg.theme, accent: cfg.accent, onAccent: L.onAccent(cfg.accent), duration: card.sticky ? 0 : cardMs() };
 }
 function showCard(data) {
   const existing = cards.find(c => c.key === data.key && !c.closing);
@@ -273,7 +276,8 @@ function showCard(data) {
 function arm(card) {
   clearTimeout(card.timer);
   if (card.hovered) return;
-  card.timer = setTimeout(() => closeCard(card), card.sticky ? CALL_MS : CARD_MS);
+  const ms = card.sticky ? CALL_MS : cardMs();
+  if (ms) card.timer = setTimeout(() => closeCard(card), ms); // 0 = stays until closed
 }
 function closeCard(card) {
   if (!card || card.closing) return;
@@ -313,6 +317,7 @@ ipcMain.on('card:size', (e, height) => {
 ipcMain.on('card:open', e => {
   const card = cardFor(e);
   if (!card) return;
+  if (card.data.updateReady) { closeCard(card); installUpdateNow(); return; }
   openLink(card.url, card.external);
   closeCard(card);
 });
@@ -322,7 +327,7 @@ ipcMain.on('card:hover', (e, on) => {
   if (!card || card.closing) return;
   card.hovered = !!on;
   clearTimeout(card.timer);
-  if (!card.hovered) card.timer = setTimeout(() => closeCard(card), card.sticky ? CALL_MS : 2500);
+  if (!card.hovered && (card.sticky || cardMs())) card.timer = setTimeout(() => closeCard(card), card.sticky ? CALL_MS : Math.min(2500, cardMs()));
 });
 
 // Only ever opens the chat itself (or, for an update, its GitHub page).
@@ -413,6 +418,10 @@ function menuTemplate() {
       { label: 'DMs, groups and @mentions', type: 'radio', checked: cfg.mode === 'mentions', click: () => setOption('mode', 'mentions') },
       { label: 'Every message', type: 'radio', checked: cfg.mode === 'all', click: () => setOption('mode', 'all') }
     ] },
+    { label: 'Pop-ups stay for', submenu: [
+      ...[4, 6.5, 10, 20].map(n => ({ label: n + ' seconds' + (n === 6.5 ? ' (default)' : ''), type: 'radio', checked: (CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds : 6.5) === n, click: () => setOption('cardSeconds', n) })),
+      { label: 'Until I close them', type: 'radio', checked: cfg.cardSeconds === 0, click: () => setOption('cardSeconds', 0) }
+    ] },
     paused()
       ? { label: 'Resume pop-ups', enabled: on, click: () => pause(0) }
       : { label: 'Pause pop-ups', enabled: on, submenu: [
@@ -424,7 +433,8 @@ function menuTemplate() {
     { label: 'Show a test pop-up', click: testCard },
     { type: 'separator' }
   ];
-  if (live.update) items.push({ label: 'Download update ' + live.update.version, click: () => openLink(live.update.url, true) }, { type: 'separator' });
+  if (live.updateReady) items.push({ label: 'Restart to update to ' + live.updateReady, click: installUpdateNow }, { type: 'separator' });
+  else if (live.update) items.push({ label: 'Download update ' + live.update.version, click: () => openLink(live.update.url, true) }, { type: 'separator' });
   items.push(
     { label: 'Start with Windows', type: 'checkbox', checked: !!cfg.autostart, click: item => setOption('autostart', item.checked) },
     { label: 'Sign out', enabled: on, click: signOut },
@@ -449,7 +459,9 @@ function stateForUi() {
     signedIn: signedIn(), server: cfg.server, serverLabel: label, username: cfg.username,
     connection: live.connection, presence: live.presence, mode: cfg.mode, theme: cfg.theme,
     accent: cfg.accent, onAccent: L.onAccent(cfg.accent), autostart: !!cfg.autostart,
-    pausedUntil: paused() ? cfg.pausedUntil : 0, version: app.getVersion(), notice: live.notice
+    pausedUntil: paused() ? cfg.pausedUntil : 0, version: app.getVersion(), notice: live.notice,
+    cardSeconds: CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds : '', autoUpdate: !!cfg.autoUpdate,
+    canAutoUpdate: canAutoUpdate(), updateReady: live.updateReady || ''
   };
 }
 function pushState() {
@@ -462,6 +474,8 @@ function setOption(key, value) {
   else if (key === 'accent' && /^#[0-9a-f]{6}$/i.test(String(value))) cfg.accent = String(value).toLowerCase();
   else if (key === 'autostart') { cfg.autostart = !!value; applyAutostart(); }
   else if (key === 'pausedUntil') { pause(0); return; }
+  else if (key === 'cardSeconds') cfg.cardSeconds = CARD_CHOICES.includes(Number(value)) && value !== '' && value !== null ? Number(value) : null;
+  else if (key === 'autoUpdate') { cfg.autoUpdate = !!value; startAutoUpdate(); }
   else return;
   saveConfig();
   pushState();
@@ -469,7 +483,7 @@ function setOption(key, value) {
 function openSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
-    width: 460, height: 572, useContentSize: true, resizable: false, maximizable: false, fullscreenable: false,
+    width: 460, height: 690, useContentSize: true, resizable: false, maximizable: false, fullscreenable: false,
     title: 'Chat Notifier', icon: ICON, show: false, backgroundColor: '#232a4c', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'ui', 'settings-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: false }
   });
@@ -485,11 +499,47 @@ ipcMain.handle('settings:signOut', e => (fromSettings(e) ? signOut() : null));
 ipcMain.handle('settings:set', (e, key, value) => { if (fromSettings(e)) setOption(String(key), value); });
 ipcMain.handle('settings:test', e => { if (fromSettings(e)) testCard(); });
 ipcMain.handle('settings:openChat', e => { if (fromSettings(e)) openChat(); });
+ipcMain.handle('settings:installUpdate', e => { if (fromSettings(e)) installUpdateNow(); });
 
 /* ---------------- updates ---------------- */
+// Installed copies update themselves: a new release is downloaded in the
+// background and installed the next time the app quits - or right away from
+// the card / tray ("Restart to update"). The portable .exe and copies run
+// from source can't replace themselves, so they get the offer below instead.
+let autoUpdater = null, updateTimer = null;
+function canAutoUpdate() { return app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR && process.platform === 'win32'; }
+function startAutoUpdate() {
+  clearInterval(updateTimer); updateTimer = null;
+  if (!canAutoUpdate() || !cfg.autoUpdate || TEST) return;
+  if (!autoUpdater) {
+    autoUpdater = require('electron-updater').autoUpdater;
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-downloaded', info => {
+      live.updateReady = info && info.version ? info.version : 'the new version';
+      pushState();
+      showCard({
+        key: 'update', updateReady: true, name: 'Chat Notifier', colourKey: 'Chat Notifier',
+        avatar: nativeImage.createFromPath(ICON).resize({ width: 84, height: 84 }).toDataURL(),
+        where: 'Update ready', tags: [], text: 'Version ' + live.updateReady + ' is downloaded. Click to restart and install it (or it installs next time the app closes).', url: ''
+      });
+    });
+    autoUpdater.on('error', err => console.error('update failed:', err && err.message));
+  }
+  const check = () => autoUpdater.checkForUpdates().catch(() => {});
+  setTimeout(check, 15000);
+  updateTimer = setInterval(check, 4 * 60 * 60 * 1000);
+  updateTimer.unref();
+}
+function installUpdateNow() {
+  if (!autoUpdater || !live.updateReady) return;
+  quitting = true;
+  autoUpdater.quitAndInstall(true, true); // quietly, then start again
+}
 // Looks for a newer "notifier-v1.2.3" release on GitHub and offers it (a card
 // and a tray item). Installing is the person's choice.
 async function checkForUpdate() {
+  if (canAutoUpdate() && cfg.autoUpdate) return; // handled by the automatic updater
   try {
     const res = await net.fetch(RELEASES_URL, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
     if (!res.ok) return;
@@ -534,11 +584,12 @@ if (gotLock) app.whenReady().then(() => {
   // started by hand (not at Windows sign-in): show that it's running
   if (!signedIn() || !process.argv.includes('--hidden')) openSettings();
   powerMonitor.on('resume', () => { if (socket && !socket.connected) socket.connect(); });
+  startAutoUpdate();
   screen.on('display-metrics-changed', layout);
   if (!process.env.CHAT_NOTIFIER_NO_UPDATE_CHECK) {
     setTimeout(checkForUpdate, TEST ? 500 : 20000);
     setInterval(checkForUpdate, 6 * 60 * 60 * 1000).unref();
   }
   // for the tests: a read-only view of what's going on
-  if (TEST) global.__notifier = { cards: () => cards.filter(c => !c.closing).map(c => ({ key: c.key, ...c.data, url: c.url, bounds: c.win.getBounds() })), live: () => ({ ...live, blocked: [...live.blocked], threads: undefined }), cfg: () => ({ ...cfg, token: cfg.token ? '(set)' : '', tokenEnc: cfg.tokenEnc ? '(set)' : '' }), menu: () => menuTemplate().map(i => i.label || i.type), pause: ms => pause(ms), test: () => { testCard(); } };
+  if (TEST) global.__notifier = { cards: () => cards.filter(c => !c.closing).map(c => ({ key: c.key, ...c.data, url: c.url, bounds: c.win.getBounds() })), live: () => ({ ...live, blocked: [...live.blocked], threads: undefined }), cfg: () => ({ ...cfg, token: cfg.token ? '(set)' : '', tokenEnc: cfg.tokenEnc ? '(set)' : '' }), menu: () => menuTemplate().map(i => i.label || i.type), cardMs: () => cardMs(), pause: ms => pause(ms), test: () => { testCard(); } };
 });

@@ -64,7 +64,22 @@
     </label>
   </fieldset>
 
+  <fieldset class="row">
+    <legend>Pop-ups</legend>
+    <label>Stay on screen for
+      <select id="cardTime">
+        <option value="">6.5 seconds (default)</option>
+        <option value="4">4 seconds</option>
+        <option value="10">10 seconds</option>
+        <option value="20">20 seconds</option>
+        <option value="0">Until I close them</option>
+      </select>
+    </label>
+  </fieldset>
+
   <label class="check"><input type="checkbox" id="autostart"> Start with Windows</label>
+  <label class="check" id="autoUpdateRow"><input type="checkbox" id="autoUpdate"> Update automatically</label>
+  <div class="paused" id="updateReady" hidden>Version <span id="updateVersion"></span> is downloaded. <button type="button" class="link" id="installNow">Restart to update</button></div>
   <div class="paused" id="paused" hidden><span id="pausedText"></span> <button type="button" class="link" id="resume">Resume</button></div>
 
   <div class="actions">

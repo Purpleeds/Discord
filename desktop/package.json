@@ -1,13 +1,16 @@
 {
   "name": "chat-notifier",
   "productName": "Chat Notifier",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Desktop pop-ups for the chat, from the system tray.",
   "main": "main.js",
   "private": true,
   "author": "Purpleeds",
   "license": "UNLICENSED",
-  "repository": { "type": "git", "url": "https://github.com/Purpleeds/Discord.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Purpleeds/Discord.git"
+  },
   "scripts": {
     "start": "electron .",
     "test": "node test/logic.test.js",
@@ -16,6 +19,7 @@
     "dist": "electron-builder --win nsis portable --x64 --publish never"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
@@ -27,8 +31,17 @@
     "appId": "com.purpleeds.chatnotifier",
     "productName": "Chat Notifier",
     "copyright": "Purpleeds",
-    "directories": { "output": "dist", "buildResources": "assets" },
-    "files": ["main.js", "lib/**", "ui/**", "assets/**", "package.json"],
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "lib/**",
+      "ui/**",
+      "assets/**",
+      "package.json"
+    ],
     "win": {
       "icon": "assets/icon.ico",
       "artifactName": "Chat-Notifier-${version}-${arch}.${ext}"
@@ -44,6 +57,12 @@
     },
     "portable": {
       "artifactName": "Chat-Notifier-${version}-portable.${ext}"
-    }
+    },
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://github.com/Purpleeds/Discord/releases/latest/download"
+      }
+    ]
   }
 }

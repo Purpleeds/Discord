@@ -24,6 +24,11 @@ function paint(next) {
   $('theme').value = state.theme;
   $('accent').value = state.accent;
   $('autostart').checked = state.autostart;
+  $('cardTime').value = String(state.cardSeconds);
+  $('autoUpdate').checked = state.autoUpdate;
+  $('autoUpdateRow').hidden = !state.canAutoUpdate;
+  $('updateReady').hidden = !state.updateReady;
+  $('updateVersion').textContent = state.updateReady;
   $('paused').hidden = !state.pausedUntil;
   if (state.pausedUntil) $('pausedText').textContent = 'Pop-ups paused until ' + new Date(state.pausedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '.';
 }
@@ -47,6 +52,9 @@ document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('c
 $('theme').addEventListener('change', () => notifier.set('theme', $('theme').value));
 $('accent').addEventListener('change', () => notifier.set('accent', $('accent').value));
 $('autostart').addEventListener('change', () => notifier.set('autostart', $('autostart').checked));
+$('cardTime').addEventListener('change', () => notifier.set('cardSeconds', $('cardTime').value));
+$('autoUpdate').addEventListener('change', () => notifier.set('autoUpdate', $('autoUpdate').checked));
+$('installNow').addEventListener('click', () => notifier.installUpdate());
 $('resume').addEventListener('click', () => notifier.set('pausedUntil', 0));
 $('test').addEventListener('click', () => notifier.test());
 $('openChat').addEventListener('click', () => notifier.openChat());

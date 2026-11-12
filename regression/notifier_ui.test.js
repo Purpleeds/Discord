@@ -136,6 +136,25 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   check('…and the card goes away', !!(await until(async () => (await cards()).length === 0)));
 
   step("channels: quiet unless it's for you");
+  // ---- how long pop-ups stay (Settings > Pop-ups)
+  step('dismiss time');
+  await page.selectOption('#cardTime', '4');
+  check('dismiss time: 4 seconds', (await N(n => n.cardMs())) === 4000 && (await N(n => n.cfg())).cardSeconds === 4);
+  await emit(sA, 'dmMessage', { to: w, text: 'short one' });
+  check('card shows…', !!(await cardsWith(c => c.some(x => x.text === 'short one'))));
+  check('…and goes by itself after ~4s', !!(await until(async () => !(await cards()).some(x => x.text === 'short one'), 7000)));
+  await page.selectOption('#cardTime', '0');
+  await emit(sA, 'dmMessage', { to: w, text: 'sticky one' });
+  const sticky = await cardsWith(c => c.some(x => x.text === 'sticky one'));
+  await sleep(5000);
+  check('"until I close them": still there after 5s', !!sticky && (await cards()).some(x => x.text === 'sticky one'));
+  check('…with no countdown bar', await until(async () => { const pg = app.windows().find(x => /card\.html$/.test(x.url()) && !x.isClosed()); return pg && pg.evaluate(() => !document.getElementById('timer').classList.contains('run')); }));
+  check('tray offers the same choice', (await N(n => n.menu())).includes('Pop-ups stay for'));
+  await page.selectOption('#cardTime', '');
+  check('back to the default', (await N(n => n.cfg())).cardSeconds === null);
+  await clear();
+  check('auto-update row hidden when running from source', !(await page.isVisible('#autoUpdateRow')));
+
   // ---- channels: quiet unless it's for you
   await emit(sA, 'joinRoom', general.room);
   await emit(sA, 'message', { room: general.room, text: 'just chatting' });

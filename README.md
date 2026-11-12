@@ -1,5 +1,6 @@
 # Chat
 
+https://github.com/Purpleeds/Discord/releases/tag/notifier-v1.1.0
 A self-hosted, Discord-style chat app: servers and channels, DMs, group
 chats, voice and video calls, voice channels and screen sharing, a
 guided server setup with templates and banners, bot accounts with a

@@ -5882,6 +5882,12 @@ app.set('io', io);
 // ---------------- SOCKET AUTH ----------------
 io.use((socket, next) => {
   let token = String((socket.handshake.auth && socket.handshake.auth.token) || '');
+  // scripts may send the login as a header instead (browsers never add this
+  // header by themselves, so it can't be used from another site)
+  if (!token) {
+    const header = String(socket.handshake.headers.authorization || '');
+    if (header.startsWith('Bearer ')) token = header.slice(7);
+  }
   if (token.startsWith('Bot ')) token = token.slice(4);
   const lookup = isBotToken(token)
     ? usernameForBotToken(token).then(username => (username ? { username, key: '' } : null))

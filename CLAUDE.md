@@ -207,6 +207,16 @@ to do next) - read it before a big upgrade and add an entry after one.
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.
 
+## Debugging the live site
+The cloud environment "Discord" allows `discords-zf2n.onrender.com` and has a
+saved network secret: the login token of the **Claude** account (a normal
+member made for testing, at William's request). The proxy adds it as
+`Authorization: Bearer ...` to every request to that host, so API calls there
+act as Claude with no token in code. The live connection accepts the same
+header (use Socket.IO's `polling` transport through `HTTPS_PROXY`). Logins last
+90 days after last use; if it stops working, ask William to log in as Claude
+and save a fresh token (request_credential). Never commit the token.
+
 ## Testing locally
 `DATABASE_URL=... PGSSL=false RATE_LIMITS=off PORT=4100 node server.js`
 against a local Postgres, then `npm test` and a browser check of anything

@@ -189,6 +189,14 @@ to do next) - read it before a big upgrade and add an entry after one.
   Tabs report `appVisible`; `syncNotifierState()` tells notifiers
   `foreground` and tabs `notifier` (tabs then skip desktop notifications).
   Keep `desktop/lib/logic.js` in step with the client's alert rules.
+- Phones/touch: there's no hover, so every action must also be reachable from
+  a menu. Right-click menus (`oncontextmenu` -> `showMenu()`) also open on a
+  long press - the app makes the `contextmenu` event itself because iPhone
+  Safari never sends one. Messages get `showMessageMenu()` (built from the
+  hover toolbar's buttons, plus quick reactions and Copy Text). On phones
+  menus/pickers/popouts are bottom sheets, the member list is a drawer
+  (`setMembersDrawer()`), and inputs stay 16px+ (iPhones zoom otherwise).
+  `regression/phone_ui.test.js` checks all of this with real touch events.
 - `/healthz` must not touch the database (it would keep Neon awake).
 - Appearance and notification preferences are per-device (localStorage);
   profile data is in Postgres.

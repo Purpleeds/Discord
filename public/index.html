@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
 <title>Google</title>
 
 <link rel="icon" type="image/png" href="/google.png">
@@ -1795,6 +1795,50 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
 .stickerGrid img{width:100%;height:100%;object-fit:contain;}
 .stickerCell img{width:72px;height:72px;}
 @media (max-width:900px){.stickerPicker{width:calc(100vw - 24px);}}
+
+/* ---- phones: fixes from the phone audit ---- */
+@media (max-width:900px){
+  /* iPhones zoom the whole page into any box whose text is under 16px */
+  input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=color]):not([type=file]),textarea,select{font-size:16px !important;}
+  #messageInput{font-size:max(16px, var(--chat-font)) !important;}
+  /* the notch, rounded corners and home bar (needs viewport-fit=cover) */
+  #app.ready{padding-top:env(safe-area-inset-top);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);}
+  #serverRail{padding-top:calc(10px + env(safe-area-inset-top));}
+  #sidebar{padding-top:env(safe-area-inset-top);}
+  /* menus and pickers are bottom sheets with finger-sized rows */
+  #contextMenu{left:8px !important;right:8px !important;top:auto !important;bottom:calc(8px + env(safe-area-inset-bottom)) !important;
+    min-width:0;max-height:72vh;overflow-y:auto;border-radius:18px;padding:8px;transform-origin:bottom center;}
+  #contextMenu .contextItem{padding:13px 14px;font-size:16px;border-radius:10px;white-space:normal;}
+  #contextMenu .contextHeader{padding:8px 14px 4px;}
+  #emojiPicker,.stickerPicker{left:8px !important;right:8px !important;top:auto !important;bottom:calc(8px + env(safe-area-inset-bottom)) !important;
+    width:auto !important;max-width:none;border-radius:18px;}
+  #emojiPicker .emojiGrid{grid-template-columns:repeat(auto-fill,minmax(44px,1fr));max-height:42vh;}
+  #emojiPicker .emojiGrid button{font-size:26px;padding:6px;}
+  /* a reply's "who + what" stays on one line */
+  .replyPreview{min-width:0;overflow:hidden;white-space:nowrap;}
+  .replyPreview > *{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;}
+  /* code scrolls sideways instead of breaking every few letters */
+  .codeBlock{white-space:pre;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+  /* the member list: a drawer from the right (the members button opens it) */
+  #membersBtn{display:inline-flex !important;}
+  #members,#members.hidden{display:block !important;position:fixed;right:0;top:0;bottom:0;z-index:44;width:min(300px, 86vw);flex-basis:auto;
+    padding-top:calc(14px + env(safe-area-inset-top));padding-bottom:calc(14px + env(safe-area-inset-bottom));
+    border-left:1px solid var(--line);box-shadow:var(--shadow-float);transform:translateX(105%);transition:transform .26s var(--ease-out);visibility:hidden;}
+  #members.mobileOpen{transform:none;visibility:visible;}
+  #membersScrim{position:fixed;inset:0;z-index:43;background:rgba(4,7,22,.55);opacity:0;pointer-events:none;transition:opacity .22s ease;}
+  #membersScrim.show{opacity:1;pointer-events:auto;}
+  html[data-theme="light"] #membersScrim{background:rgba(30,36,70,.3);}
+}
+/* touch screens: there's no hover - hold a message (or a name, channel,
+   server) for its menu instead; no text-selection callout in the way */
+@media (hover:none){
+  .msgActions{display:none !important;}
+  .message,#sidebar,#serverRail,#members,.dmRow{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+  .contextQuick{display:flex;}
+}
+.contextQuick{display:flex;gap:4px;justify-content:space-between;padding:4px 4px 8px;margin-bottom:4px;border-bottom:1px solid var(--line);}
+.contextQuick button{flex:1;font-size:22px;padding:8px 0;border-radius:12px;background:var(--raised);}
+.contextQuick button:active{background:var(--active);}
 
 /* ---- pop-up message cards (in-app notifications) ---- */
 #notiStack{position:fixed;right:22px;bottom:22px;z-index:9000;display:flex;flex-direction:column;gap:10px;width:356px;max-width:calc(100vw - 32px);pointer-events:none;}
@@ -3602,7 +3646,21 @@ function renderUserPanel(){
 function toggleSidebar(){ if($('sidebar').classList.contains('open')) closeNav(); else openNav(); }
 function openNav(){ $('sidebar').classList.add('open'); $('app').classList.add('navOpen'); }
 function closeNav(){ $('sidebar').classList.remove('open'); $('app').classList.remove('navOpen'); }
+const isPhone = () => window.matchMedia('(max-width:900px)').matches;
+function setMembersDrawer(open){
+  let scrim = $('membersScrim');
+  if(!scrim){
+    scrim = document.createElement('div');
+    scrim.id = 'membersScrim';
+    scrim.onclick = () => setMembersDrawer(false);
+    document.body.appendChild(scrim);
+  }
+  $('members').classList.toggle('mobileOpen', open);
+  scrim.classList.toggle('show', open);
+  $('membersBtn').classList.toggle('on', open);
+}
 function toggleMembers(){
+  if(isPhone()){ setMembersDrawer(!$('members').classList.contains('mobileOpen')); return; }
   membersVisible = !membersVisible;
   $('members').classList.toggle('hidden', !membersVisible);
   $('membersBtn').classList.toggle('on', membersVisible);
@@ -3611,6 +3669,7 @@ function toggleMembers(){
 /* ============================ rooms ============================ */
 function openChannel(room, silent){
   if(!socket || !socket.connected) return;
+  if($('members').classList.contains('mobileOpen')) setMembersDrawer(false);
   if(isThreadRoom(room)){ openThread(threadIdOf(room)); return; }
   view = 'server';
   currentRoom = room;
@@ -4296,7 +4355,7 @@ function renderMarkdown(text){
   html = html.replace(/(<span class="quoteLine">[^\n]*<\/span>)\n/g, '$1');
   html = html.replace(/@([a-zA-Z0-9_.-]{2,30})/g, (m, name) => name.toLowerCase() === 'everyone'
     ? '<span class="mention everyone">@everyone</span>'
-    : '<span class="mention" onclick="openDM(\'' + name + '\')">@' + name + '</span>');
+    : '<span class="mention" onclick="mentionClick(event, \'' + name + '\')">@' + name + '</span>');
   // role mentions are stored as <@&id> (escaped above), shown as @Name in the role's colour
   html = html.replace(/&lt;@&amp;(\d+)&gt;/g, (m, id) => {
     const role = roleById(Number(id));
@@ -5580,6 +5639,19 @@ function showMenu(event, items){
   items.forEach(item => {
     if(item.sep){ const sep = document.createElement('div'); sep.className = 'contextSep'; menu.appendChild(sep); return; }
     if(item.header){ const h = document.createElement('div'); h.className = 'contextHeader'; h.textContent = item.header; menu.appendChild(h); return; }
+    if(item.quick){
+      const row = document.createElement('div');
+      row.className = 'contextQuick';
+      item.quick.forEach(q => {
+        const b = document.createElement('button');
+        b.textContent = q.emoji;
+        b.setAttribute('aria-label', 'React with ' + q.emoji);
+        b.onclick = () => { hideContextMenu(); q.action(); };
+        row.appendChild(b);
+      });
+      menu.appendChild(row);
+      return;
+    }
     if(item.range){
       // a slider that stays open while you drag it
       const row = document.createElement('label');
@@ -5608,6 +5680,76 @@ function showMenu(event, items){
   menu.style.top = Math.min(event.clientY, window.innerHeight - rect.height - 10) + 'px';
 }
 function hideContextMenu(){ $('contextMenu').style.display = 'none'; }
+function mentionClick(event, name){
+  event.stopPropagation();
+  if(!profiles[name] && !directoryUsers.some(u => (u && u.username ? u.username : u) === name)) return; // not a real person here
+  openProfilePopout(event, name, currentRoom);
+}
+
+// A message's menu: right-click on a computer, hold it on a phone. Same
+// actions as the hover toolbar (which phones can't reach), plus quick
+// reactions and copying the text.
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🔥'];
+function showMessageMenu(event, el){
+  const bar = el.querySelector('.msgActions');
+  if(!bar) return;
+  const data = el._item && el._item.data;
+  const items = [];
+  const buttons = [...bar.querySelectorAll('button')];
+  if(data && data.id && buttons.some(b => b.title === 'Add Reaction')) items.push({ quick: QUICK_REACTIONS.map(emoji => ({ emoji, action:() => sendReaction(data.id, emoji) })) });
+  buttons.forEach(b => {
+    // later, so the click that picked the item has finished (it would close a picker this opens)
+    items.push({ label: b.title === 'Add Reaction' ? 'Add Reaction…' : b.title, danger: b.classList.contains('danger'), action:() => setTimeout(() => b.click(), 0) });
+    if(b.title === 'Reply'){
+      const text = el.querySelector('.msgText');
+      if(text && text.innerText.trim()) items.push({ label:'Copy Text', action:() => copyText(text.innerText) });
+    }
+  });
+  if(items.length) showMenu(event, items);
+}
+document.addEventListener('contextmenu', e => {
+  if(e.defaultPrevented || !e.target.closest) return; // a name or avatar has its own menu
+  if(e.target.closest('a, img, video, input, textarea, .msgActions, .editBox')) return; // the browser's own menu for those
+  const el = e.target.closest('.message');
+  if(el && !el.classList.contains('pending')) showMessageMenu(e, el);
+});
+
+// Phones: holding a finger on something opens its menu. iPhone Safari never
+// sends "contextmenu" for a long press, so it's made here; Android does send
+// one - whichever comes first wins.
+(function(){
+  let timer = null, start = null, target = null, fired = 0, heldThisTouch = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  document.addEventListener('touchstart', e => {
+    cancel();
+    heldThisTouch = false;
+    if(e.touches.length !== 1) return;
+    const t = e.touches[0];
+    start = { x:t.clientX, y:t.clientY };
+    target = e.target;
+    if(target.closest && target.closest('a, img, video, input, textarea, select, #contextMenu, #emojiPicker')) return;
+    timer = setTimeout(() => {
+      timer = null;
+      if(!target || !target.isConnected) return;
+      fired = Date.now();
+      heldThisTouch = true;
+      if(navigator.vibrate) navigator.vibrate(8);
+      target.dispatchEvent(new MouseEvent('contextmenu', { bubbles:true, cancelable:true, clientX:start.x, clientY:start.y, view:window }));
+    }, 480);
+  }, { passive:true });
+  document.addEventListener('touchmove', e => {
+    const t = e.touches[0];
+    if(start && t && Math.hypot(t.clientX - start.x, t.clientY - start.y) > 10) cancel();
+  }, { passive:true });
+  // lifting the finger after a long press is not a tap (it would open what was held)
+  document.addEventListener('touchend', e => { cancel(); if(heldThisTouch && e.cancelable){ heldThisTouch = false; e.preventDefault(); } }, { passive:false });
+  document.addEventListener('touchcancel', cancel, { passive:true });
+  document.addEventListener('contextmenu', e => {
+    if(!e.isTrusted) return;
+    if(timer){ cancel(); return; }                               // Android's came first
+    if(Date.now() - fired < 1000){ e.preventDefault(); e.stopImmediatePropagation(); } // ours already did it
+  }, true);
+})();
 
 // Settings for how you look: the in-server profile for `server`, or your
 // main profile when there's no server (DMs, the open general server).
@@ -11385,8 +11527,18 @@ document.addEventListener('click', e => {
   hideEmojiPicker();
   if(!e.target.closest || !e.target.closest('.popout')) closePopouts();
 });
+document.addEventListener('click', e => {
+  const t = e.target;
+  if(!t.closest) return;
+  if(!t.closest('#contextMenu')) hideContextMenu();
+  if(!t.closest('#emojiPicker, #emojiBtn')) hideEmojiPicker();
+  const stickers = $('stickerPicker');
+  if(stickers && !t.closest('#stickerPicker, #stickerBtn')) stickers.classList.remove('open');
+  if(!t.closest('.popout, .headerBtn, #mobileNav, #contextMenu, #emojiPicker')) closePopouts();
+}, true);
 ['pinsPopout','profilePopout','inboxPopout','threadsPopout'].forEach(id => $(id).addEventListener('click', e => e.stopPropagation()));
-window.addEventListener('resize', () => { hideContextMenu(); hideEmojiPicker(); });
+let lastWidth = window.innerWidth;
+window.addEventListener('resize', () => { if(window.innerWidth === lastWidth) return; lastWidth = window.innerWidth; hideContextMenu(); hideEmojiPicker(); });
 window.addEventListener('focus', () => { isFocused = true; stopTabAlert(); settleReadDebt(); });
 document.addEventListener('visibilitychange', () => { if(!document.hidden) settleReadDebt(); });
 window.addEventListener('blur', () => { isFocused = false; });

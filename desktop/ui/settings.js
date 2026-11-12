@@ -17,7 +17,7 @@ function paint(next) {
     return;
   }
   $('who').textContent = state.username + ' · ' + state.serverLabel;
-  const s = { connected: 'Connected - pop-ups are on', connecting: 'Connecting…', offline: 'Can\'t reach the chat - retrying' }[state.connection] || state.connection;
+  const s = { connected: 'Connected - pop-ups are on', connecting: 'Connecting…', offline: 'Can\'t reach the chat - retrying' + (state.lastError ? ': ' + state.lastError : '') }[state.connection] || state.connection;
   $('status').textContent = state.presence === 'dnd' ? s + ' (Do Not Disturb)' : s;
   $('statusDot').className = 'dot ' + (state.connection === 'connected' ? 'on' : 'wait');
   document.querySelectorAll('input[name=mode]').forEach(r => { r.checked = r.value === state.mode; });

@@ -11,6 +11,17 @@ const fs = require('fs');
 const { io } = require('socket.io-client');
 const L = require('./lib/logic');
 
+// Trust the same certificates the browser does. Node normally only knows its
+// own built-in list, so antivirus "HTTPS scanning" (which re-signs sites with
+// a certificate it adds to Windows) made the notifier fail to connect while
+// the website worked fine in the browser.
+try {
+  const tls = require('tls');
+  if (tls.getCACertificates && tls.setDefaultCACertificates) {
+    tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])]);
+  }
+} catch (err) { console.error('could not load the system certificates:', err.message); }
+
 const TEST = process.env.CHAT_NOTIFIER_TEST === '1';
 if (process.env.CHAT_NOTIFIER_DATA) app.setPath('userData', process.env.CHAT_NOTIFIER_DATA);
 const DEFAULT_SERVER = process.env.CHAT_NOTIFIER_SERVER || 'https://discords-zf2n.onrender.com';
@@ -128,13 +139,16 @@ function connect() {
   live.connection = 'connecting';
   socket = io(cfg.server, {
     auth: { token, background: true },
-    transports: ['websocket'],
+    // like the browser: start with plain requests, move to a WebSocket if
+    // that gets through (some networks, proxies and antivirus block them)
+    transports: ['polling', 'websocket'],
     extraHeaders: { 'user-agent': UA },
     reconnectionDelay: 2000,
     reconnectionDelayMax: 30000
   });
   socket.on('connect', () => {
     live.connection = 'connected';
+    live.lastError = '';
     live.notice = '';
     pushState();
     loadContext().catch(() => {});
@@ -149,6 +163,8 @@ function connect() {
   });
   socket.on('connect_error', err => {
     if (err && err.message === 'not authenticated') return signedOutByServer();
+    live.lastError = connectErrorText(err);
+    console.error('connect failed:', live.lastError);
     live.connection = 'offline';
     pushState();
     // socket.io doesn't retry a refusal from the server's own check by itself
@@ -168,6 +184,16 @@ function connect() {
   socket.on('friendsChanged', () => reload('friends'));
   socket.on('voice:ring', ring);
   socket.on('voice:ringStop', d => { const c = cards.find(x => x.key === 'call:' + (d && d.key)); if (c) closeCard(c); });
+}
+// A short, readable reason for a failed connection (shown in Settings and the tray).
+function connectErrorText(err) {
+  if (!err) return 'unknown error';
+  const inner = err.description && (err.description.message || err.description.code || err.description);
+  const text = String(inner || err.message || err);
+  if (/certificate|self.signed|CERT_|unable to verify/i.test(text)) return 'certificate problem (' + text + ')';
+  if (/ENOTFOUND|EAI_AGAIN/i.test(text)) return 'address not found - check the chat address and your internet';
+  if (/ECONNREFUSED|ECONNRESET|socket hang up|502|503|timeout/i.test(text)) return 'the chat isn\'t answering right now (' + text + ')';
+  return text.slice(0, 160);
 }
 function disconnect() {
   if (socket) { socket.removeAllListeners(); socket.disconnect(); socket = null; }
@@ -400,7 +426,7 @@ function pause(ms) {
 /* ---------------- tray + settings window ---------------- */
 function statusText() {
   if (!signedIn()) return 'Not signed in';
-  if (live.connection !== 'connected') return live.connection === 'offline' ? 'Can\'t reach the chat - retrying' : 'Connecting…';
+  if (live.connection !== 'connected') return live.connection === 'offline' ? 'Can\'t reach the chat - retrying' + (live.lastError ? ': ' + live.lastError : '') : 'Connecting…';
   if (live.presence === 'dnd') return 'Do Not Disturb - pop-ups are off';
   if (paused()) return 'Paused until ' + new Date(cfg.pausedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   return 'Connected - pop-ups are on';
@@ -457,7 +483,7 @@ function stateForUi() {
   try { label = new URL(cfg.server).host; } catch (_) {}
   return {
     signedIn: signedIn(), server: cfg.server, serverLabel: label, username: cfg.username,
-    connection: live.connection, presence: live.presence, mode: cfg.mode, theme: cfg.theme,
+    connection: live.connection, lastError: live.lastError || '', presence: live.presence, mode: cfg.mode, theme: cfg.theme,
     accent: cfg.accent, onAccent: L.onAccent(cfg.accent), autostart: !!cfg.autostart,
     pausedUntil: paused() ? cfg.pausedUntil : 0, version: app.getVersion(), notice: live.notice,
     cardSeconds: CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds : '', autoUpdate: !!cfg.autoUpdate,

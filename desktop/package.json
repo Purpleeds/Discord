@@ -1,7 +1,7 @@
 {
   "name": "chat-notifier",
   "productName": "Chat Notifier",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Desktop pop-ups for the chat, from the system tray.",
   "main": "main.js",
   "private": true,

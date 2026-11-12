@@ -74,6 +74,16 @@ const server = http.createServer((req, res) => {
 // big uploads (2 GB banners) take longer than Node's 5-minute request limit
 server.requestTimeout = 0;
 
+// Render's free plan puts a service to sleep after 15 minutes without
+// visitors. Visit our own public /healthz (answered above, never touches the
+// NAS) every minute so the address stays awake. RENDER_EXTERNAL_URL is set by
+// Render itself; KEEPALIVE_URL overrides it, KEEPALIVE_MINUTES=0 turns it off.
+const KEEPALIVE_URL = process.env.KEEPALIVE_URL || (process.env.RENDER_EXTERNAL_URL ? process.env.RENDER_EXTERNAL_URL.replace(/\/+$/, '') + '/healthz' : '');
+const KEEPALIVE_MS = Number(process.env.KEEPALIVE_MINUTES ?? 1) * 60 * 1000;
+if (KEEPALIVE_URL && KEEPALIVE_MS > 0) {
+  setInterval(() => { fetch(KEEPALIVE_URL, { signal: AbortSignal.timeout(20000) }).catch(() => {}); }, KEEPALIVE_MS).unref();
+}
+
 // The chat's live connection (Socket.IO over WebSocket): open the same
 // upgrade to the real server, then join the two connections end to end.
 server.on('upgrade', (req, socket, head) => {

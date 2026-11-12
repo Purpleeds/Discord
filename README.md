@@ -37,6 +37,7 @@ tables itself on startup, so an empty database is all it needs.
 | `MEDIA_BUDGET_MB` | no | Total space kept attachments may use before the oldest are removed (default `250`). |
 | `FILE_EXPIRY_HOURS` | no | How long files over `KEEP_FILE_MB` live (default `6`; set it higher where the disk is permanent, e.g. a NAS). |
 | `ASSET_MAX_MB` | no | Largest banner/avatar/sticker picture, GIF or video people can upload (default `2048` = 2 GB). Over 8 MB they're kept on disk in `DATA_DIR/assets`, not in Postgres. |
+| `KEEPALIVE_URL` | no | An address to visit every `KEEPALIVE_MINUTES` (default 1) to keep it awake - e.g. a Render relay's `/healthz`. In relay mode the relay pings its own `RENDER_EXTERNAL_URL` by itself (`KEEPALIVE_MINUTES=0` turns that off). |
 | `AUTO_UPDATE_REPO` | no | `owner/repo` - check GitHub every `AUTO_UPDATE_MINUTES` (default 3) and restart on a new commit of `AUTO_UPDATE_BRANCH` (default `main`); waits for calls to end (up to `AUTO_UPDATE_MAX_WAIT_MIN`, default 120). For the NAS setup, whose start-up script downloads the code and writes `.version`. |
 | `ASSET_BUDGET_MB` | no | Total space for all of those together (default `30000`); uploads are refused once it's full. |
 | `RELAY_TO` | no | Relay mode: this copy runs no chat and no database, it just passes everything (pages, uploads, live connections) to the real chat at this address, e.g. a NAS. Keeps the old address working. See relay.js. |

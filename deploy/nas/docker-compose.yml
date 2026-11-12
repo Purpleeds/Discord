@@ -81,6 +81,8 @@ services:
       # checks GitHub every 3 minutes and restarts itself on a new version
       # (waits while anyone is in a call); remove to update only on restart
       AUTO_UPDATE_REPO: Purpleeds/Discord
+      # visits the Render address every minute so its free plan never sleeps
+      KEEPALIVE_URL: https://discords-zf2n.onrender.com/healthz
       # calls on strict networks use the relay below ({host} = the public name)
       TURN_URLS: "turns:{host}:8443?transport=tcp"
       TURN_SECRET_FILE: /shared/turn-secret

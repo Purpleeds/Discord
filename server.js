@@ -6635,6 +6635,16 @@ if (AUTO_UPDATE_REPO) {
   }
 }
 
+// Keep another address awake: with KEEPALIVE_URL set (e.g. the Render relay's
+// https://.../healthz), visit it every KEEPALIVE_MINUTES (default 1) so a
+// free plan never puts it to sleep. A fixed address from the owner's config,
+// never anything a user typed.
+const KEEPALIVE_URL = String(process.env.KEEPALIVE_URL || '').trim();
+const KEEPALIVE_MS = Number(process.env.KEEPALIVE_MINUTES ?? 1) * 60 * 1000;
+if (/^https?:\/\//.test(KEEPALIVE_URL) && KEEPALIVE_MS > 0) {
+  setInterval(() => { fetch(KEEPALIVE_URL, { signal: AbortSignal.timeout(20000) }).catch(() => {}); }, KEEPALIVE_MS).unref();
+}
+
 // Render sends SIGTERM before replacing the process on every deploy -
 // finish in-flight requests and close database connections cleanly
 // instead of being killed mid-query.

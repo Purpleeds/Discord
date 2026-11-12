@@ -36,6 +36,11 @@ Settings). Turn it off with Settings > Update automatically. The portable
 .exe can't replace itself, so it offers the download instead. (1.0.0 has no
 auto-update: install 1.1.0 by hand once.)
 
+**Can't connect?** Settings shows the reason next to "Can't reach the chat".
+The notifier trusts the same certificates as your browser (Windows' own list),
+so antivirus HTTPS scanning doesn't block it, and it falls back to plain
+requests where WebSockets are blocked (since 1.1.1).
+
 ## How it works
 
 - `main.js` - the tray, the sign-in, one Socket.IO connection to the chat as a

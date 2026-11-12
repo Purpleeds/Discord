@@ -206,6 +206,13 @@ large, new system - also split it over several sessions).
 - [ ] **Full Windows app** (Option B) - Electron shell with tray, push-to-talk
   in games, screen-share picker, installer + auto-update.
 
+- [x] **Phone fixes** (Nov 2026) - hold a message for reactions/reply/edit/
+  delete/copy (phones have no hover); hold names, channels, servers for their
+  menus (made for iPhone, which has no long-press event); member list drawer;
+  menus and pickers as bottom sheets that close on a tap elsewhere; tapping
+  an @mention shows the profile (it opened a DM - even with yourself);
+  no zoom-in on text boxes; notch-safe; replies on one line; code scrolls.
+
 ## Decided against
 
 - Admins posting as a real member while muting them - it's impersonation

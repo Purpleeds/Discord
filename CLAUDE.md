@@ -68,7 +68,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   banner_url, bio, hide_roles). Messages in server rooms get the nickname and
   avatar from `serverLooksFor()`. Hidden roles (owner/admins, or a role with
   `allow_hide`) are stripped from `/servers/:id/members` for viewers without
-  `manage_roles`; powers are unaffected. Banner/avatar media go through
+  `manage_roles`; powers are unaffected. Nothing may give away that someone
+  hides: `rolesHidden`/`serverProfile.hideRoles` only go to themselves and
+  role managers, and `/servers` sends `owner: ''` for an owner who hides.
+  Site admins can hide the Site Admin badge everywhere (`users.hide_admin`):
+  `profileFromRow()` then says `isAdmin: false` to everyone; `selfProfile()`
+  keeps the real `isAdmin` plus `adminHidden`. Your own profile card has an
+  eye beside your roles (`roleEyeButton()`) - hidden roles show greyed. Banner/avatar media go through
   `/assets` (allow-listed image/video types, `assetProblem()` checks the
   uploader); unused assets are removed after a day. Assets up to 8 MB are in
   Postgres (`storage 'db'`); bigger ones (up to `ASSET_MAX_MB`, 2 GB) stream to

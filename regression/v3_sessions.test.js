@@ -68,6 +68,12 @@ const sock = t => new Promise((res, rej) => { const s = io(BASE, { auth: { token
   const page = await fetch(BASE + '/');
   check('page has CSP + frame guard', /frame-ancestors 'self'/.test(page.headers.get('content-security-policy') || '') && page.headers.get('x-frame-options') === 'SAMEORIGIN');
   try { await sock('garbage'); check('bad socket token rejected', false); } catch (e) { check('bad socket token rejected', e.message === 'not authenticated', e.message); }
+  // the login as a header (scripts, the debugging setup) works for the live connection too
+  const { io: ioc } = require('socket.io-client');
+  const viaHeader = t => new Promise(res => { const s = ioc(BASE, { transports: ['polling'], extraHeaders: { authorization: 'Bearer ' + t }, reconnection: false }); s.on('connect', () => { s.close(); res('ok'); }); s.on('connect_error', e => { s.close(); res(e.message); }); });
+  const fresh = (await call('POST', '/register', null, { username: 'hdr' + id, password: 'secret123' })).data.token;
+  check('socket accepts a Bearer header', (await viaHeader(fresh)) === 'ok');
+  check('…but not a bad one', (await viaHeader('garbage')) === 'not authenticated');
   sB.close();
   console.log(`passed ${pass}, failed ${fail}`);
   process.exit(fail ? 1 : 0);

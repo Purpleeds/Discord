@@ -1762,6 +1762,12 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .bannerShade{background-size:cover;}
 .hasMediaBanner > :not(.bannerMedia){position:relative;z-index:1;}
 .pcBanner{background-size:cover;background-position:center;}
+.pcRole.hiddenRole{opacity:.45;filter:grayscale(1);}
+.pcRoles{align-items:center;}
+.roleEye{display:inline-grid;place-items:center;width:26px;height:24px;border-radius:7px;color:var(--text-muted);background:transparent;cursor:pointer;flex:none;}
+.roleEye:hover{background:var(--hover);color:var(--text-bright);}
+.roleEye.off{color:var(--text-muted);opacity:.8;}
+.roleEye:focus-visible{outline:2px solid var(--brand);outline-offset:1px;}
 .pcHidden{font-size:12.5px;color:var(--text-muted);font-style:italic;margin-bottom:6px;}
 select.settingsInput{max-width:360px;}
 
@@ -6172,15 +6178,56 @@ function memberSinceText(value){
 }
 function rolesFor(user, room){
   const out = [];
-  if(isAdminUser(user)) out.push({ label:'Site Admin', color:'#f0b132' });
+  // your own hidden Site Admin badge still shows to you, greyed (see the eye)
+  if(isAdminUser(user) || (user === username && myProfile.adminHidden)) out.push({ label:'Site Admin', color:'#f0b132', site:true, hidden: user === username && !!myProfile.adminHidden });
   const found = room ? channelByRoom(room) : null;
   if(found){
     const roles = serverRoles[found.server.id] || {};
-    if(user in roles ? roles[user] === 'owner' : found.server.owner === user) out.push({ label:'Server Owner', color:'#5865f2' });
-    else if(roles[user] === 'admin') out.push({ label:'Server Admin', color:'#3ba55c' });
-    customRolesFor(user, found.server.id).forEach(r => out.push({ label:r.name, color:r.color || '#99aab5' }));
+    const hidden = memberRolesHidden(user, found.server.id);
+    if(user in roles ? roles[user] === 'owner' : found.server.owner === user) out.push({ label:'Server Owner', color:'#5865f2', hidden });
+    else if(roles[user] === 'admin') out.push({ label:'Server Admin', color:'#3ba55c', hidden });
+    customRolesFor(user, found.server.id).forEach(r => out.push({ label:r.name, color:r.color || '#99aab5', hidden }));
   }
   return out;
+}
+// Is this member hiding their roles in this server? Only known for yourself
+// and to people who manage roles (the server tells nobody else).
+function memberRolesHidden(user, sid){
+  if(user === username){ const s = serverById(sid); return !!(s && s.myServerProfile && s.myServerProfile.hideRoles); }
+  const sp = (serverProfiles[sid] || {})[user];
+  return !!(sp && sp.rolesHidden);
+}
+const EYE_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_SVG = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a17.7 17.7 0 0 1-3.2 4.2M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7c1.7 0 3.2-.5 4.5-1.2"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>';
+// The eye beside your own roles: hide them (they turn grey - only you, and
+// people who manage roles, still see them) or show them again.
+function roleEyeButton(hidden, title, onToggle){
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'roleEye' + (hidden ? ' off' : '');
+  b.innerHTML = hidden ? EYE_OFF_SVG : EYE_SVG;
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+  b.onclick = e => { e.stopPropagation(); onToggle(b); };
+  return b;
+}
+async function setSiteAdminHidden(hide){
+  const res = await fetch('/profile', { method:'POST', headers:authHeaders(), body:JSON.stringify({ hideAdminBadge: hide }) });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ toast(capitalise(data.error || 'Could not change that.')); return false; }
+  myProfile = Object.assign(myProfile, data);
+  toast(hide ? 'Site Admin badge hidden - others see you as a regular member.' : 'Site Admin badge showing again.');
+  return true;
+}
+async function setServerRolesHidden(sid, hide){
+  const res = await fetch('/servers/' + sid + '/profile', { method:'POST', headers:authHeaders(), body:JSON.stringify({ hideRoles: hide }) });
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok){ toast(capitalise(data.error || 'Could not change that.')); return false; }
+  await refreshServers();
+  renderMembers(true);
+  toast(hide ? 'Roles hidden in this server.' : 'Roles showing again in this server.');
+  return true;
 }
 
 // One card used for the click-a-name popout AND the live preview in
@@ -6259,20 +6306,38 @@ function buildProfileCard(user, opts){
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcText', textContent:memberSinceText(p.memberSince) }));
   }
   const roles = opts.preview && !opts.serverOverride ? [] : rolesFor(user, opts.room);
-  if(sp && sp.rolesHidden && roles.length){
+  if(user !== username && roles.some(r => r.hidden && !r.site)){
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcText pcHidden', textContent:'Roles hidden from members - you can see them because you manage roles.' }));
   }
   if(roles.length){
     inner.appendChild(Object.assign(document.createElement('div'), { className:'pcLabel', textContent:'Roles' }));
     const holder = document.createElement('div');
     holder.className = 'pcRoles';
-    roles.forEach(r => {
+    const pillFor = r => {
       const pill = document.createElement('span');
-      pill.className = 'pcRole';
+      pill.className = 'pcRole' + (r.hidden ? ' hiddenRole' : '');
       pill.innerHTML = '<i style="background:' + r.color + '"></i>';
       pill.appendChild(document.createTextNode(r.label));
-      holder.appendChild(pill);
+      if(r.hidden) pill.title = user === username ? 'Hidden - only you (and people who manage roles) see it' : 'Hidden from members';
+      return pill;
+    };
+    const site = roles.filter(r => r.site), rest = roles.filter(r => !r.site);
+    site.forEach(r => {
+      holder.appendChild(pillFor(r));
+      // your Site Admin badge: hidden everywhere, or shown
+      if(user === username && !opts.preview) holder.appendChild(roleEyeButton(r.hidden,
+        r.hidden ? 'Site Admin badge is hidden everywhere - click to show it' : 'Hide your Site Admin badge (everywhere)',
+        async () => { if(await setSiteAdminHidden(!r.hidden)) rerenderProfilePopout(user, opts.room); }));
     });
+    rest.forEach(r => holder.appendChild(pillFor(r)));
+    // your roles in this server, if you're allowed to hide them
+    const found = opts.room ? channelByRoom(opts.room) : null;
+    if(user === username && !opts.preview && rest.length && found && found.server.canHideRoles){
+      const hidden = rest.some(r => r.hidden);
+      holder.appendChild(roleEyeButton(hidden,
+        hidden ? 'Your roles are hidden in this server - click to show them' : 'Hide your roles in this server',
+        async () => { if(await setServerRolesHidden(found.server.id, !hidden)) rerenderProfilePopout(user, opts.room); }));
+    }
     inner.appendChild(holder);
   }
 
@@ -6356,6 +6421,13 @@ function buildProfileCard(user, opts){
   return card;
 }
 
+// Redraw an open profile popout in place (after hiding/showing roles).
+function rerenderProfilePopout(user, room){
+  const pop = $('profilePopout');
+  if(!pop.classList.contains('open') || pop.dataset.user !== user) return;
+  pop.innerHTML = '';
+  pop.appendChild(buildProfileCard(user, { room: room || currentRoom }));
+}
 async function openProfilePopout(event, user, room, side){
   if(event){ event.stopPropagation(); event.preventDefault && event.type === 'contextmenu' && event.preventDefault(); }
   if(!user) return;

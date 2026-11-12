@@ -718,6 +718,8 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_url TEXT`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS bio TEXT`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS hide_roles INTEGER DEFAULT 0`);
+  // a site admin can hide their Site Admin badge (everywhere); their powers stay
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_admin INTEGER DEFAULT 0`);
   // roles that let their members hide their roles from everyone else
   await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS allow_hide INTEGER DEFAULT 0`);
   // ---- attachments inside messages ----
@@ -878,7 +880,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, banner_url, custom_status, pronouns, presence, avatar_version, created_at,
+  bio, banner_color, banner_url, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -1609,6 +1611,10 @@ async function serversForUser(username) {
   ]);
   const canSee = new Set(readable);
   const visibleChannels = channelRows.filter(c => canSee.has(c.room));
+  // owners who hide their roles in their server (not named as owner to others)
+  const hiddenOwners = new Set((await q(
+    `SELECT m.server_id FROM server_members m JOIN servers s ON s.id = m.server_id
+     WHERE m.server_id = ANY($1) AND m.username = s.owner AND m.hide_roles = 1`, [ids])).map(r => r.server_id));
   // who has access to each private channel - only sent to people who can manage that server
   const privateIds = visibleChannels.filter(c => c.is_private).map(c => c.id);
   const accessRows = privateIds.length ? await q(`SELECT * FROM channel_access WHERE channel_id = ANY($1)`, [privateIds]) : [];
@@ -1639,7 +1645,7 @@ async function serversForUser(username) {
     return {
       id: s.id,
       name: s.name,
-      owner: s.owner,
+      owner: hiddenOwners.has(s.id) && !isOwner && !permissions.includes('manage_roles') ? '' : s.owner,
       iconUrl: serverIconUrlOf(s),
       isDefault: !!s.is_default,
       isOwner,
@@ -1887,7 +1893,8 @@ function profileFromRow(u) {
     username: u.username,
     displayName: u.display_name || u.username,
     avatarUrl: avatarUrlOf(u),
-    isAdmin: u.username === 'Purple' || !!u.is_admin,
+    // what OTHER people see: a hidden Site Admin badge reads as not-admin
+    isAdmin: (u.username === 'Purple' || !!u.is_admin) && !u.hide_admin,
     censorSwears: !!u.censor_swears,
     bio: u.bio || '',
     bannerColor: u.banner_color || '',
@@ -1910,7 +1917,8 @@ async function profileFor(username) {
 async function selfProfile(username) {
   const u = await getUser(username);
   if (!u) return null;
-  return { ...profileFromRow(u), presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
+  const realAdmin = u.username === 'Purple' || !!u.is_admin;
+  return { ...profileFromRow(u), isAdmin: realAdmin, adminHidden: realAdmin && !!u.hide_admin, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
 }
 
 function validHexColor(value) {
@@ -2658,6 +2666,10 @@ app.post('/profile', requireAuth, route(async (req, res) => {
     }
   }
   if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
+  if ('hideAdminBadge' in body) {
+    if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'only site admins have that badge' });
+    set('hide_admin', body.hideAdminBadge ? 1 : 0);
+  }
   if ('pronouns' in body) set('pronouns', cleanText(body.pronouns || '', 40));
   if ('customStatus' in body) set('custom_status', cleanText(body.customStatus || '', 128));
   if ('bannerColor' in body) {
@@ -4868,8 +4880,10 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
     const row = memberRows.get(name);
     const serverProfile = row ? serverProfileFromRow(row) : null;
     const hidden = !!(row && row.hide_roles && (role !== 'member' || mayHide.has(name)));
-    if (hidden && name !== req.username && !seesHidden) { role = 'member'; roleIds = []; }
-    out.push({ ...profile, role, roleIds, rolesHidden: hidden, serverProfile, online: isVisiblyOnline(name), timedOutUntil: timeouts.get(name) || null });
+    const insider = name === req.username || seesHidden;
+    if (hidden && !insider) { role = 'member'; roleIds = []; }
+    if (serverProfile && !insider) delete serverProfile.hideRoles;
+    out.push({ ...profile, role, roleIds, rolesHidden: hidden && insider, serverProfile, online: isVisiblyOnline(name), timedOutUntil: timeouts.get(name) || null });
   }
   out.sort((a, b) => (Number(b.online) - Number(a.online)) || a.username.localeCompare(b.username));
   res.json(out);

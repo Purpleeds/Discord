@@ -188,7 +188,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   videos are turned into GIFs in the browser (`videoToGif()`, up to `GIF_MAX_SECONDS` = 2 min). A sticker
   message has `sticker_id` (history column lists include it), no text, can't
   be edited; `usableSticker()` allows a server's stickers there, and in DMs
-  stickers from servers the sender is in. The sticker button is always shown
+  stickers from servers the sender is in. The message bar has one button for both (`#stickerBtn`, no separate emoji
+  button): its menu has Stickers / Emoji tabs (`pickerTabs()`); reactions still use the
+  emoji picker directly. The sticker button is always shown
   (an empty picker offers "Add stickers" to managers); in the open general
   server only site admins can add them.
 - In server channels the client must not cache message names/avatars as

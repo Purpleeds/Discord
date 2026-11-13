@@ -1493,6 +1493,14 @@ html[data-theme="light"] .roleBadge.badgeAdmin{color:#8a6100;}
 #messageInput{padding:9px 6px;min-height:38px;line-height:1.4;}
 #emojiBtn{width:38px;height:38px;margin:0;border-radius:12px;color:var(--icon);filter:none;opacity:1;display:flex;align-items:center;justify-content:center;}
 #emojiBtn:hover{background:var(--raised-2);color:var(--text-bright);}
+/* the message bar's sticker button (stickers + emoji, see openStickerPicker) */
+#stickerBtn{width:38px;height:38px;flex:0 0 38px;margin:0;padding:0;border:0;border-radius:12px;background:transparent;color:var(--icon);display:flex;align-items:center;justify-content:center;align-self:center;cursor:pointer;}
+#stickerBtn:hover{background:var(--raised-2);color:var(--text-bright);}
+#stickerBtn[hidden]{display:none;}
+.pickerTabs{display:flex;gap:4px;padding:3px;margin-bottom:10px;border-radius:10px;background:var(--bg-input);}
+.pickerTabs button{flex:1;border:0;border-radius:8px;padding:6px 10px;background:transparent;color:var(--text-muted);font:inherit;font-size:13px;font-weight:600;cursor:pointer;}
+.pickerTabs button:hover{color:var(--text);}
+.pickerTabs button.active{background:var(--raised-2);color:var(--text-bright);}
 #sendBtn{
   width:38px;height:38px;border-radius:12px;background:var(--brand);color:var(--on-brand);
   display:flex;align-items:center;justify-content:center;flex:0 0 auto;
@@ -2056,8 +2064,7 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
         <div id="composer">
           <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
-          <button id="stickerBtn" title="Stickers" aria-label="Stickers" onclick="openStickerPicker(event)" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h7.5L21 14.5V7a4 4 0 0 0-4-4z"/><path d="M14 21v-3.5a3.5 3.5 0 0 1 3.5-3.5H21"/><path d="M8.5 10h.01M14.5 10h.01M8.5 14.5c1 .9 2.2 1.3 3.5 1.3"/></svg></button>
-          <button id="emojiBtn" title="Emoji" aria-label="Emoji" onclick="openEmojiPicker(event,'composer')"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M8.6 14.2c.8 1.2 2 1.9 3.4 1.9s2.6-.7 3.4-1.9"/><circle cx="9.2" cy="10" r=".9" fill="currentColor" stroke="none"/><circle cx="14.8" cy="10" r=".9" fill="currentColor" stroke="none"/></svg></button>
+          <button id="stickerBtn" title="Stickers and emoji" aria-label="Stickers and emoji" onclick="openStickerPicker(event)" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h7.5L21 14.5V7a4 4 0 0 0-4-4z"/><path d="M14 21v-3.5a3.5 3.5 0 0 1 3.5-3.5H21"/><path d="M8.5 10h.01M14.5 10h.01M8.5 14.5c1 .9 2.2 1.3 3.5 1.3"/></svg></button>
           <button id="sendBtn" title="Send (Enter)" aria-label="Send message" onclick="sendMessage()"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.1 6.5L15 12 3.5 13.9z"/></svg></button>
         </div>
       </div>
@@ -5106,11 +5113,18 @@ function openStickerPicker(event){
     document.addEventListener('click', () => pop.classList.remove('open'));
   }
   pop.innerHTML = '';
+  const anchor = event.currentTarget && event.currentTarget.getBoundingClientRect ? event.currentTarget : $('stickerBtn');
+  pop.appendChild(pickerTabs('stickers', () => {
+    pop.classList.remove('open');
+    const r = anchor.getBoundingClientRect();
+    const bar = (anchor.closest && anchor.closest('#composer')) || anchor;
+    openEmojiPicker({ stopPropagation(){}, clientX: r.right, clientY: bar.getBoundingClientRect().top - 2 }, 'composer');
+  }));
   const groups = availableStickers();
   if(!groups.length){
     const here = channelByRoom(currentRoom);
     const server = here && here.server;
-    pop.innerHTML = '<div class="switchDesc">No stickers yet. ' + (server && can(server, 'manage_emoji') ? '' : 'Admins add them in Server Settings &gt; Emoji &amp; Stickers.') + '</div>';
+    pop.insertAdjacentHTML('beforeend', '<div class="switchDesc">No stickers yet. ' + (server && can(server, 'manage_emoji') ? '' : 'Admins add them in Server Settings &gt; Emoji &amp; Stickers.') + '</div>');
     if(server && can(server, 'manage_emoji')){
       const add = document.createElement('button');
       add.className = 'btn';
@@ -5139,7 +5153,7 @@ function openStickerPicker(event){
     });
     pop.appendChild(grid);
   });
-  const r = event.currentTarget.getBoundingClientRect();
+  const r = anchor.getBoundingClientRect();
   pop.classList.add('open');
   const w = pop.offsetWidth, h = pop.offsetHeight;
   pop.style.left = Math.max(12, Math.min(r.right - w, innerWidth - w - 12)) + 'px';
@@ -5967,6 +5981,10 @@ function openEmojiPicker(event, mode, messageId){
     picker.appendChild(grid);
   }
   addGrid(mode === 'reaction' ? 'Add reaction' : 'Emoji', list);
+  if(mode === 'composer' && $('stickerBtn') && !$('stickerBtn').hidden){
+    // the message bar has one button for both: a tab back to stickers
+    picker.prepend(pickerTabs('emoji', ev => { hideEmojiPicker(); openStickerPicker({ stopPropagation(){}, currentTarget: $('stickerBtn') }); }));
+  }
   picker.style.display = 'block';
   const rect = picker.getBoundingClientRect();
   let left = Math.min(event.clientX, window.innerWidth - rect.width - 12);
@@ -5976,6 +5994,23 @@ function openEmojiPicker(event, mode, messageId){
   picker.style.top = top + 'px';
 }
 function hideEmojiPicker(){ $('emojiPicker').style.display = 'none'; }
+function pickerTabs(active, switchTo){
+  const tabs = document.createElement('div');
+  tabs.className = 'pickerTabs';
+  tabs.setAttribute('role', 'tablist');
+  [['stickers', 'Stickers'], ['emoji', 'Emoji']].forEach(([key, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', String(key === active));
+    b.className = key === active ? 'active' : '';
+    b.dataset.tab = key;
+    b.onclick = e => { e.stopPropagation(); if(key !== active) switchTo(e); };
+    tabs.appendChild(b);
+  });
+  return tabs;
+}
 function insertEmoji(emoji){
   const input = $('messageInput');
   const start = input.selectionStart || input.value.length;
@@ -12196,7 +12231,7 @@ document.addEventListener('click', e => {
   const t = e.target;
   if(!t.closest) return;
   if(!t.closest('#contextMenu')) hideContextMenu();
-  if(!t.closest('#emojiPicker, #emojiBtn')) hideEmojiPicker();
+  if(!t.closest('#emojiPicker, #emojiBtn, #stickerBtn, #stickerPicker')) hideEmojiPicker();
   const stickers = $('stickerPicker');
   if(stickers && !t.closest('#stickerPicker, #stickerBtn')) stickers.classList.remove('open');
   if(!t.closest('.popout, .headerBtn, #mobileNav, #contextMenu, #emojiPicker')) closePopouts();

@@ -79,7 +79,10 @@ const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done, uid
   check('+ menu opens', await menuOpen());
   await tapOutside();
   check('tapping elsewhere closes the + menu', !(await menuOpen()));
-  await page.locator('#emojiBtn').tap(); await sleep(300);
+  // one button for stickers and emoji: the sticker menu's Emoji tab
+  await page.locator('#stickerBtn').tap(); await sleep(250);
+  await page.locator('#stickerPicker .pickerTabs [data-tab=emoji]').tap(); await sleep(300);
+  check('the sticker button\'s Emoji tab opens the emoji picker', !(await page.$eval('#stickerPicker', el => el.classList.contains('open'))));
   const ep = await page.$eval('#emojiPicker', el => { const r = el.getBoundingClientRect(); return { l: r.left, r: r.right, d: getComputedStyle(el).display }; });
   check('emoji picker fits the screen', ep.d !== 'none' && ep.l >= 0 && ep.r <= 390, ep);
   await page.screenshot({ path: SHOTS + 'phone-emoji.png' });

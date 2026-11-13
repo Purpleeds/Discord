@@ -7,7 +7,11 @@ contextBridge.exposeInMainWorld('notifier', {
   signIn: details => ipcRenderer.invoke('settings:signIn', details),
   signOut: () => ipcRenderer.invoke('settings:signOut'),
   set: (key, value) => ipcRenderer.invoke('settings:set', key, value),
+  previewTheme: (theme, accent) => ipcRenderer.invoke('settings:previewTheme', theme, accent),
+  saveTheme: theme => ipcRenderer.invoke('settings:saveTheme', theme),
+  deleteTheme: id => ipcRenderer.invoke('settings:deleteTheme', id),
   test: () => ipcRenderer.invoke('settings:test'),
   openChat: () => ipcRenderer.invoke('settings:openChat'),
+  openLog: () => ipcRenderer.invoke('settings:openLog'),
   installUpdate: () => ipcRenderer.invoke('settings:installUpdate')
 });

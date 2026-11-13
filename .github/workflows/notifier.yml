@@ -50,6 +50,15 @@ jobs:
       - name: Version
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Windows version
+        shell: pwsh
+        run: Get-ComputerInfo -Property OsName, OsVersion, OsBuildNumber | Format-List
+      - name: Install it like people do (double-click x5, portable, start by hand, sign-in start, update from 1.1.0)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force old | Out-Null
+          Invoke-WebRequest -Uri https://github.com/Purpleeds/Discord/releases/download/notifier-v1.1.0/Chat-Notifier-Setup-1.1.0.exe -OutFile old/Chat-Notifier-Setup-1.1.0.exe
+          ./test/install-test.ps1 -NewSetup "dist/Chat-Notifier-Setup-${{ steps.version.outputs.version }}.exe" -NewVersion "${{ steps.version.outputs.version }}" -OldSetup old/Chat-Notifier-Setup-1.1.0.exe
       - uses: actions/upload-artifact@v4
         with:
           name: chat-notifier-${{ steps.version.outputs.version }}
@@ -98,5 +107,7 @@ jobs:
             **Install:** download `Chat-Notifier-Setup-${{ steps.version.outputs.version }}.exe` and run it. It installs for your account only (no admin needed), starts, and asks you to sign in. Or use the `portable` .exe, which runs without installing.
 
             **"Windows protected your PC"?** The app isn't code-signed, so SmartScreen warns the first time: click **More info** → **Run anyway**.
+
+            **Installer closed without doing anything?** Installers before 1.2.0 could crash on Windows 11 24H2 when opened; this one is built with a newer NSIS and is tested by double-clicking it on that Windows build. If yours still doesn't open, the log is in `%APPDATA%\Chat Notifier\notifier.log`.
 
             From 1.1.0 the installed app updates itself (Settings > Update automatically). The portable .exe offers new versions from its tray icon instead.

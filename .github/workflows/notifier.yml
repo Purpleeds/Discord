@@ -50,6 +50,12 @@ jobs:
       - name: Version
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Install it like people do (fresh install, start by hand, sign-in start, update from 1.1.0)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force old | Out-Null
+          Invoke-WebRequest -Uri https://github.com/Purpleeds/Discord/releases/download/notifier-v1.1.0/Chat-Notifier-Setup-1.1.0.exe -OutFile old/Chat-Notifier-Setup-1.1.0.exe
+          ./test/install-test.ps1 -NewSetup "dist/Chat-Notifier-Setup-${{ steps.version.outputs.version }}.exe" -NewVersion "${{ steps.version.outputs.version }}" -OldSetup old/Chat-Notifier-Setup-1.1.0.exe
       - uses: actions/upload-artifact@v4
         with:
           name: chat-notifier-${{ steps.version.outputs.version }}

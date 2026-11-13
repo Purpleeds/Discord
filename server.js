@@ -4261,12 +4261,33 @@ async function getGlobalCensor() {
   return !!(row && row.value === '1');
 }
 
+// The Site Admin page: who the site admins are (including any who hide the
+// badge - admins may know each other), and who is banned or muted.
+app.get('/admin/overview', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const admins = await q(`SELECT username, display_name, hide_admin FROM users WHERE (is_admin = 1 OR username = 'Purple') AND COALESCE(is_bot, 0) = 0 ORDER BY LOWER(username)`);
+  const banned = await q(`SELECT username, display_name FROM users WHERE banned = 1 ORDER BY LOWER(username)`);
+  const muted = await q(`SELECT username, muted_until, muted_by FROM mutes WHERE muted_until > NOW() ORDER BY muted_until`);
+  res.json({
+    me: req.username,
+    canManageAdmins: req.username === 'Purple',
+    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple' })),
+    banned: banned.map(b => ({ username: b.username, displayName: b.display_name || b.username })),
+    muted: muted.map(m => ({ username: m.username, until: m.muted_until, by: m.muted_by })),
+    globalCensor: await getGlobalCensor()
+  });
+}));
+// open Site Admin pages refresh when any of that changes
+function siteAdminListChanged() {
+  for (const [name, ids] of onlineUsers) for (const id of ids) io.to(id).emit('siteAdminChanged', {});
+}
+
 app.get('/site-settings', requireAuth, route(async (req, res) => {
   res.json({ globalCensor: await getGlobalCensor(), keepFileBytes: KEEP_FILE_BYTES, tempFileHours: FILE_EXPIRY_HOURS });
 }));
 
 app.post('/site-settings/global-censor', requireAuth, route(async (req, res) => {
-  if (req.username !== 'Purple') return res.status(403).json({ error: 'only Purple can change this' });
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'only site admins can change this' });
   const enabled = req.body.enabled ? '1' : '0';
   await pool.query(
     `INSERT INTO site_settings (key, value) VALUES ('global_censor_swears', $1)
@@ -6326,6 +6347,13 @@ io.on('connection', (socket) => {
 
     const action = String(data.action || '');
     try {
+      // Site admins can't act against each other - only Purple (the owner)
+      // can mute, kick, ban or remove another site admin. Anyone can be made one.
+      if (['mute', 'kick', 'ban', 'setAdmin'].includes(action) && socket.username !== 'Purple') {
+        const target = cleanUsername(data.username);
+        const removing = action !== 'setAdmin' || !data.isAdmin;
+        if (removing && (await isAdmin(target))) throw new Error('only Purple can do that to another site admin');
+      }
       if (action === 'createChannel') {
         const name = cleanUsername(data.name).replace(/^#/, '');
         if (!validChannelName(name)) throw new Error('channel name must be 2-32 letters, numbers, hyphens or underscores');
@@ -6354,11 +6382,13 @@ io.on('connection', (socket) => {
         );
         sendToUser(user, 'adminNotice', { message: `You have been muted until ${until.toISOString()}.` });
         await enforceCallAccess([user]); // muted people can't stay in calls
+        siteAdminListChanged();
         if (typeof ack === 'function') ack({ message: 'user muted' });
       } else if (action === 'unmute') {
         const user = cleanUsername(data.username);
         await pool.query(`DELETE FROM mutes WHERE username = $1`, [user]);
         sendToUser(user, 'adminNotice', { message: 'You have been unmuted.' });
+        siteAdminListChanged();
         if (typeof ack === 'function') ack({ message: 'user unmuted' });
       } else if (action === 'ban') {
         const user = cleanUsername(data.username);
@@ -6371,11 +6401,13 @@ io.on('connection', (socket) => {
         for (const b of await q(`SELECT username FROM users WHERE is_bot = 1 AND bot_owner = $1`, [user])) disconnectUser(b.username, 'This bot\'s owner was banned.');
         botTokenCache.clear();
         broadcastPresence();
+        siteAdminListChanged();
         if (typeof ack === 'function') ack({ message: 'user banned' });
       } else if (action === 'unban') {
         const user = cleanUsername(data.username);
         await pool.query(`UPDATE users SET banned = 0 WHERE username = $1`, [user]);
         invalidateUser(user);
+        siteAdminListChanged();
         if (typeof ack === 'function') ack({ message: 'user unbanned' });
       } else if (action === 'kick') {
         const user = cleanUsername(data.username);
@@ -6388,8 +6420,14 @@ io.on('connection', (socket) => {
         const makeAdmin = !!data.isAdmin;
         if (user === socket.username) throw new Error('you cannot change your own admin status');
         if (user === 'Purple') throw new Error('Purple is always an admin and cannot be changed');
-        if (!(await getUser(user))) throw new Error('user not found');
+        const target = await getUser(user);
+        if (!target) throw new Error('user not found');
+        if (target.is_bot) throw new Error('bots can\'t be site admins');
+        if (makeAdmin && target.banned) throw new Error('unban them first');
         await setAdminFlag(user, makeAdmin);
+        if (!makeAdmin && target.hide_admin) await pool.query(`UPDATE users SET hide_admin = 0 WHERE username = $1`, [user]);
+        invalidateUser(user);
+        siteAdminListChanged();
         const profile = await profileFor(user);
         io.emit('profilesChanged', { username: user, profile });
         sendToUser(user, 'adminNotice', { message: makeAdmin ? 'You have been made an admin.' : 'Your admin permissions have been removed.' });

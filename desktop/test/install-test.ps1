@@ -55,6 +55,29 @@ function Show-Log {
 
 Uninstall
 
+# 0. does each installer run at all? (exit code, files) - old release vs this build, silent vs normal
+$portable = Get-ChildItem (Split-Path $NewSetup) -Filter '*-portable.exe' | Select-Object -First 1
+$probes = @()
+if ($OldSetup) { $probes += ,@($OldSetup, '/S'); $probes += ,@($OldSetup, '') }
+$probes += ,@($NewSetup, '/S'); $probes += ,@($NewSetup, '')
+foreach ($pr in $probes) {
+  $args = if ($pr[1]) { @($pr[1]) } else { @() }
+  $t = [Diagnostics.Stopwatch]::StartNew()
+  $q = if ($args.Count) { Start-Process $pr[0] -ArgumentList $args -PassThru } else { Start-Process $pr[0] -PassThru }
+  $q.WaitForExit(180000) | Out-Null
+  $ok = Wait-Until { Test-Path $exe } 20
+  Write-Host ("probe {0} {1}: exit {2} (0x{3:X8}) after {4}s, installed={5} {6}" -f (Split-Path $pr[0] -Leaf), $pr[1], $q.ExitCode, $q.ExitCode, [int]$t.Elapsed.TotalSeconds, $ok, (InstalledVersion))
+  Uninstall
+}
+if ($portable) {
+  $q = Start-Process $portable.FullName -PassThru
+  $win = Wait-Until { (AppWindow).Count -gt 0 } 60
+  Write-Host ("probe {0}: window={1} exited={2} exit={3}" -f $portable.Name, $win, $q.HasExited, $(if ($q.HasExited) { '0x{0:X8}' -f $q.ExitCode } else { '-' }))
+  Stop-App
+}
+Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = (Get-Date).AddMinutes(-15) } -MaxEvents 6 -ErrorAction SilentlyContinue |
+  ForEach-Object { Write-Host "event $($_.Id) $($_.ProviderName): $(($_.Message -split "`n" | Select-Object -First 4) -join ' | ')" }
+
 # 1. fresh install, run like a double-click (one-click installer, starts the app when done)
 function Show-State([string] $why) {
   Write-Host "--- $why"

@@ -50,6 +50,9 @@ jobs:
       - name: Version
         id: version
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Windows version
+        shell: pwsh
+        run: Get-ComputerInfo -Property OsName, OsVersion, OsBuildNumber | Format-List
       - name: Install it like people do (fresh install, start by hand, sign-in start, update from 1.1.0)
         shell: pwsh
         run: |

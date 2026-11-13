@@ -63,7 +63,17 @@ const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done, uid
   await page.evaluate(() => closeSettings(true)); await sleep(300);
 
   // send it with the sticker button
+  check('there is no separate emoji button in the message bar', await page.evaluate(() => !document.getElementById('emojiBtn')));
+  const btnBox = await page.evaluate(() => { const b = document.getElementById('stickerBtn').getBoundingClientRect(), a = document.getElementById('attachBtn').getBoundingClientRect(); return { h: Math.round(b.height), mid: b.top + b.height / 2, attachMid: a.top + a.height / 2 }; });
+  check('the sticker button sits level in the message bar', btnBox.h === 38 && Math.abs(btnBox.mid - btnBox.attachMid) < 3, btnBox);
   check('sticker button appears', await page.evaluate(() => !document.getElementById('stickerBtn').hidden));
+  await page.click('#stickerBtn'); await sleep(300);
+  check('the sticker menu has Stickers and Emoji tabs', (await page.$$('#stickerPicker .pickerTabs button')).length === 2);
+  await page.click('#stickerPicker .pickerTabs [data-tab=emoji]'); await sleep(250);
+  check('the Emoji tab shows the emoji (with a tab back)', await page.$eval('#emojiPicker', el => getComputedStyle(el).display !== 'none' && !!el.querySelector('.pickerTabs [data-tab=stickers]') && el.querySelectorAll('.emojiGrid button').length > 10));
+  await page.click('#emojiPicker .emojiGrid button'); await sleep(150);
+  check('picking an emoji puts it in the message box', (await page.inputValue('#messageInput')).length > 0);
+  await page.fill('#messageInput', '');
   await page.click('#stickerBtn'); await sleep(300);
   await page.screenshot({ path: SHOTS + 'sticker_picker.png' });
   await page.click('#stickerPicker .stickerGrid button'); await sleep(900);

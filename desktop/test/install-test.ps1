@@ -63,6 +63,16 @@ function Show-Log {
 
 Uninstall
 
+function Show-State([string] $why) {
+  Write-Host "--- $why"
+  Write-Host "    processes: $((Get-Process | Where-Object { $_.Name -match 'Chat|Setup|Notifier|Au_|Un_|nsis' } | ForEach-Object { "$($_.Name)#$($_.Id)" }) -join ', ')"
+  $progs = Join-Path $env:LOCALAPPDATA 'Programs'
+  if (Test-Path $progs) { Write-Host "    Programs: $((Get-ChildItem $progs -Name) -join ', ')" }
+  Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | ForEach-Object {
+    $v = Get-ItemProperty $_.PSPath
+    if ($v.DisplayName -match 'Chat') { Write-Host "    uninstall entry: $($v.DisplayName) $($v.DisplayVersion) at $($v.InstallLocation)" }
+  }
+}
 function Show-Crashes {
   Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = (Get-Date).AddMinutes(-3) } -MaxEvents 3 -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Host "    crash report: $(($_.Message -split "`n" | Select-Object -First 4) -join ' | ')" }
@@ -120,8 +130,16 @@ if ($OldSetup) {
   foreach ($signedIn in @($false, $true)) {
     $label = if ($signedIn) { 'signed in' } else { 'signed out' }
     Uninstall
-    Start-Process $OldSetup -ArgumentList '/S' -Wait
-    Wait-Until { Test-Path $exe } 30 | Out-Null
+    # put the old release back (silently, as it was installed before)
+    $got = $false
+    for ($try = 1; $try -le 3 -and -not $got; $try++) {
+      $q = Start-Process $OldSetup -ArgumentList '/S' -PassThru
+      $q.WaitForExit(180000) | Out-Null
+      $got = Wait-Until { Test-Path $exe } 30
+      Write-Host ("    old release install, try {0}: exit 0x{1:X8}, installed={2}" -f $try, $q.ExitCode, $got)
+      if (-not $got) { Show-State 'old install missing'; Show-Crashes; Uninstall }
+    }
+    if (-not $got) { Check "old release installs ($label)" $false; continue }
     $old = InstalledVersion
     if ($signedIn) { Write-SignedIn }
     Start-Process $exe

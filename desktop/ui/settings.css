@@ -41,9 +41,9 @@ button:active{transform:translateY(1px);}
 .field input:focus{border-color:var(--brand);}
 
 /* ---------- signed out ---------- */
-.signInView{flex:1;overflow:auto;display:grid;place-items:center;padding:24px;}
-#signIn{width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px;}
-.bigLogo{width:56px;height:56px;border-radius:15px;}
+.signInView{flex:1;overflow:auto;display:grid;place-items:center;padding:18px 24px;}
+#signIn{width:100%;max-width:360px;display:flex;flex-direction:column;gap:11px;}
+.bigLogo{width:48px;height:48px;border-radius:13px;}
 #signIn h1{margin:4px 0 0;font:700 25px/1.15 var(--font-display);color:var(--bright);letter-spacing:-.01em;}
 #signIn .lede{margin:-6px 0 4px;}
 

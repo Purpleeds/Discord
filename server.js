@@ -722,6 +722,11 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_admin INTEGER DEFAULT 0`);
   // where a banner sits in its frame: "x,y,zoom" (see cleanBannerPos)
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
+  // "Seen" receipts: on unless the person turns them off (Privacy & Safety)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS read_receipts INTEGER DEFAULT 1`);
+  // how far someone has really looked (only the open chat moves it) - unlike
+  // last_message_id, which "mark as read" and joining a server also move
+  await pool.query(`ALTER TABLE read_receipts ADD COLUMN IF NOT EXISTS seen_message_id INTEGER DEFAULT 0`);
   await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   // roles that let their members hide their roles from everyone else
@@ -884,7 +889,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, banner_url, banner_pos, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
+  bio, banner_color, banner_url, banner_pos, read_receipts, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -1936,7 +1941,7 @@ async function selfProfile(username) {
   const u = await getUser(username);
   if (!u) return null;
   const realAdmin = u.username === 'Purple' || !!u.is_admin;
-  return { ...profileFromRow(u), isAdmin: realAdmin, adminHidden: realAdmin && !!u.hide_admin, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
+  return { ...profileFromRow(u), isAdmin: realAdmin, adminHidden: realAdmin && !!u.hide_admin, readReceipts: u.read_receipts !== 0, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
 }
 
 function validHexColor(value) {
@@ -2684,6 +2689,7 @@ app.post('/profile', requireAuth, route(async (req, res) => {
     }
   }
   if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
+  if ('readReceipts' in body) set('read_receipts', body.readReceipts ? 1 : 0);
   if ('hideAdminBadge' in body) {
     if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'only site admins have that badge' });
     set('hide_admin', body.hideAdminBadge ? 1 : 0);
@@ -2826,9 +2832,24 @@ app.get('/files', requireAuth, route(async (req, res) => {
 app.get('/read-receipts', requireAuth, route(async (req, res) => {
   const room = String(req.query.room || '');
   if (!(await isAllowedRoom(req.username, room))) return res.status(403).json({ error: 'forbidden room' });
-  const rows = await q(`SELECT username, last_message_id, updated_at FROM read_receipts WHERE room = $1`, [room]);
-  res.json(rows.map(r => ({ user: r.username, lastMessageId: r.last_message_id, updatedAt: r.updated_at })));
+  res.json(await visibleReceipts(room, req.username));
 }));
+// Who has read how far in a room, as `viewer` may see it: not themselves,
+// nobody who turned read receipts off, nobody either of them blocked, and in
+// a server only people still in it (leavers' old receipts stay hidden).
+async function visibleReceipts(room, viewer) {
+  const channel = await channelForRoom(room);
+  const serverId = channel && channel.server_id && channel.server_id !== DEFAULT_SERVER.id ? channel.server_id : null;
+  const rows = await q(
+    `SELECT r.username, r.seen_message_id AS last_message_id, r.updated_at FROM read_receipts r JOIN users u ON u.username = r.username
+     WHERE r.room = $1 AND r.username <> $2 AND COALESCE(r.seen_message_id, 0) > 0 AND COALESCE(u.read_receipts, 1) <> 0 AND COALESCE(u.banned, 0) = 0
+       AND NOT EXISTS (SELECT 1 FROM blocks b WHERE (b.blocker = $2 AND b.blocked = r.username) OR (b.blocker = r.username AND b.blocked = $2))
+       AND ($3::int IS NULL OR EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = $3 AND m.username = r.username))
+     ORDER BY r.seen_message_id DESC LIMIT 500`,
+    [room, viewer, serverId]
+  );
+  return rows.map(r => ({ user: r.username, lastMessageId: r.last_message_id, updatedAt: r.updated_at }));
+}
 
 // ---------------- SEARCH ----------------
 // Searches every message in one room (not just the 300 a client has
@@ -6358,17 +6379,20 @@ io.on('connection', (socket) => {
     const lastMessageId = Math.max(0, Math.floor(Number(data.lastMessageId) || 0));
     if (!room || lastMessageId > 2147483647 || !(await isAllowedRoom(socket.username, room))) return;
     await pool.query(
-      `INSERT INTO read_receipts (room, username, last_message_id, updated_at)
-       VALUES ($1, $2, LEAST($3::bigint, (SELECT COALESCE(MAX(id), 0) FROM messages))::int, NOW())
+      `INSERT INTO read_receipts (room, username, last_message_id, seen_message_id, updated_at)
+       VALUES ($1, $2, LEAST($3::bigint, (SELECT COALESCE(MAX(id), 0) FROM messages))::int, LEAST($3::bigint, (SELECT COALESCE(MAX(id), 0) FROM messages))::int, NOW())
        ON CONFLICT (room, username) DO UPDATE SET
          last_message_id = GREATEST(read_receipts.last_message_id, EXCLUDED.last_message_id),
+         seen_message_id = GREATEST(COALESCE(read_receipts.seen_message_id, 0), EXCLUDED.seen_message_id),
          updated_at = NOW()`,
       [room, socket.username, lastMessageId]
     );
     // this person's other devices clear the same badge
     sendToUser(socket.username, 'readSync', { rooms: [room], from: socket.id });
     if (!lastMessageId) return;
-    const payload = { room, user: socket.username, lastMessageId };
+    const me = await getUser(socket.username);
+    if (me && me.read_receipts === 0) return; // they don't send "Seen"
+    const payload = { room, user: socket.username, lastMessageId, updatedAt: new Date().toISOString() };
     io.to(room).emit('readReceipt', payload);
     const other = getDMOtherUser(socket.username, room);
     if (other) sendToUser(other, 'readReceipt', payload);

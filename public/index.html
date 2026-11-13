@@ -1718,6 +1718,14 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .deviceRow.current{border-color:color-mix(in srgb,var(--brand) 55%,transparent);}
 .deviceIcon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--raised-2);color:var(--text-muted);}
 .deviceRow.current .deviceIcon{color:var(--brand);}
+.seenRow{display:flex;justify-content:flex-end;align-items:center;margin-top:3px;user-select:none;}
+.seenText{font-size:11.5px;color:var(--text-muted);font-weight:600;}
+.seenFaces{gap:0;}
+.seenFaces .seenFace{width:16px;height:16px;font-size:8px;margin-left:-4px;box-shadow:0 0 0 2px var(--chat);border-radius:50%;}
+.seenFaces .seenFace:first-child{margin-left:0;}
+.seenFaces .seenFace .avatar{width:16px;height:16px;min-width:16px;font-size:8px;}
+.seenFaces .seenFace .avatar img{width:100%;height:100%;}
+.seenMore{margin-left:5px;font-size:11px;font-weight:700;color:var(--text-muted);}
 .roleMembersPanel{gap:10px;}
 .roleMemberList{display:flex;flex-wrap:wrap;gap:6px;}
 .roleMemberChip{display:inline-flex;align-items:center;gap:7px;padding:4px 4px 4px 5px;border-radius:999px;background:var(--raised);border:1px solid var(--line);font-size:13.5px;color:var(--text);}
@@ -2897,6 +2905,7 @@ function connectSocket(){
     }
   });
 
+  socket.on('readReceipt', receiptArrived);
   socket.on('typing', data => {
     if(!data || data.user === username || isBlocked(data.user)) return;
     if(!belongsHere(data.room)) return;
@@ -4056,6 +4065,7 @@ async function loadHistory(room){
     const lastMessage = messages[messages.length - 1];
     newestMessageId = lastMessage ? lastMessage.id : 0;
     if(combined.length) markCurrentRead();
+    loadReceipts(room);
   }catch(err){ showError(err.message); }
 }
 
@@ -4157,7 +4167,84 @@ function appendItem(item, bulk){
     if(item.kind === 'message' && typeof item.data.id === 'number') newestMessageId = Math.max(newestMessageId, item.data.id);
     markCurrentRead();
   }
+  if(!bulk) scheduleReceiptsPaint();
   return el;
+}
+
+/* ============================ read receipts ============================ */
+// "Seen": in a DM, a small "Seen" under your newest message once the other
+// person has read it. In groups and server channels, the pictures of
+// whoever has read up to a message sit under it (at the newest message each
+// person has read). The server leaves out people who turned receipts off,
+// blocked people, yourself, and people no longer in the server.
+const receiptsByRoom = new Map(); // room -> Map(user -> { id, at })
+async function loadReceipts(room){
+  try{
+    const response = await fetch('/read-receipts?room=' + encodeURIComponent(room), { headers: bearer() });
+    if(!response.ok) return;
+    const rows = await response.json();
+    const map = new Map();
+    rows.forEach(r => map.set(r.user, { id:r.lastMessageId, at:r.updatedAt }));
+    receiptsByRoom.set(room, map);
+    if(room === currentRoom) paintReceipts();
+  }catch(e){}
+}
+function receiptArrived(data){
+  if(!data || !data.room || !data.user || data.user === username || isBlocked(data.user)) return;
+  let map = receiptsByRoom.get(data.room);
+  if(!map){ if(data.room !== currentRoom) return; map = new Map(); receiptsByRoom.set(data.room, map); }
+  const old = map.get(data.user);
+  if(old && old.id >= data.lastMessageId) return;
+  map.set(data.user, { id:data.lastMessageId, at:data.updatedAt || new Date().toISOString() });
+  if(data.room === currentRoom) scheduleReceiptsPaint();
+}
+let receiptsTimer = null;
+function scheduleReceiptsPaint(){ clearTimeout(receiptsTimer); receiptsTimer = setTimeout(paintReceipts, 120); }
+function paintReceipts(){
+  const inner = innerEl();
+  if(!inner) return;
+  inner.querySelectorAll('.seenRow').forEach(n => n.remove());
+  const map = receiptsByRoom.get(currentRoom);
+  if(!map || !map.size) return;
+  const els = [...inner.querySelectorAll('.message[data-message-id]')].filter(el => el._item && typeof el._item.data.id === 'number' && !el._item.data.pending);
+  if(!els.length) return;
+  const wasAtBottom = isAtBottom();
+  const addRow = (el, row) => { const body = el.querySelector('.msgBody') || el; body.appendChild(row); };
+  if(view === 'dm' && activeDMUser && !currentGroupRoom){
+    // DM: "Seen" under my newest message, once they've read that far
+    const mine = els.filter(el => el._item.data.user === username);
+    const last = mine[mine.length - 1];
+    const theirs = map.get(activeDMUser);
+    if(!last || !theirs || theirs.id < last._item.data.id) return;
+    // only if nothing they wrote came after it (their reply already says they saw it)
+    if(els[els.length - 1] !== last) return;
+    const row = document.createElement('div');
+    row.className = 'seenRow seenText';
+    const at = parseTime(theirs.at);
+    row.textContent = 'Seen' + (at && !isNaN(at) ? ' ' + (new Date(at).toDateString() === new Date().toDateString() ? formatTime(theirs.at) : dayLabel(theirs.at)) : '');
+    addRow(last, row);
+  }else{
+    // groups and channels: each reader's picture under the newest message they've read
+    const at = new Map(); // element -> [users]
+    for(const [user, r] of map){
+      let spot = null;
+      for(let i = els.length - 1; i >= 0; i--){ if(els[i]._item.data.id <= r.id){ spot = els[i]; break; } }
+      if(!spot) continue; // read before anything on screen
+      if(!at.has(spot)) at.set(spot, []);
+      at.get(spot).push(user);
+    }
+    at.forEach((users, el) => {
+      const row = document.createElement('div');
+      row.className = 'seenRow seenFaces';
+      const names = users.map(displayNameFor);
+      row.title = 'Seen by ' + (names.length > 12 ? names.slice(0, 12).join(', ') + ' and ' + (names.length - 12) + ' more' : names.join(', '));
+      row.setAttribute('aria-label', row.title);
+      users.slice(0, 7).forEach(u => { const a = createAvatar(u, 'xs'); a.classList.add('seenFace'); row.appendChild(a); });
+      if(users.length > 7) row.appendChild(Object.assign(document.createElement('span'), { className:'seenMore', textContent:'+' + (users.length - 7) }));
+      addRow(el, row);
+    });
+  }
+  if(wasAtBottom) scrollToBottom();
 }
 
 /* ============================ swear censor ============================ */
@@ -9681,11 +9768,21 @@ function renderPrivacySection(c){
   const cs = censorStatus();
   c.innerHTML =
     '<h2 class="settingsTitle">Privacy &amp; Safety</h2>' +
+    section('Read receipts', switchRow('readReceiptsToggle', 'Show people when I\'ve seen their messages', 'Shows "Seen" under messages you\'ve read in DMs, and your picture under them in group chats and servers. Turn it off and nobody sees what you\'ve read.', myProfile.readReceipts !== false)) +
     section('Content Filter', switchRow('censorToggle', 'Censor swear words', cs.note, cs.checked, cs.forced) +
       '<div class="switchDesc" style="margin-top:10px">The filter catches common spellings people use to dodge it (like s.h.i.t or sh1t). Messages are never changed on the server — this only changes how they\'re shown.</div>') +
     section('Status', '<div class="switchDesc" style="margin-bottom:12px">Pick how you appear to others. <b>Invisible</b> shows you as offline while you can still use everything. <b>Do Not Disturb</b> silences sounds, desktop and push notifications.</div><div id="privacyStatus"></div>');
   const box = $('censorToggle');
   if(box && !cs.forced) box.onchange = () => setPersonalCensor(box.checked);
+  $('readReceiptsToggle').onchange = async e => {
+    const on = e.target.checked;
+    try{
+      const response = await fetch('/profile', { method:'POST', headers:authHeaders(), body:JSON.stringify({ readReceipts:on }) });
+      if(!response.ok) throw new Error('Could not save that. Try again.');
+      myProfile.readReceipts = on;
+      toast(on ? 'Read receipts are on' : 'Read receipts are off - nobody sees what you\'ve read');
+    }catch(err){ e.target.checked = !on; toast(err.message); }
+  };
   const holder = $('privacyStatus');
   ['online','idle','dnd','invisible'].forEach(status => {
     const row = document.createElement('button');

@@ -2357,7 +2357,11 @@ function avatarUrlFor(user){
 // Site admins (as far as this page knows): other admins also see the ones who
 // hide their badge, from the Site Admin list (siteAdminNames).
 let siteAdminNames = null;
-function isAdminUser(user){ if(siteAdminNames && siteAdminNames.has(user)) return true; const p = profiles[user]; return !!(p && p.isAdmin); }
+// Shown as a site admin (badges, gold names): only the PUBLIC status, so a
+// hidden badge stays hidden - for other admins and for yourself too.
+function isAdminUser(user){ const p = profiles[user]; return !!(p && p.isAdmin); }
+// Really a site admin (hidden or not) - only for what the moderation menu offers.
+function isSiteAdminForModeration(user){ return user === 'Purple' || (siteAdminNames ? siteAdminNames.has(user) : isAdminUser(user)); }
 // Our own full profile (with the real admin status) from the server.
 let selfProfileTimer = null;
 function refreshSelfProfile(){
@@ -6053,7 +6057,7 @@ function showUserMenu(event, user, room){
       : { label:'Make Server Admin', action:() => setServerRole(server, user, 'admin') });
   }
 
-  const otherAdmin = isAdminUser(user) || user === 'Purple';
+  const otherAdmin = isSiteAdminForModeration(user);
   if(myProfile.isAdmin && user !== username && otherAdmin && username !== 'Purple'){
     items.push({ sep:true });
     items.push({ header:'Site admin (only Purple can moderate admins)' });
@@ -6065,7 +6069,7 @@ function showUserMenu(event, user, room){
     items.push({ label:'Ban', danger:true, action:() => adminAction('ban', { username:user }) });
     if(user !== 'Purple'){
       items.push({ sep:true });
-      if(isAdminUser(user)){
+      if(isSiteAdminForModeration(user)){
         items.push({ label:'Remove Site Admin', danger:true, action:() => setUserAdmin(user, false) });
       }else{
         items.push({ label:'Make Site Admin', action:() => setUserAdmin(user, true) });

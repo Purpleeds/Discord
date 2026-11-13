@@ -65,6 +65,11 @@ const { BASE, DB, CHROME, SHOTS, check, sleep, get, post, reg, sock, emit, done,
   check('B hides the badge', (await post('/profile', B, { hideAdminBadge: true })).status === 200);
   await sleep(1500);
   check('…and is still an admin in their own page', await page.evaluate(() => myProfile.isAdmin === true));
+  // the badge really is hidden - also on the admins' own pages (they know the full list)
+  await page.evaluate(() => loadSiteAdminList());
+  check('a hidden badge isn\'t shown to themselves', await page.evaluate(n => !isAdminUser(n), b));
+  check('the admin menu still knows they\'re an admin', await page.evaluate(n => isSiteAdminForModeration(n), b));
+  check('no ADMIN badge in the member list', await page.evaluate(n => { renderMembers(true); return ![...document.querySelectorAll('#members .member, #members [data-user]')].some(el => (el.dataset.user === n || el.textContent.includes(n)) && /ADMIN/.test(el.textContent)); }, b));
   const overview = (await get('/admin/overview', A)).data;
   check('other admins see who hides the badge', overview.admins.some(x => x.username === b && x.hidden));
   check('only Purple manages admins', overview.canManageAdmins === false);

@@ -1718,6 +1718,22 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .deviceRow.current{border-color:color-mix(in srgb,var(--brand) 55%,transparent);}
 .deviceIcon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--raised-2);color:var(--text-muted);}
 .deviceRow.current .deviceIcon{color:var(--brand);}
+.roleMembersPanel{gap:10px;}
+.roleMemberList{display:flex;flex-wrap:wrap;gap:6px;}
+.roleMemberChip{display:inline-flex;align-items:center;gap:7px;padding:4px 4px 4px 5px;border-radius:999px;background:var(--raised);border:1px solid var(--line);font-size:13.5px;color:var(--text);}
+.roleMemberRemove{width:22px;height:22px;border:0;border-radius:50%;background:transparent;color:var(--text-muted);font-size:15px;line-height:1;cursor:pointer;}
+.roleMemberRemove:hover{background:var(--hover);color:var(--text);}
+.addRolesGrid{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-top:14px;}
+.addRolesGrid .fieldLabel{margin-bottom:8px;}
+.addRolesGrid .settingsInput{width:100%;margin-bottom:8px;}
+.arList{display:flex;flex-direction:column;gap:2px;max-height:min(46vh,380px);overflow-y:auto;padding:4px;border-radius:12px;background:var(--bg-input);border:1px solid var(--line);}
+.arRow{display:flex;align-items:center;gap:10px;padding:7px 9px;border-radius:9px;cursor:pointer;}
+.arRow:hover{background:var(--hover);}
+.arRow input{accent-color:var(--brand);width:16px;height:16px;margin:0;flex:none;}
+.arText{display:flex;flex-direction:column;min-width:0;}
+.arName{font-weight:600;color:var(--text-bright);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.arSub{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+@media (max-width:700px){.addRolesGrid{grid-template-columns:1fr;}}
 .siteAdminAvatar{border-radius:50%;overflow:hidden;font-weight:700;font-size:16px;color:var(--text-bright);}
 .siteAdminAvatar img{width:100%;height:100%;object-fit:cover;}
 .deviceInfo{flex:1;min-width:0;}
@@ -1761,6 +1777,15 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 /* ---- media banners, server profiles ---- */
 .hasMediaBanner{position:relative;overflow:hidden;}
 .bannerMedia{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none;z-index:0;}
+.bannerMedia.bannerMain{inset:auto;left:0;top:0;object-fit:fill;max-width:none;max-height:none;}
+.bannerMedia.bannerBlur{inset:-10%;width:120%;height:120%;filter:blur(22px) saturate(1.15) brightness(.82);transform:translateZ(0);}
+.bannerAdjustFrame{position:relative;width:100%;border-radius:14px;overflow:hidden;cursor:grab;touch-action:none;user-select:none;background:var(--bg-tertiary);box-shadow:inset 0 0 0 1px var(--line-strong);}
+.bannerAdjustFrame.dragging{cursor:grabbing;}
+.bannerAdjustFrame:focus-visible{outline:2px solid var(--brand);outline-offset:3px;}
+.bannerAdjustControls{display:flex;align-items:center;gap:12px;margin-top:14px;}
+.bannerAdjustControls input[type=range]{flex:1;accent-color:var(--brand);}
+.baLabel{font-weight:600;color:var(--text-bright);font-size:13.5px;}
+.baValue{min-width:44px;text-align:right;color:var(--text-muted);font-variant-numeric:tabular-nums;font-size:13px;}
 .bannerShade{background-size:cover;}
 .hasMediaBanner > :not(.bannerMedia){position:relative;z-index:1;}
 .pcBanner{background-size:cover;background-position:center;}
@@ -3259,24 +3284,152 @@ function isVideoUrl(url){ return /\.(mp4|webm)(\?|$)/i.test(String(url || '')); 
 // Fills `el` with a banner: a picture/GIF, or a short looping muted video,
 // over `color`. `shade` is an optional gradient laid over the top (for names
 // written on the banner). Videos stay still when reduced motion is on.
-function paintMediaBanner(el, url, color, shade){
+function paintMediaBanner(el, url, color, shade, pos){
   el.querySelectorAll(':scope > .bannerMedia').forEach(n => n.remove());
-  el.classList.toggle('hasMediaBanner', isVideoUrl(url));
+  el.classList.toggle('hasMediaBanner', !!url);
   el.style.backgroundColor = color || '';
-  if(url && isVideoUrl(url)){
-    const video = document.createElement('video');
-    video.className = 'bannerMedia';
-    video.src = url; video.muted = true; video.loop = true; video.playsInline = true;
-    video.setAttribute('muted', ''); video.setAttribute('playsinline', '');
+  el.style.backgroundImage = '';
+  el._bannerPos = parseBannerPos(pos);
+  el._bannerUrl = url || '';
+  if(!url){ el.style.backgroundImage = shade || ''; return; }
+  const main = bannerMediaElement(url);
+  main.classList.add('bannerMain');
+  el.prepend(main);
+  if(shade){ const s = document.createElement('div'); s.className = 'bannerMedia bannerShade'; s.style.backgroundImage = shade; main.after(s); }
+  main.addEventListener(isVideoUrl(url) ? 'loadedmetadata' : 'load', () => layoutBanner(el));
+  bannerResize.observe(el);
+  layoutBanner(el);
+}
+// "x,y,zoom" -> numbers (see cleanBannerPos in server.js); default centred, just filling
+function parseBannerPos(pos){
+  const p = String(pos || '').split(',').map(Number);
+  return p.length === 3 && p.every(Number.isFinite) ? { x:p[0], y:p[1], z:p[2] } : { x:50, y:50, z:1 };
+}
+function bannerPosString(p){
+  const r = (n, d) => Math.round(n * 10 ** d) / 10 ** d;
+  const x = r(Math.min(100, Math.max(0, p.x)), 1), y = r(Math.min(100, Math.max(0, p.y)), 1), z = r(Math.min(4, Math.max(0.2, p.z)), 3);
+  return x === 50 && y === 50 && z === 1 ? '' : x + ',' + y + ',' + z;
+}
+function bannerMediaElement(url){
+  let media;
+  if(isVideoUrl(url)){
+    media = document.createElement('video');
+    media.src = url; media.muted = true; media.loop = true; media.playsInline = true;
+    media.setAttribute('muted', ''); media.setAttribute('playsinline', '');
     const still = appearance.reduceMotion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches && appearance.reduceMotion !== false);
-    video.autoplay = !still;
-    if(!still) video.play().catch(() => {});
-    el.prepend(video);
-    el.style.backgroundImage = '';
-    if(shade){ const s = document.createElement('div'); s.className = 'bannerMedia bannerShade'; s.style.backgroundImage = shade; video.after(s); }
+    media.autoplay = !still;
+    if(!still) media.play().catch(() => {});
   }else{
-    el.style.backgroundImage = url ? (shade ? shade + ', ' : '') + 'url("' + url + '")' : (shade || '');
+    media = new Image();
+    media.alt = ''; media.decoding = 'async'; media.draggable = false;
+    media.src = url;
   }
+  media.className = 'bannerMedia';
+  return media;
+}
+// Sizes and places the banner in its frame: zoom 1 just fills it; the x/y
+// focus says which part shows. When the picture doesn't reach the edges
+// (zoomed out, or a tall picture made to fit), a blurred copy fills the rest.
+const bannerResize = new ResizeObserver(entries => entries.forEach(e => layoutBanner(e.target)));
+function layoutBanner(el){
+  const main = el.querySelector(':scope > .bannerMain');
+  if(!main){ bannerResize.unobserve(el); return; }
+  const nw = main.naturalWidth || main.videoWidth, nh = main.naturalHeight || main.videoHeight;
+  const fw = el.clientWidth, fh = el.clientHeight;
+  if(!nw || !nh || !fw || !fh) return;
+  const pos = el._bannerPos || { x:50, y:50, z:1 };
+  const scale = Math.max(fw / nw, fh / nh) * pos.z;
+  const w = nw * scale, h = nh * scale;
+  main.style.width = w + 'px';
+  main.style.height = h + 'px';
+  main.style.left = ((fw - w) * pos.x / 100) + 'px';
+  main.style.top = ((fh - h) * pos.y / 100) + 'px';
+  const gap = w < fw - 0.5 || h < fh - 0.5;
+  let blur = el.querySelector(':scope > .bannerBlur');
+  if(gap && !blur){
+    blur = bannerMediaElement(el._bannerUrl);
+    blur.classList.add('bannerBlur');
+    blur.setAttribute('aria-hidden', 'true');
+    el.prepend(blur);
+  }
+  if(blur){
+    blur.hidden = !gap;
+    if(blur.tagName === 'VIDEO'){ if(gap && !main.paused) blur.play().catch(() => {}); else blur.pause(); }
+  }
+}
+// The "Adjust" editor: drag to move, zoom (slider or scroll), "Show all"
+// to fit the whole picture (blur fills the rest). Calls done(posString).
+function openBannerAdjuster(url, pos, aspect, done){
+  if(!url){ toast('Upload a banner first.'); return; }
+  let p = parseBannerPos(pos);
+  openModal(
+    '<div class="modalHead"><h2>Arrange banner</h2><p>Drag to move it. Zoom out to show more - a blurred copy fills any empty space.</p></div>' +
+    '<div class="modalBody">' +
+      '<div class="bannerAdjustFrame" id="baFrame" style="aspect-ratio:' + aspect + '"></div>' +
+      '<div class="bannerAdjustControls">' +
+        '<span class="baLabel">Zoom</span>' +
+        '<input type="range" id="baZoom" min="20" max="400" step="1" aria-label="Zoom">' +
+        '<span class="baValue" id="baZoomValue"></span>' +
+      '</div>' +
+      '<div class="rowFlex" style="margin-top:10px">' +
+        '<button class="btn grey" id="baFit">Show the whole picture</button>' +
+        '<button class="btn grey" id="baFill">Fill the frame</button>' +
+        '<button class="btn grey" id="baCentre">Centre</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="modalFoot"><button class="btn ghost" id="baCancel">Cancel</button><button class="btn" id="baDone">Done</button></div>', true);
+  const frame = $('baFrame');
+  paintMediaBanner(frame, url, 'var(--bg-tertiary)', '', bannerPosString(p));
+  const main = () => frame.querySelector(':scope > .bannerMain');
+  const natural = () => { const m = main(); return m ? [m.naturalWidth || m.videoWidth, m.naturalHeight || m.videoHeight] : [0, 0]; };
+  const apply = () => {
+    frame._bannerPos = p;
+    layoutBanner(frame);
+    $('baZoom').value = Math.round(p.z * 100);
+    $('baZoomValue').textContent = Math.round(p.z * 100) + '%';
+  };
+  apply();
+  $('baZoom').oninput = e => { p.z = Number(e.target.value) / 100; apply(); };
+  frame.addEventListener('wheel', e => { e.preventDefault(); p.z = Math.min(4, Math.max(0.2, p.z * (e.deltaY < 0 ? 1.06 : 1 / 1.06))); apply(); }, { passive:false });
+  $('baFit').onclick = () => {
+    const [nw, nh] = natural(); const fw = frame.clientWidth, fh = frame.clientHeight;
+    if(!nw || !fw) return;
+    p = { x:50, y:50, z: Math.max(0.2, Math.min(fw / nw, fh / nh) / Math.max(fw / nw, fh / nh)) };
+    apply();
+  };
+  $('baFill').onclick = () => { p = { x:p.x, y:p.y, z:1 }; apply(); };
+  $('baCentre').onclick = () => { p = { x:50, y:50, z:p.z }; apply(); };
+  let drag = null;
+  frame.addEventListener('pointerdown', e => {
+    const m = main(); if(!m) return;
+    e.preventDefault();
+    frame.setPointerCapture(e.pointerId);
+    drag = { x:e.clientX, y:e.clientY, left:parseFloat(m.style.left) || 0, top:parseFloat(m.style.top) || 0 };
+    frame.classList.add('dragging');
+  });
+  frame.addEventListener('pointermove', e => {
+    if(!drag) return;
+    const m = main(); if(!m) return;
+    const spareX = frame.clientWidth - m.offsetWidth, spareY = frame.clientHeight - m.offsetHeight;
+    if(Math.abs(spareX) > 0.5) p.x = Math.min(100, Math.max(0, (drag.left + e.clientX - drag.x) / spareX * 100));
+    if(Math.abs(spareY) > 0.5) p.y = Math.min(100, Math.max(0, (drag.top + e.clientY - drag.y) / spareY * 100));
+    apply();
+  });
+  const stop = () => { drag = null; frame.classList.remove('dragging'); };
+  frame.addEventListener('pointerup', stop);
+  frame.addEventListener('pointercancel', stop);
+  frame.tabIndex = 0;
+  frame.setAttribute('aria-label', 'Banner position: use the arrow keys to move, plus and minus to zoom');
+  frame.addEventListener('keydown', e => {
+    const step = e.shiftKey ? 10 : 2;
+    if(e.key === 'ArrowLeft') p.x = Math.max(0, p.x - step); else if(e.key === 'ArrowRight') p.x = Math.min(100, p.x + step);
+    else if(e.key === 'ArrowUp') p.y = Math.max(0, p.y - step); else if(e.key === 'ArrowDown') p.y = Math.min(100, p.y + step);
+    else if(e.key === '+' || e.key === '=') p.z = Math.min(4, p.z * 1.08); else if(e.key === '-') p.z = Math.max(0.2, p.z / 1.08);
+    else return;
+    e.preventDefault(); apply();
+  });
+  $('baCancel').onclick = closeModal;
+  $('baDone').onclick = () => { closeModal(); done(bannerPosString(p)); };
 }
 // Uploads a picture, GIF or short video to the server's asset store and
 // returns its address (/assets/...).
@@ -6350,14 +6503,14 @@ function buildProfileCard(user, opts){
   if(sp){
     if(sp.nickname) p.displayName = sp.nickname;
     if(sp.avatarUrl) p.avatarUrl = sp.avatarUrl;
-    if(sp.bannerUrl) p.bannerUrl = sp.bannerUrl;
+    if(sp.bannerUrl){ p.bannerUrl = sp.bannerUrl; p.bannerPos = sp.bannerPos || ''; }
     if(sp.bio) p.bio = sp.bio;
   }
   const card = document.createElement('div');
   card.className = 'profileCard';
   const banner = document.createElement('div');
   banner.className = 'pcBanner';
-  paintMediaBanner(banner, p.bannerUrl, p.bannerColor || avatarColour(user));
+  paintMediaBanner(banner, p.bannerUrl, p.bannerColor || avatarColour(user), '', p.bannerPos);
   card.appendChild(banner);
 
   const avWrap = document.createElement('div');
@@ -6930,10 +7083,10 @@ function paintSidebarBanner(server){
   const has = !!(server && (server.bannerUrl || server.bannerColor));
   header.classList.toggle('hasBanner', has);
   if(has){
-    if(header._bannerKey !== server.bannerUrl + '|' + server.bannerColor){ // don't restart a video on every redraw
-      header._bannerKey = server.bannerUrl + '|' + server.bannerColor;
+    if(header._bannerKey !== server.bannerUrl + '|' + server.bannerColor + '|' + (server.bannerPos || '')){ // don't restart a video on every redraw
+      header._bannerKey = server.bannerUrl + '|' + server.bannerColor + '|' + (server.bannerPos || '');
       paintMediaBanner(header, server.bannerUrl, server.bannerColor || 'var(--bg-tertiary)',
-        server.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%)' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)');
+        server.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%)' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)', server.bannerPos);
     }
   }else{
     header._bannerKey = '';
@@ -9314,7 +9467,7 @@ function renderServerProfileSection(c){
   }
   if(!choices.some(s => s.id === serverProfileTarget)) serverProfileTarget = (choices.find(s => s.id === currentServerId) || choices[0]).id;
   const server = serverById(serverProfileTarget);
-  const mine = Object.assign({ nickname:'', avatarUrl:'', bannerUrl:'', bio:'', hideRoles:false }, server.myServerProfile || {});
+  const mine = Object.assign({ nickname:'', avatarUrl:'', bannerUrl:'', bannerPos:'', bio:'', hideRoles:false }, server.myServerProfile || {});
   const original = Object.assign({}, mine);
   let draft = Object.assign({}, mine);
   c.innerHTML =
@@ -9324,7 +9477,7 @@ function renderServerProfileSection(c){
       section('Server', '<select class="settingsInput" id="spServer">' + choices.map(s => '<option value="' + s.id + '"' + (s.id === server.id ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('') + '</select>') +
       section('Nickname', '<input class="settingsInput" id="spNick" maxlength="32" placeholder="' + escapeHtml(displayNameFor(username)) + '">') +
       section('Server avatar', '<div class="rowFlex"><button class="btn" id="spAvatarUpload">Upload picture or GIF</button><button class="btn grey" id="spAvatarRemove">Use my main avatar</button></div>') +
-      section('Server banner', '<div class="rowFlex"><button class="btn" id="spBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="spBannerRemove">Use my main banner</button></div>' +
+      section('Server banner', '<div class="rowFlex"><button class="btn" id="spBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="spBannerAdjust">Arrange</button><button class="btn grey" id="spBannerRemove">Use my main banner</button></div>' +
         '<div class="switchDesc" style="margin-top:8px">Up to 2 GB. Videos play silently on a loop.</div>') +
       section('About me in this server', '<textarea class="settingsInput" id="spBio" maxlength="190" placeholder="Leave empty to use your main About Me"></textarea>') +
       section('Roles', switchRow('spHide', 'Hide my roles', server.canHideRoles
@@ -9345,9 +9498,10 @@ function renderServerProfileSection(c){
   $('spBio').oninput = e => { draft.bio = e.target.value; preview(); };
   $('spHide').onchange = e => { draft.hideRoles = e.target.checked; };
   $('spAvatarRemove').onclick = () => { draft.avatarUrl = ''; preview(); };
-  $('spBannerRemove').onclick = () => { draft.bannerUrl = ''; preview(); };
+  $('spBannerRemove').onclick = () => { draft.bannerUrl = ''; draft.bannerPos = ''; preview(); };
+  $('spBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '340 / 120', pos => { draft.bannerPos = pos; preview(); });
   $('spAvatarUpload').onclick = () => { msg('Uploading…'); pickMediaFile(false, url => { draft.avatarUrl = url; msg(''); preview(); }, m => msg(m, true)); };
-  $('spBannerUpload').onclick = () => { msg('Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; msg(''); preview(); }, m => msg(m, true)); };
+  $('spBannerUpload').onclick = () => { msg('Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; draft.bannerPos = ''; msg(''); preview(); }, m => msg(m, true)); };
   $('spReset').onclick = () => { draft = Object.assign({}, original); fill(); preview(); msg(''); };
   $('spSave').onclick = async () => {
     const payload = {};
@@ -9376,6 +9530,7 @@ function renderProfileSection(c){
     bio: myProfile.bio || '',
     bannerColor: myProfile.bannerColor || '',
     bannerUrl: myProfile.bannerUrl || '',
+    bannerPos: myProfile.bannerPos || '',
     avatarUrl: myProfile.avatarUrl || ''
   };
   let draft = Object.assign({}, original);
@@ -9393,7 +9548,7 @@ function renderProfileSection(c){
           '<div class="switchDesc" style="margin-top:8px">PNG, JPG, GIF or WEBP up to 1.5MB. Or paste an image link:</div>' +
           '<input class="settingsInput" id="profAvatarLink" placeholder="https://example.com/me.png" style="margin-top:8px">' +
           '<div class="inlineMsg" id="profAvatarMsg"></div>') +
-        section('Banner', '<div class="rowFlex"><button class="btn" id="profBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="profBannerRemove">Remove</button></div>' +
+        section('Banner', '<div class="rowFlex"><button class="btn" id="profBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="profBannerAdjust">Arrange</button><button class="btn grey" id="profBannerRemove">Remove</button></div>' +
           '<div class="switchDesc" style="margin:8px 0 12px">Up to 2 GB. Videos (MP4 or WEBM) play silently on a loop. Without one, your banner is this colour:</div>' +
           '<div class="colorRow" id="profBanner"></div><div class="inlineMsg" id="profBannerMsg"></div>') +
         section('Custom Status', '<input class="settingsInput" id="profStatus" maxlength="128" placeholder="What\'s up?"><div class="charCount" id="profStatusCount"></div>') +
@@ -9460,7 +9615,7 @@ function renderProfileSection(c){
       renderMembers(true);
       Object.assign(original, {
         displayName: data.displayName, pronouns: data.pronouns || '', customStatus: data.customStatus || '',
-        bio: data.bio || '', bannerColor: data.bannerColor || '', bannerUrl: data.bannerUrl || '', avatarUrl: data.avatarUrl || ''
+        bio: data.bio || '', bannerColor: data.bannerColor || '', bannerUrl: data.bannerUrl || '', bannerPos: data.bannerPos || '', avatarUrl: data.avatarUrl || ''
       });
       draft = Object.assign({}, original);
       fillInputs();
@@ -9481,8 +9636,9 @@ function renderProfileSection(c){
     changed();
   });
   $('profRemove').onclick = () => { draft.avatarUrl = ''; $('profAvatarLink').value = ''; changed(); };
-  $('profBannerRemove').onclick = () => { draft.bannerUrl = ''; changed(); };
-  $('profBannerUpload').onclick = () => { inlineMessage($('profBannerMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; inlineMessage($('profBannerMsg'), ''); changed(); }, msg => inlineMessage($('profBannerMsg'), msg, true)); };
+  $('profBannerRemove').onclick = () => { draft.bannerUrl = ''; draft.bannerPos = ''; changed(); };
+  $('profBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '340 / 120', pos => { draft.bannerPos = pos; changed(); });
+  $('profBannerUpload').onclick = () => { inlineMessage($('profBannerMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; draft.bannerPos = ''; inlineMessage($('profBannerMsg'), ''); changed(); }, msg => inlineMessage($('profBannerMsg'), msg, true)); };
   $('profUpload').onclick = () => {
     const picker = document.createElement('input');
     picker.type = 'file';
@@ -9981,7 +10137,7 @@ function renderServerOverview(c, sid){
   if(!server){ c.innerHTML = '<div class="panelEmpty">This server no longer exists.</div>'; return; }
   const original = {
     name:server.name, iconUrl:server.iconUrl || '', description:server.description || '',
-    bannerColor:server.bannerColor || '', bannerUrl:server.bannerUrl || '', systemChannelId:server.systemChannelId || 0
+    bannerColor:server.bannerColor || '', bannerUrl:server.bannerUrl || '', bannerPos:server.bannerPos || '', systemChannelId:server.systemChannelId || 0
   };
   let draft = Object.assign({}, original);
   const canEdit = can(server, 'manage_server');
@@ -9994,7 +10150,7 @@ function renderServerOverview(c, sid){
     section('Banner',
       '<div class="bannerPreview" id="ovBannerPreview"><span id="ovBannerName"></span></div>' +
       '<div class="switchDesc" style="margin:10px 0">Shown behind the server name at the top of the channel list. A wide picture, GIF or video (MP4/WEBM, up to 2 GB) works best - at least 960×540. Videos play silently on a loop.</div>' +
-      '<div class="rowFlex" style="gap:8px;margin-bottom:12px"><button class="btn" id="ovBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="ovBannerRemove">Remove</button></div>' +
+      '<div class="rowFlex" style="gap:8px;margin-bottom:12px"><button class="btn" id="ovBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="ovBannerAdjust">Arrange</button><button class="btn grey" id="ovBannerRemove">Remove</button></div>' +
       '<div class="fieldLabel" style="margin-bottom:6px">Banner colour</div><div class="colorRow" id="ovBannerColors"></div>') +
     (server.isDefault ? '' : section('Welcome Messages',
       '<label class="formLabel" for="ovSystem">Send a message when someone joins</label>' +
@@ -10009,9 +10165,10 @@ function renderServerOverview(c, sid){
   function paintIcon(){ const h = $('ovIcon'); h.innerHTML = ''; h.appendChild(serverIconEl(draft.name, draft.iconUrl)); }
   function paintBanner(){
     const box = $('ovBannerPreview');
-    paintMediaBanner(box, draft.bannerUrl, draft.bannerColor || 'var(--bg-tertiary)', draft.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%)' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)');
+    paintMediaBanner(box, draft.bannerUrl, draft.bannerColor || 'var(--bg-tertiary)', draft.bannerUrl ? 'linear-gradient(to bottom, rgba(0,0,0,.6), rgba(0,0,0,0) 55%)' : 'linear-gradient(to bottom, rgba(0,0,0,.28), rgba(0,0,0,0) 60%)', draft.bannerPos);
     $('ovBannerName').textContent = draft.name || server.name;
     $('ovBannerRemove').disabled = !canEdit || !draft.bannerUrl;
+    $('ovBannerAdjust').disabled = !canEdit || !draft.bannerUrl;
   }
   function paintCount(){ $('ovDescCount').textContent = (300 - draft.description.length) + ' characters left'; }
   const keys = Object.keys(original);
@@ -10023,7 +10180,7 @@ function renderServerOverview(c, sid){
     if(!draft.name.trim()){ inlineMessage($('ovMsg'), 'The server needs a name.', true); return false; }
     try{
       const payload = { name:draft.name.trim() };
-      ['iconUrl', 'description', 'bannerColor', 'bannerUrl', 'systemChannelId'].forEach(k => { if(draft[k] !== original[k]) payload[k] = draft[k]; });
+      ['iconUrl', 'description', 'bannerColor', 'bannerUrl', 'bannerPos', 'systemChannelId'].forEach(k => { if(draft[k] !== original[k]) payload[k] = draft[k]; });
       const response = await fetch('/servers/' + sid + '/update', { method:'POST', headers:authHeaders(), body:JSON.stringify(payload) });
       const data = await response.json();
       if(!response.ok) throw new Error(data.error || 'could not save');
@@ -10031,7 +10188,7 @@ function renderServerOverview(c, sid){
       const fresh = serverById(sid) || server;
       Object.assign(original, {
         name:fresh.name, iconUrl:fresh.iconUrl || '', description:fresh.description || '',
-        bannerColor:fresh.bannerColor || '', bannerUrl:fresh.bannerUrl || '', systemChannelId:fresh.systemChannelId || 0
+        bannerColor:fresh.bannerColor || '', bannerUrl:fresh.bannerUrl || '', bannerPos:fresh.bannerPos || '', systemChannelId:fresh.systemChannelId || 0
       });
       draft = Object.assign({}, original);
       toast('Server updated');
@@ -10071,8 +10228,9 @@ function renderServerOverview(c, sid){
   if(!canEdit) $('ovBannerColors').querySelectorAll('button,input').forEach(el => { el.disabled = true; });
   $('ovRemove').onclick = () => { draft.iconUrl = ''; changed(); };
   $('ovUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickImageFile(url => { draft.iconUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
-  $('ovBannerRemove').onclick = () => { draft.bannerUrl = ''; changed(); };
-  $('ovBannerUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
+  $('ovBannerRemove').onclick = () => { draft.bannerUrl = ''; draft.bannerPos = ''; changed(); };
+  $('ovBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '264 / 150', pos => { draft.bannerPos = pos; changed(); });
+  $('ovBannerUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; draft.bannerPos = ''; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
   paintIcon(); paintBanner(); paintCount();
 }
 
@@ -10344,8 +10502,31 @@ function renderServerRoles(c, sid){
       '</div>' +
       '<div class="switchDesc" style="margin-top:8px">A preset fills in the powers for you; you can change them afterwards.</div>' +
       '<span class="inlineMsg" id="newRoleMsg"></span>') : '') +
-    section('Roles (' + roles.length + ')', '<div id="roleList"></div>');
+    section('Roles (' + roles.length + ')',
+      (manage && roles.length ? '<div class="rowFlex" style="margin-bottom:12px"><button class="btn" id="addPeopleRoles">Add people to roles</button>' +
+        '<span class="switchDesc" style="margin:0">Pick several people and several roles at once.</span></div>' : '') +
+      '<div id="roleList"></div>');
   const list = $('roleList');
+  // who has which role (managers see everyone, hidden roles included)
+  let roleMembers = null;
+  const loadRoleMembers = async () => {
+    try{
+      const response = await fetch('/servers/' + sid + '/members', { headers: bearer() });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'could not load members');
+      data.forEach(m => cacheProfile(m.username, m));
+      roleMembers = data;
+    }catch(e){ roleMembers = []; }
+    c.querySelectorAll('[data-role-count]').forEach(el => {
+      const n = roleMembers.filter(m => (m.roleIds || []).includes(Number(el.dataset.roleCount))).length;
+      el.textContent = 'Members (' + n + ')';
+    });
+    return roleMembers;
+  };
+  if(manage && roles.length){
+    loadRoleMembers();
+    $('addPeopleRoles').onclick = async () => openAddPeopleToRoles(sid, roleMembers || await loadRoleMembers(), []);
+  }
   if(!roles.length) list.innerHTML = '<div class="panelEmpty">No roles yet.' + (manage ? ' Pick a preset above, or make a custom one.' : '') + '</div>';
   roles.forEach((role, index) => {
     const row = document.createElement('div');
@@ -10372,6 +10553,19 @@ function renderServerRoles(c, sid){
       return;
     }
     row.appendChild(moveButtons(index, roles.length, to => saveOrder('/servers/' + sid + '/roles/reorder', roles.map(r => r.id), index, to)));
+    const membersBtn = document.createElement('button');
+    membersBtn.className = 'btn grey';
+    membersBtn.textContent = 'Members';
+    membersBtn.dataset.roleCount = role.id;
+    row.appendChild(membersBtn);
+    const memberPanel = document.createElement('div');
+    memberPanel.className = 'channelEditor roleMembersPanel';
+    memberPanel.style.display = 'none';
+    membersBtn.onclick = async () => {
+      if(memberPanel.style.display !== 'none'){ memberPanel.style.display = 'none'; return; }
+      memberPanel.style.display = 'grid';
+      paintRoleMembers(memberPanel, sid, role, roleMembers || await loadRoleMembers(), loadRoleMembers);
+    };
     const edit = document.createElement('button');
     edit.className = 'btn grey';
     edit.textContent = 'Edit';
@@ -10392,6 +10586,7 @@ function renderServerRoles(c, sid){
         PERMISSION_INFO.map(p => switchRow('rolePerm' + role.id + '_' + p.key, p.label, escapeHtml(p.desc) + (can(server, p.key) ? '' : ' <b>You don\'t have this power, so you can\'t give it.</b>'), (role.permissions || []).includes(p.key), !can(server, p.key))).join('') +
       '</div>' +
       '<div class="rowFlex"><button class="btn" data-a="save">Save</button><button class="btn danger" data-a="delete">Delete Role</button><span class="inlineMsg" data-f="msg" style="margin:0"></span></div>';
+    list.appendChild(memberPanel);
     list.appendChild(editor);
     let color = role.color || '';
     editor.querySelector('[data-f=name]').value = role.name;
@@ -10461,6 +10656,116 @@ function renderServerRoles(c, sid){
     const preset = PERMISSION_PRESETS.find(p => p.key === b.dataset.preset);
     b.onclick = () => createRole({ name: preset.label, color: preset.color, hoist: true, permissions: preset.perms });
   });
+}
+
+// The people who have one role, with Remove, and "Add people".
+function paintRoleMembers(panel, sid, role, members, reload){
+  const holders = members.filter(m => (m.roleIds || []).includes(role.id));
+  panel.innerHTML =
+    '<div class="rowFlex" style="justify-content:space-between"><div class="fieldLabel" style="margin:0">' + escapeHtml(holders.length ? holders.length + (holders.length === 1 ? ' person has' : ' people have') + ' this role' : 'Nobody has this role yet') + '</div>' +
+    '<button class="btn" data-a="add">Add people</button></div><div class="roleMemberList"></div><span class="inlineMsg" data-f="msg" style="margin:0"></span>';
+  const box = panel.querySelector('.roleMemberList');
+  holders.forEach(m => {
+    const chip = document.createElement('div');
+    chip.className = 'roleMemberChip';
+    chip.appendChild(createAvatar(m.username, 'xs'));
+    chip.appendChild(Object.assign(document.createElement('span'), { textContent: m.displayName || m.username }));
+    const x = document.createElement('button');
+    x.className = 'roleMemberRemove';
+    x.title = 'Take the role away from ' + m.username;
+    x.setAttribute('aria-label', x.title);
+    x.textContent = '×';
+    x.onclick = async () => {
+      x.disabled = true;
+      const ok = await assignRoles(sid, [m.username], [role.id], true, panel.querySelector('[data-f=msg]'));
+      if(ok) paintRoleMembers(panel, sid, role, await reload(), reload);
+      else x.disabled = false;
+    };
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+  panel.querySelector('[data-a=add]').onclick = () => openAddPeopleToRoles(sid, members, [role.id], async () => paintRoleMembers(panel, sid, role, await reload(), reload));
+}
+async function assignRoles(sid, usernames, roleIds, remove, msgEl){
+  try{
+    const response = await fetch('/servers/' + sid + '/roles/assign', { method:'POST', headers:authHeaders(), body:JSON.stringify({ usernames, roleIds, remove: !!remove }) });
+    const data = await response.json();
+    if(!response.ok) throw new Error(data.error || 'could not change roles');
+    renderMembers(true);
+    return true;
+  }catch(err){ if(msgEl) inlineMessage(msgEl, capitalise(err.message), true); else toast(capitalise(err.message)); return false; }
+}
+// Pick people (search, tick several) and roles (tick several), then give them all.
+function openAddPeopleToRoles(sid, members, preselectedRoles, after){
+  const server = serverById(sid);
+  if(!server) return;
+  const givable = (server.roles || []).filter(r => coversRolePerms(server, r));
+  const pickedPeople = new Set();
+  const pickedRoles = new Set(preselectedRoles);
+  openModal(
+    '<div class="modalHead"><h2>Add people to roles</h2><p>Tick the people, then the roles to give them. People who already have a role keep it.</p></div>' +
+    '<div class="modalBody"><div class="addRolesGrid">' +
+      '<div><div class="fieldLabel">People</div><input class="settingsInput" id="arSearch" placeholder="Search members" autocomplete="off"><div class="arList" id="arPeople"></div></div>' +
+      '<div><div class="fieldLabel">Roles</div><div class="arList" id="arRoles"></div></div>' +
+    '</div><div class="modalMsg" id="arMsg"></div></div>' +
+    '<div class="modalFoot"><button class="btn ghost" id="arCancel">Cancel</button><button class="btn" id="arGo" disabled>Add</button></div>', true);
+  const paintGo = () => {
+    const go = $('arGo');
+    go.disabled = !pickedPeople.size || !pickedRoles.size;
+    go.textContent = pickedPeople.size && pickedRoles.size
+      ? 'Give ' + pickedRoles.size + (pickedRoles.size === 1 ? ' role' : ' roles') + ' to ' + pickedPeople.size + (pickedPeople.size === 1 ? ' person' : ' people')
+      : 'Add';
+  };
+  const tickRow = (label, sub, checked, onChange, lead) => {
+    const row = document.createElement('label');
+    row.className = 'arRow';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = checked;
+    box.onchange = () => { onChange(box.checked); paintGo(); };
+    row.appendChild(box);
+    if(lead) row.appendChild(lead);
+    const text = document.createElement('span');
+    text.className = 'arText';
+    text.appendChild(Object.assign(document.createElement('span'), { className:'arName', textContent:label }));
+    if(sub) text.appendChild(Object.assign(document.createElement('span'), { className:'arSub', textContent:sub }));
+    row.appendChild(text);
+    return row;
+  };
+  const paintPeople = () => {
+    const q = $('arSearch').value.trim().toLowerCase();
+    const box = $('arPeople');
+    box.innerHTML = '';
+    const shown = members.filter(m => !q || m.username.toLowerCase().includes(q) || (m.displayName || '').toLowerCase().includes(q));
+    if(!shown.length){ box.innerHTML = '<div class="panelEmpty">No members match.</div>'; return; }
+    shown.slice(0, 300).forEach(m => {
+      const has = (server.roles || []).filter(r => (m.roleIds || []).includes(r.id)).map(r => r.name);
+      box.appendChild(tickRow(m.displayName || m.username, '@' + m.username + (has.length ? ' · ' + has.join(', ') : ''), pickedPeople.has(m.username),
+        on => { if(on) pickedPeople.add(m.username); else pickedPeople.delete(m.username); }, createAvatar(m.username, 'xs')));
+    });
+  };
+  givable.forEach(r => {
+    const dot = document.createElement('span');
+    dot.className = 'roleDot';
+    dot.style.background = r.color || '#99aab5';
+    const powers = (r.permissions || []).length ? (presetFor(r.permissions) ? presetFor(r.permissions).label + ' powers' : (r.permissions || []).length + ((r.permissions || []).length === 1 ? ' power' : ' powers')) : 'No powers';
+    $('arRoles').appendChild(tickRow(r.name, powers, pickedRoles.has(r.id), on => { if(on) pickedRoles.add(r.id); else pickedRoles.delete(r.id); }, dot));
+  });
+  if(!givable.length) $('arRoles').innerHTML = '<div class="panelEmpty">No roles you can give.</div>';
+  $('arSearch').oninput = paintPeople;
+  $('arCancel').onclick = closeModal;
+  $('arGo').onclick = async () => {
+    $('arGo').disabled = true;
+    const ok = await assignRoles(sid, [...pickedPeople], [...pickedRoles], false, $('arMsg'));
+    if(!ok){ paintGo(); return; }
+    closeModal();
+    toast('Roles given to ' + pickedPeople.size + (pickedPeople.size === 1 ? ' person' : ' people'));
+    if(after) after();
+    else if(settingsState.section === 'roles') rerenderSettingsSection();
+  };
+  paintPeople();
+  paintGo();
+  $('arSearch').focus();
 }
 
 // Toggle one custom role on a member, from the Members page's Roles menu.
@@ -10608,7 +10913,7 @@ async function renderServerMembers(c, sid){
 const AUDIT_LABELS = {
   kick:'kicked', ban:'banned', unban:'unbanned', timeout:'timed out', timeout_lifted:'lifted the timeout of',
   message_delete:'deleted a message by', file_delete:'deleted a file by', role_create:'created the role', role_update:'changed the role',
-  role_delete:'deleted a role', member_roles:'changed the roles of', channel_create:'created', channel_update:'edited', channel_delete:'deleted',
+  role_delete:'deleted a role', member_roles:'changed the roles of', roles_given:'gave roles to', roles_removed:'took roles away from', channel_create:'created', channel_update:'edited', channel_delete:'deleted',
   server_update:'changed the server settings', webhook_delete:'deleted the webhook', emoji_add:'added the emoji', emoji_remove:'removed the emoji',
   persona_post:'posted as the persona (old)', sticker_add:'added the sticker', sticker_remove:'removed the sticker'
 };

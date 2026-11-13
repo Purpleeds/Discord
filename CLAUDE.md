@@ -148,6 +148,12 @@ to do next) - read it before a big upgrade and add an entry after one.
   a group) must call `markRoomsRead()` so old history isn't "unread". The
   client marks read only through `markCurrentRead()` (not while the tab is
   in the background) and never emits `markRead` directly.
+- Read receipts ("Seen"): shown from `read_receipts.seen_message_id`, which ONLY the
+  socket `markRead` moves (the open chat on screen) - never `last_message_id`, which
+  joining a server and "mark as read" also move. `visibleReceipts()` leaves out the
+  viewer, people with `users.read_receipts = 0` (Privacy & Safety), blocks either
+  way, and people no longer in the server. Client: `paintReceipts()` ("Seen" under
+  my newest DM message; pictures in groups/channels). `regression/read_receipts.test.js`.
 - Attachments: `files.storage` is `'db'` (kept; bytes in `file_blobs`, served
   by `/media`) or `'disk'` (temporary, has `expires_at`). `/media` must keep
   the `/uploads` safety rules (type from the extension, `ACTIVE_UPLOAD_EXT`

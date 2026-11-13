@@ -91,6 +91,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   ("x,y,zoom", `cleanBannerPos()` on the server; users, servers and server_members)
   with a blurred copy behind it when it doesn't fill the frame. Editors use
   `openBannerAdjuster()`; a new upload resets the arrangement.
+- Video profile pictures: `avatar_video` (users, server_members) holds an `/assets/`
+  MP4/WEBM (`avatarVideoProblem()`); `avatar_url` ALWAYS stays a still picture (the
+  first frame, made in the browser by `videoPoster()`) because push, the notifier and
+  `/avatars/` need an image. A new still without `avatarVideo` clears the video.
+  `removeUnusedAssets()` must count `avatar_video` as in use. Client: `addAvatarVideo()`
+  - profile cards autoplay, small avatars play while their row is pointed at.
+  Profile card banners are 17:6 (the Arrange frame's shape). `regression/video_avatars.test.js`.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
   `canViewChannel()` (private channels), with `readableChannelRooms()` /
   `allRoomsFor()` as the bulk version. Never check server membership

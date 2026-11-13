@@ -656,11 +656,15 @@ html.underline-links .msgLink{text-decoration:underline;}
 /* ---------------- profile card / popout ---------------- */
 #profilePopout{width:300px;overflow:hidden;}
 .profileCard{background:var(--card);border-radius:8px;overflow:hidden;position:relative;width:100%;}
-.pcBanner{height:60px;}
-.pcAvatar{position:absolute;top:16px;left:16px;border-radius:50%;border:6px solid var(--card);background:var(--card);}
+.profileCard{container-type:inline-size;}
+/* the same shape as the Arrange editor's frame (17:6), so an arranged banner looks the same */
+.pcBanner{height:auto;aspect-ratio:17 / 6;}
+.pcAvatar{position:absolute;top:calc(100cqw * 6 / 17 - 56px);left:16px;border-radius:50%;border:6px solid var(--card);background:var(--card);}
 .pcAvatar .avatar{width:80px;height:80px;font-size:32px;}
 .pcAvatar .presence{width:22px;height:22px;right:0;bottom:0;border:5px solid var(--card);}
 .pcBody{padding:56px 16px 16px 16px;}
+.avatar.hasVideo{position:relative;overflow:hidden;}
+.avatar.hasVideo .avatarVideo{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;pointer-events:none;}
 .pcInner{background:var(--bg-floating);border-radius:8px;padding:12px;}
 html[data-theme="light"] .pcInner{background:var(--bg-secondary);}
 .pcName{font-size:20px;font-weight:700;color:var(--text-bright);word-break:break-word;}
@@ -3288,10 +3292,42 @@ function paintAvatar(avatar, user){
     img.alt = displayNameFor(user) + ' avatar';
     img.onerror = () => { avatar.innerHTML = ''; avatar.textContent = userInitial(user); };
     avatar.appendChild(img);
+    const p = profiles[user];
+    if(p && p.avatarVideo) addAvatarVideo(avatar, p.avatarVideo, url, false);
   }else{
     avatar.textContent = userInitial(user);
   }
 }
+// Video profile pictures: a muted looping video over the still picture (its
+// first frame). Big avatars (profile cards) play by themselves; small ones
+// (messages, member list) play while you point at that row, so a busy
+// channel isn't dozens of videos at once. Reduce motion: never by itself.
+function addAvatarVideo(avatar, videoUrl, poster, autoplay){
+  if(!videoUrl || !isVideoUrl(videoUrl)) return;
+  avatar.querySelectorAll('video').forEach(v => v.remove());
+  const video = document.createElement('video');
+  video.className = 'avatarVideo';
+  video.src = videoUrl;
+  if(poster) video.poster = poster;
+  video.muted = true; video.loop = true; video.playsInline = true;
+  video.setAttribute('muted', ''); video.setAttribute('playsinline', '');
+  video.preload = autoplay ? 'auto' : 'none';
+  video.setAttribute('aria-hidden', 'true');
+  avatar.appendChild(video);
+  avatar.classList.add('hasVideo');
+  const still = appearance.reduceMotion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches && appearance.reduceMotion !== false);
+  if(autoplay && !still){ video.autoplay = true; video.play().catch(() => {}); }
+}
+// play small video avatars while their row is pointed at
+document.addEventListener('mouseover', e => {
+  const row = e.target.closest && e.target.closest('.message, .member, .manageRow, .friendRow, .dmItem, .avatarWrap');
+  if(!row || row._videoHover) return;
+  const vids = row.querySelectorAll('.avatar.hasVideo video');
+  if(!vids.length) return;
+  row._videoHover = true;
+  vids.forEach(v => v.play().catch(() => {}));
+  row.addEventListener('mouseleave', () => { row._videoHover = false; vids.forEach(v => { if(!v.autoplay){ v.pause(); } }); }, { once:true });
+});
 
 function refreshAvatars(user){
   document.querySelectorAll('.avatar[data-user="' + String(user).replace(/"/g,'') + '"]').forEach(el => paintAvatar(el, user));
@@ -3512,7 +3548,7 @@ function createAvatar(user, size, options){
   wrap.className = 'avatarWrap' + (options.wrapClass ? ' ' + options.wrapClass : '') + (size === 'sm' ? ' sm' : '');
   const avatar = document.createElement('div');
   avatar.className = 'avatar' + (size ? ' ' + size : '');
-  if(options.url){ paintAvatarFrom(avatar, user, options.url); avatar.dataset.fixedUrl = '1'; }
+  if(options.url){ paintAvatarFrom(avatar, user, options.url, options.video); avatar.dataset.fixedUrl = '1'; }
   else { avatar.dataset.user = user || ''; paintAvatar(avatar, user); }
   wrap.appendChild(avatar);
   if(options.presence){
@@ -4410,7 +4446,8 @@ function buildMessageEl(item, grouped){
     }else if(data.bot){
       gutter.appendChild(botAvatar(data.displayName, '', 'onChat'));
     }else{
-      const avatar = createAvatar(data.user, '', { wrapClass:'onChat', url: /^\/assets\//.test(data.avatarUrl || '') ? data.avatarUrl : '' });
+      const fixed = /^\/assets\//.test(data.avatarUrl || '');
+      const avatar = createAvatar(data.user, '', { wrapClass:'onChat', url: fixed ? data.avatarUrl : '', video: fixed ? data.avatarVideo : '' });
       avatar.style.cursor = 'pointer';
       avatar.onclick = e => openProfilePopout(e, data.user, data.room);
       avatar.oncontextmenu = e => showUserMenu(e, data.user, data.room);
@@ -5653,6 +5690,43 @@ function uploadFile(file, caption){
   });
 }
 
+// Video profile pictures: up to a minute and 100 MB. Uploads the video and
+// returns it with a square still of its first frame (a JPEG File).
+const AVATAR_VIDEO_MAX_SECONDS = 60, AVATAR_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
+async function uploadAvatarVideo(file, onProgress){
+  if(file.size > AVATAR_VIDEO_MAX_BYTES) throw new Error('Video pictures can be up to 100 MB - pick a shorter or smaller video.');
+  const poster = await videoPoster(file);
+  const videoUrl = await uploadAsset(file, onProgress);
+  return { videoUrl, poster };
+}
+function videoPoster(file){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement('video');
+    video.muted = true; video.playsInline = true; video.preload = 'auto';
+    const fail = msg => { URL.revokeObjectURL(url); reject(new Error(msg)); };
+    const timer = setTimeout(() => fail('That video couldn\'t be read - try an MP4 or WEBM.'), 20000);
+    video.onerror = () => { clearTimeout(timer); fail('That video couldn\'t be read - try an MP4 or WEBM.'); };
+    video.onloadedmetadata = () => {
+      if(video.duration > AVATAR_VIDEO_MAX_SECONDS + 0.5){ clearTimeout(timer); fail('Video pictures can be up to ' + AVATAR_VIDEO_MAX_SECONDS + ' seconds long.'); return; }
+      video.currentTime = Math.min(0.1, (video.duration || 1) / 2);
+    };
+    video.onseeked = () => {
+      clearTimeout(timer);
+      const side = Math.min(video.videoWidth, video.videoHeight);
+      if(!side){ fail('That video has no picture.'); return; }
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 256;
+      canvas.getContext('2d').drawImage(video, (video.videoWidth - side) / 2, (video.videoHeight - side) / 2, side, side, 0, 0, 256, 256);
+      canvas.toBlob(blob => {
+        URL.revokeObjectURL(url);
+        if(!blob){ reject(new Error('Couldn\'t make a still picture from that video.')); return; }
+        resolve(new File([blob], 'avatar-still.jpg', { type:'image/jpeg' }));
+      }, 'image/jpeg', 0.88);
+    };
+    video.src = url;
+  });
+}
 function uploadImageForProfile(file){
   return new Promise((resolve, reject) => {
     if(!file.type.startsWith('image/')) return reject(new Error('Please pick an image file.'));
@@ -6547,7 +6621,7 @@ function placePopout(pop, anchor, side){
 function knownProfile(user){
   return Object.assign({ username:user, displayName:user, avatarUrl:'', bio:'', bannerColor:'', customStatus:'', pronouns:'' }, profiles[user] || {});
 }
-function paintAvatarFrom(avatar, user, url){
+function paintAvatarFrom(avatar, user, url, video, autoplay){
   avatar.innerHTML = '';
   avatar.style.background = avatarColour(user);
   if(url){
@@ -6556,6 +6630,7 @@ function paintAvatarFrom(avatar, user, url){
     img.alt = '';
     img.onerror = () => { avatar.innerHTML = ''; avatar.textContent = userInitial(user); };
     avatar.appendChild(img);
+    if(video) addAvatarVideo(avatar, video, url, !!autoplay);
   }else{
     avatar.textContent = userInitial(user);
   }
@@ -6628,7 +6703,7 @@ function buildProfileCard(user, opts){
   const globalName = p.displayName || user;
   if(sp){
     if(sp.nickname) p.displayName = sp.nickname;
-    if(sp.avatarUrl) p.avatarUrl = sp.avatarUrl;
+    if(sp.avatarUrl){ p.avatarUrl = sp.avatarUrl; p.avatarVideo = sp.avatarVideo || ''; }
     if(sp.bannerUrl){ p.bannerUrl = sp.bannerUrl; p.bannerPos = sp.bannerPos || ''; }
     if(sp.bio) p.bio = sp.bio;
   }
@@ -6643,7 +6718,7 @@ function buildProfileCard(user, opts){
   avWrap.className = 'pcAvatar avatarWrap';
   const avatar = document.createElement('div');
   avatar.className = 'avatar';
-  paintAvatarFrom(avatar, user, p.avatarUrl);
+  paintAvatarFrom(avatar, user, p.avatarUrl, p.avatarVideo, true);
   avWrap.appendChild(avatar);
   const dot = document.createElement('div');
   const state = presenceOf(user);
@@ -9593,7 +9668,7 @@ function renderServerProfileSection(c){
   }
   if(!choices.some(s => s.id === serverProfileTarget)) serverProfileTarget = (choices.find(s => s.id === currentServerId) || choices[0]).id;
   const server = serverById(serverProfileTarget);
-  const mine = Object.assign({ nickname:'', avatarUrl:'', bannerUrl:'', bannerPos:'', bio:'', hideRoles:false }, server.myServerProfile || {});
+  const mine = Object.assign({ nickname:'', avatarUrl:'', avatarVideo:'', bannerUrl:'', bannerPos:'', bio:'', hideRoles:false }, server.myServerProfile || {});
   const original = Object.assign({}, mine);
   let draft = Object.assign({}, mine);
   c.innerHTML =
@@ -9602,7 +9677,7 @@ function renderServerProfileSection(c){
     '<div class="profileLayout"><div class="profileEditor">' +
       section('Server', '<select class="settingsInput" id="spServer">' + choices.map(s => '<option value="' + s.id + '"' + (s.id === server.id ? ' selected' : '') + '>' + escapeHtml(s.name) + '</option>').join('') + '</select>') +
       section('Nickname', '<input class="settingsInput" id="spNick" maxlength="32" placeholder="' + escapeHtml(displayNameFor(username)) + '">') +
-      section('Server avatar', '<div class="rowFlex"><button class="btn" id="spAvatarUpload">Upload picture or GIF</button><button class="btn grey" id="spAvatarRemove">Use my main avatar</button></div>') +
+      section('Server avatar', '<div class="rowFlex"><button class="btn" id="spAvatarUpload">Upload picture, GIF or video</button><button class="btn grey" id="spAvatarRemove">Use my main avatar</button></div>') +
       section('Server banner', '<div class="rowFlex"><button class="btn" id="spBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="spBannerAdjust">Arrange</button><button class="btn grey" id="spBannerRemove">Use my main banner</button></div>' +
         '<div class="switchDesc" style="margin-top:8px">Up to 2 GB. Videos play silently on a loop.</div>') +
       section('About me in this server', '<textarea class="settingsInput" id="spBio" maxlength="190" placeholder="Leave empty to use your main About Me"></textarea>') +
@@ -9623,10 +9698,31 @@ function renderServerProfileSection(c){
   $('spNick').oninput = e => { draft.nickname = e.target.value; preview(); };
   $('spBio').oninput = e => { draft.bio = e.target.value; preview(); };
   $('spHide').onchange = e => { draft.hideRoles = e.target.checked; };
-  $('spAvatarRemove').onclick = () => { draft.avatarUrl = ''; preview(); };
+  $('spAvatarRemove').onclick = () => { draft.avatarUrl = ''; draft.avatarVideo = ''; preview(); };
   $('spBannerRemove').onclick = () => { draft.bannerUrl = ''; draft.bannerPos = ''; preview(); };
-  $('spBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '340 / 120', pos => { draft.bannerPos = pos; preview(); });
-  $('spAvatarUpload').onclick = () => { msg('Uploading…'); pickMediaFile(false, url => { draft.avatarUrl = url; msg(''); preview(); }, m => msg(m, true)); };
+  $('spBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '17 / 6', pos => { draft.bannerPos = pos; preview(); });
+  $('spAvatarUpload').onclick = () => {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'image/png,image/jpeg,image/gif,image/webp,image/avif,video/mp4,video/webm';
+    picker.onchange = async () => {
+      const file = picker.files && picker.files[0];
+      if(!file) return;
+      msg('Uploading…');
+      try{
+        if(file.type.startsWith('video/')){
+          const { videoUrl, poster } = await uploadAvatarVideo(file, f => msg('Uploading… ' + Math.round(f * 100) + '%'));
+          draft.avatarUrl = await uploadAsset(poster);
+          draft.avatarVideo = videoUrl;
+        }else{
+          draft.avatarUrl = await uploadAsset(file);
+          draft.avatarVideo = '';
+        }
+        msg(''); preview();
+      }catch(err){ msg(err.message, true); }
+    };
+    picker.click();
+  };
   $('spBannerUpload').onclick = () => { msg('Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; draft.bannerPos = ''; msg(''); preview(); }, m => msg(m, true)); };
   $('spReset').onclick = () => { draft = Object.assign({}, original); fill(); preview(); msg(''); };
   $('spSave').onclick = async () => {
@@ -9657,7 +9753,8 @@ function renderProfileSection(c){
     bannerColor: myProfile.bannerColor || '',
     bannerUrl: myProfile.bannerUrl || '',
     bannerPos: myProfile.bannerPos || '',
-    avatarUrl: myProfile.avatarUrl || ''
+    avatarUrl: myProfile.avatarUrl || '',
+    avatarVideo: myProfile.avatarVideo || ''
   };
   let draft = Object.assign({}, original);
   const isUploaded = url => String(url || '').startsWith('/avatars/') || String(url || '').startsWith('data:');
@@ -9671,7 +9768,7 @@ function renderProfileSection(c){
         section('Pronouns', '<input class="settingsInput" id="profPronouns" maxlength="40" placeholder="Add your pronouns">') +
         section('Avatar',
           '<div class="rowFlex"><button class="btn" id="profUpload">Change Avatar</button><button class="btn grey" id="profRemove">Remove Avatar</button></div>' +
-          '<div class="switchDesc" style="margin-top:8px">PNG, JPG, GIF or WEBP up to 1.5MB. Or paste an image link:</div>' +
+          '<div class="switchDesc" style="margin-top:8px">A picture (PNG, JPG, GIF or WEBP up to 1.5MB), or a video (MP4 or WEBM, up to a minute and 100 MB - it plays silently on a loop). Or paste an image link:</div>' +
           '<input class="settingsInput" id="profAvatarLink" placeholder="https://example.com/me.png" style="margin-top:8px">' +
           '<div class="inlineMsg" id="profAvatarMsg"></div>') +
         section('Banner', '<div class="rowFlex"><button class="btn" id="profBannerUpload">Upload picture, GIF or video</button><button class="btn grey" id="profBannerAdjust">Arrange</button><button class="btn grey" id="profBannerRemove">Remove</button></div>' +
@@ -9741,7 +9838,7 @@ function renderProfileSection(c){
       renderMembers(true);
       Object.assign(original, {
         displayName: data.displayName, pronouns: data.pronouns || '', customStatus: data.customStatus || '',
-        bio: data.bio || '', bannerColor: data.bannerColor || '', bannerUrl: data.bannerUrl || '', bannerPos: data.bannerPos || '', avatarUrl: data.avatarUrl || ''
+        bio: data.bio || '', bannerColor: data.bannerColor || '', bannerUrl: data.bannerUrl || '', bannerPos: data.bannerPos || '', avatarUrl: data.avatarUrl || '', avatarVideo: data.avatarVideo || ''
       });
       draft = Object.assign({}, original);
       fillInputs();
@@ -9759,22 +9856,31 @@ function renderProfileSection(c){
   $('profAvatarLink').addEventListener('input', e => {
     const value = e.target.value.trim();
     draft.avatarUrl = value || (isUploaded(original.avatarUrl) ? original.avatarUrl : '');
+    draft.avatarVideo = value ? '' : original.avatarVideo;
     changed();
   });
-  $('profRemove').onclick = () => { draft.avatarUrl = ''; $('profAvatarLink').value = ''; changed(); };
+  $('profRemove').onclick = () => { draft.avatarUrl = ''; draft.avatarVideo = ''; $('profAvatarLink').value = ''; changed(); };
   $('profBannerRemove').onclick = () => { draft.bannerUrl = ''; draft.bannerPos = ''; changed(); };
-  $('profBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '340 / 120', pos => { draft.bannerPos = pos; changed(); });
+  $('profBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '17 / 6', pos => { draft.bannerPos = pos; changed(); });
   $('profBannerUpload').onclick = () => { inlineMessage($('profBannerMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; draft.bannerPos = ''; inlineMessage($('profBannerMsg'), ''); changed(); }, msg => inlineMessage($('profBannerMsg'), msg, true)); };
   $('profUpload').onclick = () => {
     const picker = document.createElement('input');
     picker.type = 'file';
-    picker.accept = 'image/*';
+    picker.accept = 'image/*,video/mp4,video/webm';
     picker.onchange = async () => {
       const file = picker.files && picker.files[0];
       if(!file) return;
       inlineMessage($('profAvatarMsg'), 'Uploading…');
       try{
-        draft.avatarUrl = await uploadImageForProfile(file);
+        if(file.type.startsWith('video/')){
+          // a video picture: the video itself, plus its first frame as the still picture
+          const { videoUrl, poster } = await uploadAvatarVideo(file, f => inlineMessage($('profAvatarMsg'), 'Uploading… ' + Math.round(f * 100) + '%'));
+          draft.avatarUrl = await uploadImageForProfile(poster);
+          draft.avatarVideo = videoUrl;
+        }else{
+          draft.avatarUrl = await uploadImageForProfile(file);
+          draft.avatarVideo = '';
+        }
         $('profAvatarLink').value = '';
         $('profAvatarLink').placeholder = 'Using an uploaded image';
         inlineMessage($('profAvatarMsg'), 'Looks good — press Save Changes to keep it.');

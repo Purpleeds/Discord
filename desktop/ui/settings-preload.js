@@ -13,5 +13,6 @@ contextBridge.exposeInMainWorld('notifier', {
   test: () => ipcRenderer.invoke('settings:test'),
   openChat: () => ipcRenderer.invoke('settings:openChat'),
   openLog: () => ipcRenderer.invoke('settings:openLog'),
+  openStartupSettings: () => ipcRenderer.invoke('settings:openStartupSettings'),
   installUpdate: () => ipcRenderer.invoke('settings:installUpdate')
 });

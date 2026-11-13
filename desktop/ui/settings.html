@@ -164,10 +164,17 @@
     <p class="lede">Starting up, updates and your sign-in.</p>
 
     <div class="list">
-      <label class="item">
+      <label class="item" id="autostartRow">
         <span class="itemText"><b>Start with Windows</b><span>Runs quietly in the tray when you sign in to Windows.</span></span>
         <input type="checkbox" class="switch" id="autostart">
       </label>
+      <div class="item" id="storeStartupRow" hidden>
+        <span class="itemText"><b>Start with Windows</b><span>Windows looks after this for the Store version: Settings &gt; Apps &gt; Startup.</span></span>
+        <button type="button" class="ghost" id="openStartup">Open Startup apps</button>
+      </div>
+      <div class="item" id="storeUpdateRow" hidden>
+        <span class="itemText"><b>Updates</b><span>The Microsoft Store keeps this version up to date.</span></span>
+      </div>
       <label class="item" id="autoUpdateRow">
         <span class="itemText"><b>Update automatically</b><span>New versions download in the background and install when the app restarts.</span></span>
         <input type="checkbox" class="switch" id="autoUpdate">

@@ -59,6 +59,32 @@ jobs:
           New-Item -ItemType Directory -Force old | Out-Null
           Invoke-WebRequest -Uri https://github.com/Purpleeds/Discord/releases/download/notifier-v1.1.0/Chat-Notifier-Setup-1.1.0.exe -OutFile old/Chat-Notifier-Setup-1.1.0.exe
           ./test/install-test.ps1 -NewSetup "dist/Chat-Notifier-Setup-${{ steps.version.outputs.version }}.exe" -NewVersion "${{ steps.version.outputs.version }}" -OldSetup old/Chat-Notifier-Setup-1.1.0.exe
+      # The Microsoft Store package. Its identity comes from Partner Center >
+      # the app > Product identity, saved as repository variables
+      # (Settings > Secrets and variables > Actions > Variables):
+      # MSSTORE_IDENTITY_NAME, MSSTORE_PUBLISHER, MSSTORE_PUBLISHER_NAME.
+      # Without them it's built with placeholders (fine for testing, not for upload).
+      - name: Build the Microsoft Store package (.appx, unsigned - the Store signs it)
+        env:
+          IDENTITY: ${{ vars.MSSTORE_IDENTITY_NAME }}
+          PUBLISHER: ${{ vars.MSSTORE_PUBLISHER }}
+          PUBLISHER_NAME: ${{ vars.MSSTORE_PUBLISHER_NAME }}
+        run: |
+          args=()
+          [ -n "$IDENTITY" ] && args+=("-c.appx.identityName=$IDENTITY")
+          [ -n "$PUBLISHER" ] && args+=("-c.appx.publisher=$PUBLISHER")
+          [ -n "$PUBLISHER_NAME" ] && args+=("-c.appx.publisherDisplayName=$PUBLISHER_NAME")
+          [ -z "$IDENTITY" ] && echo "::warning::Store identity variables aren't set - built with placeholders, not ready to upload"
+          npx electron-builder --win appx --x64 --publish never "${args[@]}"
+          ls -la dist/*.appx
+      - name: Install and start the Store package (test-signed copy)
+        shell: pwsh
+        run: ./test/store-test.ps1 -Package (Get-ChildItem dist/*-store.appx | Select-Object -First 1).FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chat-notifier-store-${{ steps.version.outputs.version }}
+          path: desktop/dist/*-store.appx
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
           name: chat-notifier-${{ steps.version.outputs.version }}

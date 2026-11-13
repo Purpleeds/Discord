@@ -202,6 +202,8 @@ to do next) - read it before a big upgrade and add an entry after one.
   passwords or message text). `desktop/test/install-test.ps1` (CI, Windows)
   checks a real install/update actually opens a window; keep
   `build.toolsets.nsis` (NSIS 3.12) - the default NSIS 3.0.4 installer crashes on Windows 11 24H2.
+  The Microsoft Store build (`appx` target, `STORE` in main.js) must not self-update or
+  set login items; `desktop/test/store-test.ps1` installs and starts it in CI.
 - Phones/touch: there's no hover, so every action must also be reachable from
   a menu. Right-click menus (`oncontextmenu` -> `showMenu()`) also open on a
   long press - the app makes the `contextmenu` event itself because iPhone

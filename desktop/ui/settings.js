@@ -49,6 +49,9 @@ function paint(next) {
   $('autostart').checked = state.autostart;
   $('autoUpdate').checked = state.autoUpdate;
   $('autoUpdateRow').hidden = !state.canAutoUpdate;
+  $('autostartRow').hidden = !!state.store;
+  $('storeStartupRow').hidden = !state.store;
+  $('storeUpdateRow').hidden = !state.store;
   $('updateReady').hidden = !state.updateReady;
   $('updateVersion').textContent = state.updateReady;
   $('paused').hidden = !state.pausedUntil;
@@ -254,6 +257,7 @@ $('pause8').addEventListener('click', () => notifier.set('pauseHours', 8));
 $('test').addEventListener('click', () => notifier.test());
 $('openChat').addEventListener('click', () => notifier.openChat());
 $('openLog').addEventListener('click', () => notifier.openLog());
+$('openStartup').addEventListener('click', () => notifier.openStartupSettings());
 
 $('themes').addEventListener('click', e => {
   const edit = e.target.closest('[data-edit]');

@@ -61,9 +61,9 @@ $probes = @()
 if ($OldSetup) { $probes += ,@($OldSetup, '/S'); $probes += ,@($OldSetup, '') }
 $probes += ,@($NewSetup, '/S'); $probes += ,@($NewSetup, '')
 foreach ($pr in $probes) {
-  $args = if ($pr[1]) { @($pr[1]) } else { @() }
+  $pargs = if ($pr[1]) { @($pr[1]) } else { @() }
   $t = [Diagnostics.Stopwatch]::StartNew()
-  $q = if ($args.Count) { Start-Process $pr[0] -ArgumentList $args -PassThru } else { Start-Process $pr[0] -PassThru }
+  $q = if ($pargs.Count) { Start-Process $pr[0] -ArgumentList $pargs -PassThru } else { Start-Process $pr[0] -PassThru }
   $q.WaitForExit(180000) | Out-Null
   $ok = Wait-Until { Test-Path $exe } 20
   Write-Host ("probe {0} {1}: exit {2} (0x{3:X8}) after {4}s, installed={5} {6}" -f (Split-Path $pr[0] -Leaf), $pr[1], $q.ExitCode, $q.ExitCode, [int]$t.Elapsed.TotalSeconds, $ok, (InstalledVersion))

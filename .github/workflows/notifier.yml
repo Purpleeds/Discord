@@ -53,7 +53,7 @@ jobs:
       - name: Windows version
         shell: pwsh
         run: Get-ComputerInfo -Property OsName, OsVersion, OsBuildNumber | Format-List
-      - name: Install it like people do (fresh install, start by hand, sign-in start, update from 1.1.0)
+      - name: Install it like people do (double-click x5, portable, start by hand, sign-in start, update from 1.1.0)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force old | Out-Null

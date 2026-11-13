@@ -91,9 +91,13 @@ npm run dist                    # Windows build (needs Windows, or Wine)
 ```
 
 `test/install-test.ps1` installs the built installer on Windows the way people
-do (double-click, start by hand, start at sign-in, and an update from 1.1.0
-the way the app updates itself) and checks the window really appears each
-time - CI runs it on every build.
+do (double-click five times over, the portable .exe, start by hand, start at
+sign-in, and an update from 1.1.0 the way the app updates itself) and checks
+the window really appears each time - CI runs it on every build. It's why the
+build uses electron-builder's NSIS 3.12 bundle (`build.toolsets.nsis`): the
+default NSIS 3.0.4 installer crashed at random when double-clicked on Windows
+11 24H2 / build 26100 (access violation in `System.dll`, nothing installed) -
+the "it doesn't open" of 1.1.x. Don't go back to the default toolset.
 
 The end-to-end test drives the real app against its own chat server:
 `node regression/notifier_ui.test.js` from the repo root (needs Postgres, and

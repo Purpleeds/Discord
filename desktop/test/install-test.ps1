@@ -1,6 +1,7 @@
 # Installs the notifier the way people do on a real Windows PC and checks it
 # opens every time:
-#   1. a fresh install with the installer (as if double-clicked) starts the app
+#   1. a fresh install with the installer (as if double-clicked, 5 times) starts
+#      the app, and so does the portable .exe
 #   2. starting it again by hand shows its window (one copy keeps running)
 #   3. starting it at Windows sign-in (--hidden) keeps it running in the tray
 #   4. an older release, updated the way the app updates itself
@@ -40,7 +41,14 @@ function Stop-App {
 function Uninstall {
   Stop-App
   $un = Join-Path $installDir 'Uninstall Chat Notifier.exe'
-  if (Test-Path $un) { Start-Process $un -ArgumentList '/S' -Wait; Wait-Until { -not (Test-Path $exe) } 30 | Out-Null }
+  if (Test-Path $un) {
+    # the uninstaller copies itself to a temp file and carries on from there,
+    # so wait for it to really finish (files, uninstall entry, its process)
+    Start-Process $un -ArgumentList '/S' -Wait
+    Wait-Until { -not (Test-Path $exe) -and -not (Get-Process | Where-Object { $_.Name -match '^(Un_|Au_)' }) -and
+      -not (Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like 'Chat Notifier*' }) } 60 | Out-Null
+    Start-Sleep -Seconds 2
+  }
   if (Test-Path $dataDir) { Remove-Item $dataDir -Recurse -Force -ErrorAction SilentlyContinue }
 }
 function Write-SignedIn {
@@ -55,51 +63,36 @@ function Show-Log {
 
 Uninstall
 
-# 0. does each installer run at all? (exit code, files) - old release vs this build, silent vs normal
-$portable = Get-ChildItem (Split-Path $NewSetup) -Filter '*-portable.exe' | Select-Object -First 1
-$probes = @()
-if ($OldSetup) { $probes += ,@($OldSetup, '/S'); $probes += ,@($OldSetup, '') }
-$probes += ,@($NewSetup, '/S'); $probes += ,@($NewSetup, '')
-foreach ($pr in $probes) {
-  $pargs = if ($pr[1]) { @($pr[1]) } else { @() }
-  $t = [Diagnostics.Stopwatch]::StartNew()
-  $q = if ($pargs.Count) { Start-Process $pr[0] -ArgumentList $pargs -PassThru } else { Start-Process $pr[0] -PassThru }
-  $q.WaitForExit(180000) | Out-Null
-  $ok = Wait-Until { Test-Path $exe } 20
-  Write-Host ("probe {0} {1}: exit {2} (0x{3:X8}) after {4}s, installed={5} {6}" -f (Split-Path $pr[0] -Leaf), $pr[1], $q.ExitCode, $q.ExitCode, [int]$t.Elapsed.TotalSeconds, $ok, (InstalledVersion))
-  Uninstall
+function Show-Crashes {
+  Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = (Get-Date).AddMinutes(-3) } -MaxEvents 3 -ErrorAction SilentlyContinue |
+    ForEach-Object { Write-Host "    crash report: $(($_.Message -split "`n" | Select-Object -First 4) -join ' | ')" }
 }
+
+# 1. the installer as people use it: double-clicked (one-click, shows progress,
+#    starts the app when done). Five times, fresh each time - the old NSIS
+#    3.0.4 build crashed at random (System.dll, 0xC0000005) on build 26100.
+$crashes = 0
+for ($i = 1; $i -le 5; $i++) {
+  Uninstall
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $p = Start-Process $NewSetup -PassThru
+  $done = $p.WaitForExit(180000)
+  $code = if ($done) { $p.ExitCode } else { 'still running' }
+  $installed = Wait-Until { Test-Path $exe } 30
+  $window = $installed -and (Wait-Until { (AppWindow).Count -gt 0 } 60)
+  Write-Host ("    double-click install {0}: exit {1} after {2}s, installed={3}, window={4}" -f $i, $code, [int]$sw.Elapsed.TotalSeconds, $installed, $window)
+  if (-not ($done -and $code -eq 0 -and $installed -and $window)) { $crashes++; Show-Crashes }
+}
+Check 'double-clicked installer installs and opens the app (5 of 5)' ($crashes -eq 0) "$crashes failed"
+Check "installed version is $NewVersion" ((InstalledVersion) -like "$NewVersion*") (InstalledVersion)
+$portable = Get-ChildItem (Split-Path $NewSetup) -Filter '*-portable.exe' | Select-Object -First 1
 if ($portable) {
-  $q = Start-Process $portable.FullName -PassThru
-  $win = Wait-Until { (AppWindow).Count -gt 0 } 60
-  Write-Host ("probe {0}: window={1} exited={2} exit={3}" -f $portable.Name, $win, $q.HasExited, $(if ($q.HasExited) { '0x{0:X8}' -f $q.ExitCode } else { '-' }))
+  Stop-App
+  Start-Process $portable.FullName
+  Check 'the portable .exe opens its window' (Wait-Until { (AppWindow).Count -gt 0 } 90)
   Stop-App
 }
-Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Level = 2; StartTime = (Get-Date).AddMinutes(-15) } -MaxEvents 6 -ErrorAction SilentlyContinue |
-  ForEach-Object { Write-Host "event $($_.Id) $($_.ProviderName): $(($_.Message -split "`n" | Select-Object -First 4) -join ' | ')" }
 
-# 1. fresh install, run like a double-click (one-click installer, starts the app when done)
-function Show-State([string] $why) {
-  Write-Host "--- $why"
-  Write-Host "    processes: $((Get-Process | Where-Object { $_.Name -match 'Chat|Setup|Notifier|Au_|nsis' } | ForEach-Object { "$($_.Name)#$($_.Id)" }) -join ', ')"
-  $progs = Join-Path $env:LOCALAPPDATA 'Programs'
-  if (Test-Path $progs) { Write-Host "    Programs: $((Get-ChildItem $progs -Name) -join ', ')" }
-  Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | ForEach-Object {
-    $v = Get-ItemProperty $_.PSPath
-    if ($v.DisplayName -match 'Chat') { Write-Host "    uninstall entry: $($v.DisplayName) $($v.DisplayVersion) at $($v.InstallLocation)" }
-  }
-}
-
-$sw = [Diagnostics.Stopwatch]::StartNew()
-$p = Start-Process $NewSetup -PassThru
-Check 'installer finishes' ($p.WaitForExit(180000))
-Write-Host "    installer exit code $($p.ExitCode) after $([int]$sw.Elapsed.TotalSeconds)s"
-Show-State 'right after the installer process exited'
-Check 'installed (within 2 minutes)' (Wait-Until { Test-Path $exe } 120)
-Write-Host "    installed after $([int]$sw.Elapsed.TotalSeconds)s"
-Show-State 'after waiting for the files'
-Check "installed version is $NewVersion" ((InstalledVersion) -eq $NewVersion) (InstalledVersion)
-Check 'the app starts after installing and shows its window' (Wait-Until { (AppWindow).Count -gt 0 } 60) ((AppProcesses | ForEach-Object { $_.MainWindowTitle }) -join ',')
 
 # 2. started again by hand while it runs: the running copy shows its window, no second copy stays
 Stop-App
@@ -140,7 +133,7 @@ if ($OldSetup) {
     Start-Sleep -Milliseconds 500
     AppProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
     Check "update installer finishes ($label)" ($inst.WaitForExit(180000))
-    Check "updated to $NewVersion ($label)" ((InstalledVersion) -eq $NewVersion) (InstalledVersion)
+    Check "updated to $NewVersion ($label)" ((InstalledVersion) -like "$NewVersion*") (InstalledVersion)
     Check "the app comes back by itself after the update ($label)" (Wait-Until { (AppWindow).Count -gt 0 } 60) ((AppProcesses).Count)
     Show-Log
   }

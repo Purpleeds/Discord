@@ -100,7 +100,17 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   await page.fill('#password', 'secret123');
   await page.click('#signInBtn');
   check('signs in and connects', !!(await until(async () => /Connected/.test(await page.textContent('#status').catch(() => '')), 8000)));
-  check('who is shown', (await page.textContent('#who')).startsWith(w + ' · localhost:' + PORT));
+  check('who is shown', (await page.textContent('#who')) === w && (await page.textContent('#host')) === 'localhost:' + PORT);
+  const nav = name => page.click(`#nav [data-page=${name}]`);
+  check('opens on the Pop-ups page', await page.isVisible('.page[data-page=popups]') && !(await page.isVisible('.page[data-page=look]')));
+  // the log, for "it doesn't open / connect" reports
+  const logFile = await N(n => n.logFile);
+  check('keeps a log (start, connect)', /starting \d+\.\d+\.\d+/.test(fs.readFileSync(logFile, 'utf8')) && /connected to http:\/\/localhost/.test(fs.readFileSync(logFile, 'utf8')));
+  check('the log never holds the password', !/secret123|wrong-password/.test(fs.readFileSync(logFile, 'utf8')));
+  await nav('general');
+  await page.click('#openLog');
+  check('"Show the log" points at it', (await app.evaluate(() => global.__openedLog)) === logFile);
+  await nav('popups');
   const cfg = await N(n => n.cfg());
   const rawConfig = fs.readFileSync(path.join(appData, 'config.json'), 'utf8');
   check('sign-in kept (encrypted when the OS can)', (cfg.tokenEnc === '(set)' || cfg.token === '(set)') && (cfg.tokenEnc !== '(set)' || !/"token": "[^"]/.test(rawConfig)), cfg);
@@ -138,22 +148,25 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   step("channels: quiet unless it's for you");
   // ---- how long pop-ups stay (Settings > Pop-ups)
   step('dismiss time');
-  await page.selectOption('#cardTime', '4');
+  await page.click('#cardTime [data-value="4"]');
   check('dismiss time: 4 seconds', (await N(n => n.cardMs())) === 4000 && (await N(n => n.cfg())).cardSeconds === 4);
   await emit(sA, 'dmMessage', { to: w, text: 'short one' });
   check('card shows…', !!(await cardsWith(c => c.some(x => x.text === 'short one'))));
   check('…and goes by itself after ~4s', !!(await until(async () => !(await cards()).some(x => x.text === 'short one'), 7000)));
-  await page.selectOption('#cardTime', '0');
+  await page.click('#cardTime [data-value="0"]');
   await emit(sA, 'dmMessage', { to: w, text: 'sticky one' });
   const sticky = await cardsWith(c => c.some(x => x.text === 'sticky one'));
   await sleep(5000);
   check('"until I close them": still there after 5s', !!sticky && (await cards()).some(x => x.text === 'sticky one'));
   check('…with no countdown bar', await until(async () => { const pg = app.windows().find(x => /card\.html$/.test(x.url()) && !x.isClosed()); return pg && pg.evaluate(() => !document.getElementById('timer').classList.contains('run')); }));
   check('tray offers the same choice', (await N(n => n.menu())).includes('Pop-ups stay for'));
-  await page.selectOption('#cardTime', '');
+  await page.click('#cardTime [data-value=""]');
   check('back to the default', (await N(n => n.cfg())).cardSeconds === null);
+  check('the chosen time is marked', (await page.getAttribute('#cardTime [data-value=""]', 'aria-checked')) === 'true' && (await page.getAttribute('#cardTime [data-value="4"]', 'aria-checked')) === 'false');
   await clear();
-  check('auto-update row hidden when running from source', !(await page.isVisible('#autoUpdateRow')));
+  await nav('general');
+  check('auto-update row hidden when running from source', !(await page.isVisible('#autoUpdateRow')) && await page.isVisible('#autostart'));
+  await nav('popups');
 
   // ---- channels: quiet unless it's for you
   await emit(sA, 'joinRoom', general.room);
@@ -195,14 +208,63 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   step('"every message" mode (set in the window)');
   // ---- the look follows the window's choice
   step('theme');
-  await page.selectOption('#theme', 'light');
-  await page.click('#test');
-  const testCard = await until(() => app.windows().find(x => /card\.html$/.test(x.url()) && !x.isClosed()));
-  check('test pop-up uses the chosen theme', !!(await until(async () => (await testCard.evaluate(() => document.documentElement.dataset.theme).catch(() => '')) === 'light')));
+  await nav('look');
+  await page.click('#themes [data-theme=light]');
+  check('theme tile is marked', (await page.getAttribute('#themes [data-theme=light]', 'aria-checked')) === 'true');
+  check('the window follows the theme', (await page.evaluate(() => getComputedStyle(document.body).backgroundColor)) === 'rgb(255, 255, 255)');
+  await N(n => n.test());
+  const cardBg = pg => pg.evaluate(() => getComputedStyle(document.getElementById('card')).backgroundColor).catch(() => '');
+  let testCard = await until(() => app.windows().find(x => /card\.html$/.test(x.url()) && !x.isClosed()));
+  check('test pop-up uses the chosen theme', !!(await until(async () => (await cardBg(testCard)) === 'rgb(255, 255, 255)')));
   await testCard.waitForSelector('#name');
   await testCard.screenshot({ path: SHOTS + 'notifier-card-light.png' });
-  await page.selectOption('#theme', 'afterhours');
+  // accent: a preset, then any colour from the picker
+  await page.click('#accents [data-accent="#4f8cff"]');
+  check('accent preset', (await N(n => n.cfg())).accent === '#4f8cff');
+  check('an open card follows a change', !!(await until(async () => (await testCard.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--brand').trim()).catch(() => '')) === '#4f8cff')));
+  await page.click('#accentMore');
+  check('the colour picker opens', await page.isVisible('#picker'));
+  await page.fill('#pickHex', 'e0115f');
+  check('typing a hex previews it in the window', (await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--brand').trim())) === '#e0115f');
+  await page.keyboard.press('Escape');
+  check('Esc puts the old colour back', !(await page.isVisible('#picker')) && (await N(n => n.cfg())).accent === '#4f8cff' && (await until(async () => (await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--brand').trim())) === '#4f8cff')));
+  await page.click('#accentMore');
+  const hue = await page.locator('#pickHue').boundingBox();
+  await page.mouse.click(hue.x + hue.width * 0.33, hue.y + hue.height / 2);
+  await page.click('#pickDone');
+  const picked = (await N(n => n.cfg())).accent;
+  check('dragging the hue bar picks a green', /^#[0-9a-f]{6}$/.test(picked) && parseInt(picked.slice(3, 5), 16) > parseInt(picked.slice(1, 3), 16), picked);
+  // a theme of your own
+  await page.click('#newTheme');
+  check('theme editor opens', await page.isVisible('#themeEditor') && (await page.inputValue('#themeName')) === 'My theme');
+  const setColour = async (key, hex) => { await page.click(`.colourRow[data-key=${key}]`); await page.fill('#pickHex', hex); await page.click('#pickDone'); };
+  await setColour('bg', '0f2a1d'); await setColour('surface', '08170f'); await setColour('text', '0f2a1d');
+  check('warns when text is unreadable', !!(await until(async () => (await page.isVisible('#contrastNote')) && /hard to read/.test(await page.textContent('#contrastNote')))));
+  check('the preview shows the draft (not the window)', (await page.evaluate(() => getComputedStyle(document.querySelector('.pv')).backgroundColor)) === 'rgb(15, 42, 29)' && (await page.evaluate(() => getComputedStyle(document.body).backgroundColor)) === 'rgb(255, 255, 255)');
+  await setColour('text', 'd8f3dc'); await setColour('muted', '88b49a');
+  check('readable again: no warning', !!(await until(async () => !(await page.isVisible('#contrastNote')))));
+  await page.fill('#themeName', 'Forest');
+  await page.click('#saveTheme');
+  const saved = await until(async () => { const c = await N(n => n.cfg()); return c.customThemes.length === 1 && c.theme === c.customThemes[0].id && c; });
+  check('saved and chosen', saved && saved.customThemes[0].name === 'Forest' && saved.customThemes[0].bg === '#0f2a1d' && saved.customThemes[0].text === '#d8f3dc', saved && saved.customThemes);
+  check('editor closes, tile shows', !(await page.isVisible('#themeEditor')) && (await page.textContent(`#themes [data-theme=${saved.customThemes[0].id}]`)).includes('Forest'));
+  check('open card switches to it', !!(await until(async () => (await cardBg(testCard)) === 'rgb(15, 42, 29)')));
+  await testCard.screenshot({ path: SHOTS + 'notifier-card-custom.png' });
+  await page.screenshot({ path: SHOTS + 'notifier-settings-look.png' });
+  // edit it: clicking the chosen custom tile again opens it
+  await page.click(`#themes [data-theme=${saved.customThemes[0].id}]`);
+  check('clicking your theme again edits it', await page.isVisible('#themeEditor') && (await page.inputValue('#themeName')) === 'Forest' && await page.isVisible('#deleteTheme'));
+  await page.fill('#themeName', 'Forest 2');
+  await page.click('#saveTheme');
+  check('edits keep the same theme', !!(await until(async () => { const c = await N(n => n.cfg()); return c.customThemes.length === 1 && c.customThemes[0].name === 'Forest 2'; })));
+  // a bad theme straight from the page is refused by the main process
+  check('main process refuses junk colours', (await page.evaluate(() => window.notifier.saveTheme({ name: 'x', bg: 'url(evil)', surface: '#000000', text: '#ffffff', muted: '#888888' }))).error);
+  await page.click(`#themes [data-theme=${saved.customThemes[0].id}]`);
+  await page.click('#deleteTheme');
+  check('delete: gone, back to After hours', !!(await until(async () => { const c = await N(n => n.cfg()); return c.customThemes.length === 0 && c.theme === 'afterhours'; })));
+  await page.click('#accents [data-accent="#ffb648"]');
   await clear();
+  await nav('popups');
 
   // ---- "every message" mode (set in the window)
   await page.check('input[name=mode][value=all]');
@@ -237,6 +299,7 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   await emit(sW, 'setPresence', { status: 'online' });
   await until(async () => (await N(n => n.live())).presence === 'online');
   await N((n, ms) => n.pause(ms), 60 * 60 * 1000); // tray > Pause pop-ups > For 1 hour
+  check('paused: pause buttons give way to the note', !(await page.isVisible('#pause1')));
   check('paused: the window says until when', !!(await until(async () => (await page.isVisible('#paused')) && /paused until/i.test(await page.textContent('#pausedText')))));
   check('paused: tray offers Resume', (await N(n => n.menu())).includes('Resume pop-ups'));
   await emit(sA, 'dmMessage', { to: w, text: 'during pause' });
@@ -244,6 +307,10 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   check('paused: quiet', (await cards()).length === 0);
   await page.click('#resume');
   check('Resume (in the window) turns them back on', !!(await until(async () => !(await page.isVisible('#paused')))));
+  await page.click('#pause8');
+  check('"Pause for 8 hours" in the window', !!(await until(async () => Math.abs((await N(n => n.cfg())).pausedUntil - Date.now() - 8 * 3600e3) < 60e3)));
+  await page.click('#resume');
+  await until(async () => !(await page.isVisible('#paused')));
   await emit(sA, 'dmMessage', { to: w, text: 'after pause' });
   check('…and pop-ups come back', !!(await cardsWith(c => c.some(x => x.text === 'after pause'))));
   await clear();
@@ -307,6 +374,7 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   page = await settings();
   check('stays signed in after a restart', !!(await until(async () => /Connected/.test(await page.textContent('#status').catch(() => '')), 8000)));
   const before = (await get('/sessions', W)).data.filter(d => /^Chat Notifier/.test(d.device)).length;
+  await page.click('#nav [data-page=general]');
   await page.click('#signOut');
   check('sign out: back to the sign-in form', !!(await until(() => page.isVisible('#signIn'))));
   const after = (await get('/sessions', W)).data.filter(d => /^Chat Notifier/.test(d.device)).length;

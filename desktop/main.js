@@ -5,7 +5,7 @@
 //
 // It connects as a "background" device (see server.js): it doesn't make you
 // look online, and it stays quiet while the chat is open in front of you.
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, safeStorage, screen, powerMonitor, session, net } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, safeStorage, screen, powerMonitor, session, net, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { io } = require('socket.io-client');
@@ -21,9 +21,34 @@ try {
     tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...tls.getCACertificates('system')])]);
   }
 } catch (err) { console.error('could not load the system certificates:', err.message); }
+const certNote = (() => { try { return require('tls').getCACertificates ? 'system certificates on' : 'system certificates unavailable'; } catch (_) { return 'no tls'; } })();
 
 const TEST = process.env.CHAT_NOTIFIER_TEST === '1';
 if (process.env.CHAT_NOTIFIER_DATA) app.setPath('userData', process.env.CHAT_NOTIFIER_DATA);
+// A small log next to the settings (%APPDATA%\Chat Notifier\notifier.log), so
+// "it doesn't open" or "it won't connect" can be looked into. Never holds the
+// sign-in or message text.
+const LOG_FILE = path.join(app.getPath('userData'), 'notifier.log');
+function log(...parts) {
+  const line = new Date().toISOString() + ' ' + parts.map(p => (p instanceof Error ? (p.stack || p.message) : typeof p === 'string' ? p : JSON.stringify(p))).join(' ') + '\n';
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    try { if (fs.statSync(LOG_FILE).size > 512 * 1024) fs.renameSync(LOG_FILE, LOG_FILE + '.old'); } catch (_) {}
+    fs.appendFileSync(LOG_FILE, line);
+  } catch (_) {}
+  if (!app.isPackaged) process.stdout.write(line);
+}
+// Something went wrong in the app itself: write it down, say so once, keep running.
+let crashShown = false;
+function crashed(kind, err) {
+  log(kind, err);
+  if (crashShown || TEST) return;
+  crashShown = true;
+  try { dialog.showErrorBox('Chat Notifier hit a problem', 'It will keep running, but something went wrong:\n\n' + String((err && err.message) || err) + '\n\nThe details are in ' + LOG_FILE); } catch (_) {}
+}
+process.on('uncaughtException', err => crashed('uncaught exception:', err));
+process.on('unhandledRejection', err => log('unhandled rejection:', err));
+log('starting', app.getVersion(), process.platform, process.arch, 'electron', process.versions.electron, 'args', process.argv.slice(1).filter(a => !/^--?(inspect|remote-debugging)/.test(a)));
 const DEFAULT_SERVER = process.env.CHAT_NOTIFIER_SERVER || 'https://discords-zf2n.onrender.com';
 const RELEASES_URL = process.env.CHAT_NOTIFIER_RELEASES_URL || 'https://api.github.com/repos/Purpleeds/Discord/releases?per_page=20';
 const DEFAULT_CARD_MS = Number(process.env.CHAT_NOTIFIER_CARD_MS) || 6500;
@@ -39,16 +64,19 @@ const ICON = path.join(__dirname, 'assets', 'icon.png');
 
 app.setAppUserModelId('com.purpleeds.chatnotifier');
 const gotLock = TEST || app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
+if (!gotLock) { log('already running: asking that copy to show its window'); app.quit(); }
 
 /* ---------------- settings on disk ---------------- */
-const DEFAULTS = { server: DEFAULT_SERVER, username: '', token: '', tokenEnc: '', mode: 'mentions', theme: 'afterhours', accent: '#ffb648', autostart: true, pausedUntil: 0, cardSeconds: null, autoUpdate: true };
+const DEFAULTS = { server: DEFAULT_SERVER, username: '', token: '', tokenEnc: '', mode: 'mentions', theme: 'afterhours', accent: '#ffb648', autostart: true, pausedUntil: 0, cardSeconds: null, autoUpdate: true, customThemes: [] };
 let cfg = { ...DEFAULTS };
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
 function loadConfig() {
-  try { cfg = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(configFile(), 'utf8')) }; } catch (_) { cfg = { ...DEFAULTS }; }
+  try { cfg = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(configFile(), 'utf8')) }; } catch (err) { if (err.code !== 'ENOENT') log('settings file unreadable, starting fresh:', err.message); cfg = { ...DEFAULTS }; }
   if (!L.MODES.includes(cfg.mode)) cfg.mode = 'mentions';
-  if (!L.THEMES.includes(cfg.theme)) cfg.theme = 'afterhours';
+  const seen = new Set();
+  cfg.customThemes = (Array.isArray(cfg.customThemes) ? cfg.customThemes : []).map(L.cleanCustomTheme)
+    .filter(t => t && t.id && !seen.has(t.id) && seen.add(t.id)).slice(0, L.MAX_CUSTOM_THEMES);
+  if (!L.themeById(cfg.theme, cfg.customThemes)) cfg.theme = 'afterhours';
   if (!/^#[0-9a-f]{6}$/i.test(cfg.accent)) cfg.accent = DEFAULTS.accent;
 }
 function saveConfig() {
@@ -137,6 +165,7 @@ function connect() {
   const token = getToken();
   if (!token) return;
   live.connection = 'connecting';
+  log('connecting to', cfg.server, '(' + certNote + ')');
   socket = io(cfg.server, {
     auth: { token, background: true },
     // like the browser: start with plain requests, move to a WebSocket if
@@ -148,12 +177,14 @@ function connect() {
   });
   socket.on('connect', () => {
     live.connection = 'connected';
+    log('connected to', cfg.server, 'via', socket.io.engine && socket.io.engine.transport && socket.io.engine.transport.name);
     live.lastError = '';
     live.notice = '';
     pushState();
     loadContext().catch(() => {});
   });
   socket.on('disconnect', reason => {
+    log('disconnected:', reason);
     live.connection = 'connecting';
     live.chatInFront = false;
     pushState();
@@ -163,8 +194,9 @@ function connect() {
   });
   socket.on('connect_error', err => {
     if (err && err.message === 'not authenticated') return signedOutByServer();
-    live.lastError = connectErrorText(err);
-    console.error('connect failed:', live.lastError);
+    const text = connectErrorText(err);
+    if (text !== live.lastError) log('connect failed:', text); // once per reason, not every retry
+    live.lastError = text;
     live.connection = 'offline';
     pushState();
     // socket.io doesn't retry a refusal from the server's own check by itself
@@ -201,6 +233,7 @@ function disconnect() {
   live.chatInFront = false;
 }
 function signedOutByServer() {
+  log('the chat ended this sign-in');
   disconnect();
   setToken('');
   saveConfig();
@@ -266,7 +299,7 @@ function testCard() {
 
 const cards = []; // { key, win, data, url, external, sticky, height, timer, hovered, closing }
 function cardPayload(card) {
-  return { ...card.data, theme: cfg.theme, accent: cfg.accent, onAccent: L.onAccent(cfg.accent), duration: card.sticky ? 0 : cardMs() };
+  return { ...card.data, tokens: currentTokens(), duration: card.sticky ? 0 : cardMs() };
 }
 function showCard(data) {
   const existing = cards.find(c => c.key === data.key && !c.closing);
@@ -484,22 +517,44 @@ function stateForUi() {
   return {
     signedIn: signedIn(), server: cfg.server, serverLabel: label, username: cfg.username,
     connection: live.connection, lastError: live.lastError || '', presence: live.presence, mode: cfg.mode, theme: cfg.theme,
-    accent: cfg.accent, onAccent: L.onAccent(cfg.accent), autostart: !!cfg.autostart,
+    accent: cfg.accent, tokens: currentTokens(), autostart: !!cfg.autostart,
+    avatarUrl: live.avatarUrl ? L.absoluteUrl(cfg.server, live.avatarUrl) : '',
+    builtInThemes: Object.keys(L.BUILT_IN).map(id => publicTheme(L.themeById(id))),
+    customThemes: cfg.customThemes.map(t => publicTheme({ ...t, builtIn: false })), maxCustomThemes: L.MAX_CUSTOM_THEMES,
     pausedUntil: paused() ? cfg.pausedUntil : 0, version: app.getVersion(), notice: live.notice,
     cardSeconds: CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds : '', autoUpdate: !!cfg.autoUpdate,
     canAutoUpdate: canAutoUpdate(), updateReady: live.updateReady || ''
   };
 }
+const publicTheme = t => ({ id: t.id, name: t.name, bg: t.bg, surface: t.surface, text: t.text, muted: t.muted, builtIn: !!t.builtIn });
+const currentTokens = () => L.themeTokens(L.themeById(cfg.theme, cfg.customThemes), cfg.accent);
+let lastTokensKey = '';
 function pushState() {
   updateTray();
-  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('settings:state', stateForUi());
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.webContents.send('settings:state', stateForUi());
+    paintTitleBar();
+  }
+  // open cards follow a theme or accent change straight away
+  const key = cfg.theme + cfg.accent + JSON.stringify(cfg.customThemes);
+  if (key !== lastTokensKey) {
+    lastTokensKey = key;
+    for (const c of cards) if (c.ready && !c.closing && !c.win.isDestroyed()) c.win.webContents.send('card:data', cardPayload(c));
+  }
+}
+// the window's own minimise/close buttons take the theme's colours
+function paintTitleBar() {
+  const t = currentTokens();
+  try { settingsWin.setTitleBarOverlay({ color: t['--input'], symbolColor: t['--text'], height: 40 }); } catch (_) {}
+  try { settingsWin.setBackgroundColor(t['--floating']); } catch (_) {}
 }
 function setOption(key, value) {
   if (key === 'mode' && L.MODES.includes(value)) cfg.mode = value;
-  else if (key === 'theme' && L.THEMES.includes(value)) cfg.theme = value;
+  else if (key === 'theme' && L.themeById(String(value), cfg.customThemes)) cfg.theme = String(value);
   else if (key === 'accent' && /^#[0-9a-f]{6}$/i.test(String(value))) cfg.accent = String(value).toLowerCase();
   else if (key === 'autostart') { cfg.autostart = !!value; applyAutostart(); }
   else if (key === 'pausedUntil') { pause(0); return; }
+  else if (key === 'pauseHours') { if ([1, 8].includes(Number(value))) pause(Number(value) * 60 * 60 * 1000); return; }
   else if (key === 'cardSeconds') cfg.cardSeconds = CARD_CHOICES.includes(Number(value)) && value !== '' && value !== null ? Number(value) : null;
   else if (key === 'autoUpdate') { cfg.autoUpdate = !!value; startAutoUpdate(); }
   else return;
@@ -508,15 +563,24 @@ function setOption(key, value) {
 }
 function openSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return; }
+  const t = currentTokens();
+  // fits a small laptop screen (and its scaling) with room to spare
+  const area = screen.getPrimaryDisplay().workAreaSize;
   settingsWin = new BrowserWindow({
-    width: 460, height: 690, useContentSize: true, resizable: false, maximizable: false, fullscreenable: false,
-    title: 'Chat Notifier', icon: ICON, show: false, backgroundColor: '#232a4c', autoHideMenuBar: true,
+    width: Math.min(800, area.width - 40), height: Math.min(580, area.height - 40), minWidth: 640, minHeight: 460, useContentSize: true,
+    maximizable: false, fullscreenable: false, title: 'Chat Notifier', icon: ICON, show: false, backgroundColor: t['--floating'], autoHideMenuBar: true,
+    titleBarStyle: 'hidden', titleBarOverlay: { color: t['--input'], symbolColor: t['--text'], height: 40 },
     webPreferences: { preload: path.join(__dirname, 'ui', 'settings-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: false }
   });
-  settingsWin.setMenu(null);
-  settingsWin.loadFile(path.join(__dirname, 'ui', 'settings.html'));
-  settingsWin.once('ready-to-show', () => settingsWin && settingsWin.show());
-  settingsWin.on('closed', () => { settingsWin = null; });
+  const win = settingsWin;
+  win.setMenu(null);
+  win.loadFile(path.join(__dirname, 'ui', 'settings.html'));
+  const show = () => { if (!win.isDestroyed() && !win.isVisible()) { win.show(); win.focus(); } };
+  win.once('ready-to-show', show);
+  setTimeout(show, 4000); // never stay invisible, even if the page is slow to paint
+  win.webContents.on('render-process-gone', (e, d) => log('settings window page stopped:', d.reason));
+  win.webContents.on('did-fail-load', (e, code, desc) => log('settings window failed to load:', code, desc));
+  win.on('closed', () => { if (settingsWin === win) settingsWin = null; });
 }
 const fromSettings = e => settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents;
 ipcMain.handle('settings:get', e => (fromSettings(e) ? stateForUi() : null));
@@ -526,6 +590,42 @@ ipcMain.handle('settings:set', (e, key, value) => { if (fromSettings(e)) setOpti
 ipcMain.handle('settings:test', e => { if (fromSettings(e)) testCard(); });
 ipcMain.handle('settings:openChat', e => { if (fromSettings(e)) openChat(); });
 ipcMain.handle('settings:installUpdate', e => { if (fromSettings(e)) installUpdateNow(); });
+ipcMain.handle('settings:openLog', e => {
+  if (!fromSettings(e)) return;
+  log('log opened from Settings');
+  if (TEST) { global.__openedLog = LOG_FILE; return; }
+  shell.showItemInFolder(LOG_FILE);
+});
+// the theme editor: tokens for a draft (live preview), saving and deleting
+ipcMain.handle('settings:previewTheme', (e, theme, accent) => {
+  if (!fromSettings(e)) return null;
+  const t = L.cleanCustomTheme(theme) || L.themeById(cfg.theme, cfg.customThemes);
+  return { tokens: L.themeTokens(t, L.isHex(accent) ? accent : cfg.accent), problems: L.themeProblems(t) };
+});
+ipcMain.handle('settings:saveTheme', (e, theme) => {
+  if (!fromSettings(e)) return null;
+  const t = L.cleanCustomTheme(theme);
+  if (!t) return { error: 'Pick a colour for each part of the theme.' };
+  const at = t.id ? cfg.customThemes.findIndex(x => x.id === t.id) : -1;
+  if (at >= 0) cfg.customThemes[at] = t;
+  else {
+    if (cfg.customThemes.length >= L.MAX_CUSTOM_THEMES) return { error: 'You can keep up to ' + L.MAX_CUSTOM_THEMES + ' of your own themes. Delete one first.' };
+    t.id = 'custom-' + require('crypto').randomBytes(5).toString('hex');
+    cfg.customThemes.push(t);
+  }
+  cfg.theme = t.id;
+  saveConfig();
+  pushState();
+  return { ok: true, id: t.id };
+});
+ipcMain.handle('settings:deleteTheme', (e, id) => {
+  if (!fromSettings(e)) return null;
+  cfg.customThemes = cfg.customThemes.filter(t => t.id !== id);
+  if (!L.themeById(cfg.theme, cfg.customThemes)) cfg.theme = 'afterhours';
+  saveConfig();
+  pushState();
+  return { ok: true };
+});
 
 /* ---------------- updates ---------------- */
 // Installed copies update themselves: a new release is downloaded in the
@@ -541,7 +641,9 @@ function startAutoUpdate() {
     autoUpdater = require('electron-updater').autoUpdater;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('update-available', info => log('update available:', info && info.version));
     autoUpdater.on('update-downloaded', info => {
+      log('update downloaded:', info && info.version);
       live.updateReady = info && info.version ? info.version : 'the new version';
       pushState();
       showCard({
@@ -550,7 +652,7 @@ function startAutoUpdate() {
         where: 'Update ready', tags: [], text: 'Version ' + live.updateReady + ' is downloaded. Click to restart and install it (or it installs next time the app closes).', url: ''
       });
     });
-    autoUpdater.on('error', err => console.error('update failed:', err && err.message));
+    autoUpdater.on('error', err => log('update failed:', (err && err.message) || String(err)));
   }
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
   setTimeout(check, 15000);
@@ -559,6 +661,7 @@ function startAutoUpdate() {
 }
 function installUpdateNow() {
   if (!autoUpdater || !live.updateReady) return;
+  log('restarting to install', live.updateReady);
   quitting = true;
   autoUpdater.quitAndInstall(true, true); // quietly, then start again
 }
@@ -594,9 +697,10 @@ app.on('web-contents-created', (e, contents) => {
   contents.on('will-navigate', ev => ev.preventDefault());
   contents.on('will-attach-webview', ev => ev.preventDefault());
 });
-app.on('second-instance', () => openSettings()); // opening it again shows the settings
+app.on('second-instance', () => { log('opened again: showing the window'); openSettings(); }); // opening it again shows the settings
 app.on('window-all-closed', () => { /* keep running in the tray */ });
-app.on('before-quit', () => { quitting = true; disconnect(); });
+app.on('before-quit', () => { quitting = true; log('quitting'); disconnect(); });
+app.on('child-process-gone', (e, d) => { if (d.reason !== 'clean-exit') log('helper process stopped:', d.type, d.reason); });
 
 if (gotLock) app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
@@ -609,6 +713,7 @@ if (gotLock) app.whenReady().then(() => {
   if (signedIn()) connect();
   // started by hand (not at Windows sign-in): show that it's running
   if (!signedIn() || !process.argv.includes('--hidden')) openSettings();
+  log('ready:', signedIn() ? 'signed in' : 'signed out', process.argv.includes('--hidden') ? '(started hidden)' : '');
   powerMonitor.on('resume', () => { if (socket && !socket.connected) socket.connect(); });
   startAutoUpdate();
   screen.on('display-metrics-changed', layout);
@@ -617,5 +722,5 @@ if (gotLock) app.whenReady().then(() => {
     setInterval(checkForUpdate, 6 * 60 * 60 * 1000).unref();
   }
   // for the tests: a read-only view of what's going on
-  if (TEST) global.__notifier = { cards: () => cards.filter(c => !c.closing).map(c => ({ key: c.key, ...c.data, url: c.url, bounds: c.win.getBounds() })), live: () => ({ ...live, blocked: [...live.blocked], threads: undefined }), cfg: () => ({ ...cfg, token: cfg.token ? '(set)' : '', tokenEnc: cfg.tokenEnc ? '(set)' : '' }), menu: () => menuTemplate().map(i => i.label || i.type), cardMs: () => cardMs(), pause: ms => pause(ms), test: () => { testCard(); } };
+  if (TEST) global.__notifier = { cards: () => cards.filter(c => !c.closing).map(c => ({ key: c.key, ...c.data, url: c.url, bounds: c.win.getBounds() })), live: () => ({ ...live, blocked: [...live.blocked], threads: undefined }), logFile: LOG_FILE, cfg: () => ({ ...cfg, token: cfg.token ? '(set)' : '', tokenEnc: cfg.tokenEnc ? '(set)' : '' }), menu: () => menuTemplate().map(i => i.label || i.type), cardMs: () => cardMs(), pause: ms => pause(ms), test: () => { testCard(); } };
 });

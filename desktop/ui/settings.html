@@ -2,93 +2,215 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: https: http:">
 <title>Chat Notifier</title>
 <link rel="stylesheet" href="theme.css">
 <link rel="stylesheet" href="settings.css">
 </head>
 <body>
-<header>
-  <img src="../assets/icon.png" alt="" class="logo">
-  <div>
-    <h1>Chat Notifier</h1>
-    <p class="sub">Pop-ups for your chat, while it isn't open.</p>
-  </div>
-</header>
+<div class="titlebar"><img src="../assets/icon.png" alt="" class="titleIcon"><span>Chat Notifier</span></div>
 
 <!-- signed out -->
-<form id="signIn" hidden autocomplete="on">
-  <label>Chat address
-    <input id="server" type="text" inputmode="url" spellcheck="false" autocomplete="url" required>
-  </label>
-  <label>Username
-    <input id="username" type="text" spellcheck="false" autocomplete="username" required maxlength="30">
-  </label>
-  <label>Password
-    <input id="password" type="password" autocomplete="current-password" required maxlength="200">
-  </label>
-  <div class="msg" id="signInMsg" role="alert"></div>
-  <button type="submit" class="primary" id="signInBtn">Sign in</button>
-  <p class="fine">Your password is only sent to the chat to sign in. The notifier keeps the sign-in, encrypted by Windows, and shows up in the chat's Settings &gt; Devices.</p>
-</form>
+<main class="signInView" id="signInView" hidden>
+  <form id="signIn" hidden autocomplete="on">
+    <img src="../assets/icon.png" alt="" class="bigLogo">
+    <h1>Sign in to get pop-ups</h1>
+    <p class="lede">Messages show up in the corner of your screen while the chat isn't open in front of you.</p>
+    <label class="field">Chat address
+      <input id="server" type="text" inputmode="url" spellcheck="false" autocomplete="url" required>
+    </label>
+    <label class="field">Username
+      <input id="username" type="text" spellcheck="false" autocomplete="username" required maxlength="30">
+    </label>
+    <label class="field">Password
+      <input id="password" type="password" autocomplete="current-password" required maxlength="200">
+    </label>
+    <div class="msg" id="signInMsg" role="alert"></div>
+    <button type="submit" class="primary wide" id="signInBtn">Sign in</button>
+    <p class="fine">Your password only goes to the chat, to sign in. The notifier keeps the sign-in encrypted by Windows, and it shows in the chat under Settings &gt; Devices.</p>
+  </form>
+</main>
 
 <!-- signed in -->
-<section id="signedIn" hidden>
-  <div class="account">
-    <div class="dot" id="statusDot"></div>
-    <div class="grow">
-      <div class="who" id="who"></div>
-      <div class="status" id="status"></div>
+<div class="shell" id="signedIn" hidden>
+  <aside class="rail">
+    <div class="account">
+      <div class="avatar" id="avatar"></div>
+      <div class="grow">
+        <div class="who" id="who"></div>
+        <div class="host" id="host"></div>
+      </div>
     </div>
-    <button type="button" class="ghost" id="signOut">Sign out</button>
+    <div class="state" id="stateBox">
+      <span class="dot" id="statusDot"></span>
+      <span id="status"></span>
+    </div>
+    <div class="pausedBox" id="paused" hidden>
+      <span id="pausedText"></span>
+      <button type="button" class="link" id="resume">Resume</button>
+    </div>
+    <nav id="nav" aria-label="Settings pages">
+      <button type="button" data-page="popups" class="active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 1 1 12 0v4l2 3H4l2-3z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+        Pop-ups
+      </button>
+      <button type="button" data-page="look">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18c1.4 0 2-1 2-2 0-.6-.3-1-.6-1.4-.3-.4-.6-.8-.6-1.4 0-1 .9-1.7 2-1.7H17a4 4 0 0 0 4-4C21 6.4 17 3 12 3z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/></svg>
+        Appearance
+      </button>
+      <button type="button" data-page="general">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        General
+      </button>
+    </nav>
+    <div class="railFoot">
+      <button type="button" class="primary wide" id="openChat">Open the chat</button>
+    </div>
+  </aside>
+
+  <!-- Pop-ups -->
+  <section class="page" data-page="popups">
+    <h2>Pop-ups</h2>
+    <p class="lede">A card slides in at the bottom right when a message arrives and the chat isn't open in front of you.</p>
+    <div class="note warn" id="offlineNote" hidden></div>
+
+    <div class="group" role="radiogroup" aria-label="Pop up for">
+      <div class="groupTitle">Pop up for</div>
+      <label class="option">
+        <input type="radio" name="mode" value="mentions">
+        <span class="optionText"><b>Direct messages and mentions</b><span>DMs, group chats, and messages that @mention you or one of your roles.</span></span>
+      </label>
+      <label class="option">
+        <input type="radio" name="mode" value="all">
+        <span class="optionText"><b>Every message</b><span>Everything in every channel you can see. Busy servers get loud.</span></span>
+      </label>
+    </div>
+
+    <div class="group">
+      <div class="groupTitle">Stay on screen</div>
+      <div class="segmented" id="cardTime" role="radiogroup" aria-label="Pop-ups stay on screen for">
+        <button type="button" role="radio" data-value="4">4 sec</button>
+        <button type="button" role="radio" data-value="">6.5 sec</button>
+        <button type="button" role="radio" data-value="10">10 sec</button>
+        <button type="button" role="radio" data-value="20">20 sec</button>
+        <button type="button" role="radio" data-value="0">Until closed</button>
+      </div>
+      <p class="hint">Pointing at a pop-up always keeps it open.</p>
+    </div>
+
+    <div class="group">
+      <div class="groupTitle">Take a break</div>
+      <div class="rowButtons" id="pauseButtons">
+        <button type="button" class="ghost" id="pause1">Pause for 1 hour</button>
+        <button type="button" class="ghost" id="pause8">Pause for 8 hours</button>
+      </div>
+      <p class="hint" id="pauseHint">Do Not Disturb in the chat also keeps pop-ups away.</p>
+    </div>
+
+    <div class="pageFoot">
+      <button type="button" class="primary" id="test">Show a test pop-up</button>
+      <p class="fine">Pop-ups stay away while the chat is open in front of you and for people you've blocked. While the notifier runs, the chat in your browser leaves desktop pop-ups to it.</p>
+    </div>
+  </section>
+
+  <!-- Appearance -->
+  <section class="page" data-page="look" hidden>
+    <h2>Appearance</h2>
+    <p class="lede">How pop-ups and this window look. Changes show straight away.</p>
+
+    <div class="stage" id="stage" aria-hidden="true">
+      <div class="pv">
+        <div class="pvTop">
+          <div class="pvAvatar">S</div>
+          <div class="pvWho"><div class="pvName">Sam</div><div class="pvWhere">#general · Book club</div></div>
+          <div class="pvClose">×</div>
+        </div>
+        <div class="pvBody"><span class="pvTag">@you</span>Are we still on for Friday? I'll bring the snacks.</div>
+        <div class="pvTimer"></div>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="groupTitle">Theme</div>
+      <div class="themes" id="themes" role="radiogroup" aria-label="Theme"></div>
+    </div>
+
+    <div class="editor" id="themeEditor" hidden>
+      <div class="editorHead">
+        <label class="field grow">Theme name
+          <input id="themeName" type="text" maxlength="24" spellcheck="false">
+        </label>
+      </div>
+      <div class="colourRows" id="colourRows"></div>
+      <div class="note" id="contrastNote" hidden></div>
+      <div class="rowButtons">
+        <button type="button" class="primary" id="saveTheme">Save theme</button>
+        <button type="button" class="ghost" id="cancelTheme">Cancel</button>
+        <span class="grow"></span>
+        <button type="button" class="ghost danger" id="deleteTheme">Delete theme</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="groupTitle">Accent colour</div>
+      <div class="accents" id="accents"></div>
+      <p class="hint">Used for the stripe on each pop-up, buttons and highlights, in every theme.</p>
+    </div>
+  </section>
+
+  <!-- General -->
+  <section class="page" data-page="general" hidden>
+    <h2>General</h2>
+    <p class="lede">Starting up, updates and your sign-in.</p>
+
+    <div class="list">
+      <label class="item">
+        <span class="itemText"><b>Start with Windows</b><span>Runs quietly in the tray when you sign in to Windows.</span></span>
+        <input type="checkbox" class="switch" id="autostart">
+      </label>
+      <label class="item" id="autoUpdateRow">
+        <span class="itemText"><b>Update automatically</b><span>New versions download in the background and install when the app restarts.</span></span>
+        <input type="checkbox" class="switch" id="autoUpdate">
+      </label>
+    </div>
+    <div class="note good" id="updateReady" hidden>
+      <span>Version <span id="updateVersion"></span> is downloaded.</span>
+      <button type="button" class="primary small" id="installNow">Restart to update</button>
+    </div>
+
+    <div class="list">
+      <div class="item">
+        <span class="itemText"><b id="accountLine"></b><span>Signing out also signs this device out of the chat.</span></span>
+        <button type="button" class="ghost" id="signOut">Sign out</button>
+      </div>
+      <div class="item">
+        <span class="itemText"><b id="version"></b><span>Can't connect, or something's off? The log is in the app's folder.</span></span>
+        <button type="button" class="ghost" id="openLog">Show the log</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- colour picker (one, reused) -->
+<div class="picker" id="picker" hidden role="dialog" aria-label="Pick a colour">
+  <div class="sv" id="pickSv"><div class="svThumb" id="pickSvThumb" tabindex="0" role="slider" aria-label="Saturation and brightness"></div></div>
+  <div class="hue" id="pickHue"><div class="hueThumb" id="pickHueThumb" tabindex="0" role="slider" aria-label="Hue" aria-valuemin="0" aria-valuemax="360"></div></div>
+  <div class="pickRow">
+    <div class="pickCompare"><span id="pickOld" title="Before"></span><span id="pickNew" title="Now"></span></div>
+    <label class="hexField"><span>#</span><input id="pickHex" type="text" maxlength="7" spellcheck="false" aria-label="Hex colour"></label>
+    <button type="button" class="iconBtn" id="pickDropper" title="Pick a colour from the screen" aria-label="Pick a colour from the screen">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 7 3 3"/><path d="M4 20l1-4 9.5-9.5a2.1 2.1 0 0 1 3 3L8 19z"/><path d="M15.5 3.5l5 5"/></svg>
+    </button>
   </div>
-
-  <fieldset>
-    <legend>Pop up for</legend>
-    <label class="radio"><input type="radio" name="mode" value="mentions"> Direct messages, group chats and @mentions</label>
-    <label class="radio"><input type="radio" name="mode" value="all"> Every message in every channel</label>
-  </fieldset>
-
-  <fieldset class="row">
-    <legend>Look</legend>
-    <label>Theme
-      <select id="theme">
-        <option value="afterhours">After hours</option>
-        <option value="ash">Graphite</option>
-        <option value="midnight">Midnight</option>
-        <option value="light">Daylight</option>
-      </select>
-    </label>
-    <label>Accent
-      <input id="accent" type="color">
-    </label>
-  </fieldset>
-
-  <fieldset class="row">
-    <legend>Pop-ups</legend>
-    <label>Stay on screen for
-      <select id="cardTime">
-        <option value="">6.5 seconds (default)</option>
-        <option value="4">4 seconds</option>
-        <option value="10">10 seconds</option>
-        <option value="20">20 seconds</option>
-        <option value="0">Until I close them</option>
-      </select>
-    </label>
-  </fieldset>
-
-  <label class="check"><input type="checkbox" id="autostart"> Start with Windows</label>
-  <label class="check" id="autoUpdateRow"><input type="checkbox" id="autoUpdate"> Update automatically</label>
-  <div class="paused" id="updateReady" hidden>Version <span id="updateVersion"></span> is downloaded. <button type="button" class="link" id="installNow">Restart to update</button></div>
-  <div class="paused" id="paused" hidden><span id="pausedText"></span> <button type="button" class="link" id="resume">Resume</button></div>
-
-  <div class="actions">
-    <button type="button" class="primary" id="test">Show a test pop-up</button>
-    <button type="button" class="ghost" id="openChat">Open the chat</button>
+  <div class="pickSwatches" id="pickSwatches"></div>
+  <div class="pickRecentWrap" id="pickRecentWrap" hidden><div class="pickLabel">Recent</div><div class="pickSwatches" id="pickRecent"></div></div>
+  <div class="rowButtons end">
+    <button type="button" class="ghost small" id="pickCancel">Cancel</button>
+    <button type="button" class="primary small" id="pickDone">Done</button>
   </div>
-  <p class="fine">Pop-ups stay quiet while the chat is open in front of you, while you're on Do Not Disturb, and for people you blocked. While the notifier runs, the chat in your browser leaves desktop pop-ups to it.</p>
-</section>
-<footer class="fine" id="version"></footer>
+</div>
+
+<script src="picker.js"></script>
 <script src="settings.js"></script>
 </body>
 </html>

@@ -64,5 +64,22 @@ check('avatar: data image ok, scripts not', L.absoluteUrl('https://c.example', '
 check('versions', L.newerVersion('1.0.10', '1.0.9') && !L.newerVersion('1.0.0', '1.0.0') && !L.newerVersion('0.9.9', '1.0.0') && L.newerVersion('notifier-v2.0.0', '1.9.9'));
 check('text on accent', L.onAccent('#ffb648') === '#1f1500' && L.onAccent('#3b3bff') === '#ffffff');
 
+// themes
+const forest = { name: '  Forest   night ', bg: '#0F2A1D', surface: '#08170f', text: '#d8f3dc', muted: '#88b49a' };
+const cleaned = L.cleanCustomTheme(forest);
+check('custom theme is cleaned', cleaned && cleaned.name === 'Forest night' && cleaned.bg === '#0f2a1d' && cleaned.id === '');
+check('custom theme needs every colour', L.cleanCustomTheme({ ...forest, muted: 'red' }) === null && L.cleanCustomTheme(null) === null);
+check('custom theme name is capped', L.cleanCustomTheme({ ...forest, name: 'x'.repeat(80) }).name.length === 24 && L.cleanCustomTheme({ ...forest, name: '' }).name === 'My theme');
+check('bad custom ids are dropped', L.cleanCustomTheme({ ...forest, id: '../x' }).id === '' && L.cleanCustomTheme({ ...forest, id: 'custom-ab12cd' }).id === 'custom-ab12cd');
+check('built-in and custom themes are found', L.themeById('light').builtIn && L.themeById('custom-ab12cd', [{ ...cleaned, id: 'custom-ab12cd' }]).name === 'Forest night' && !L.themeById('nope', []));
+const tk = L.themeTokens({ ...cleaned }, '#3b3bff');
+check('tokens from a custom theme', tk['--floating'] === '#0f2a1d' && tk['--input'] === '#08170f' && tk['--brand'] === '#3b3bff' && tk['--on-brand'] === '#ffffff' && tk['color-scheme'] === 'dark');
+check('a light custom theme gets light shadows', L.themeTokens({ name: 'p', bg: '#fdf6e3', surface: '#eee8d5', text: '#3b3b3b', muted: '#6b6b6b' }, '#ffb648')['color-scheme'] === 'light');
+check('built-in tokens keep the chat\'s exact colours', L.themeTokens(L.themeById('afterhours'), '#ffb648')['--line'] === 'rgba(176,190,255,.085)');
+check('a bad theme falls back to After hours', L.themeTokens(null, 'nope')['--floating'] === '#232a4c' && L.themeTokens(null, 'nope')['--brand'] === '#ffb648');
+check('contrast', Math.round(L.contrast('#ffffff', '#000000')) === 21 && L.contrast('#777777', '#777777') === 1);
+check('no warnings for readable themes', Object.keys(L.BUILT_IN).every(id => L.themeProblems(L.themeById(id)).length === 0) && L.themeProblems(cleaned).length === 0);
+check('warns about unreadable colours', L.themeProblems({ bg: '#333333', surface: '#333333', text: '#444444', muted: '#3a3a3a' }).length === 3);
+
 console.log(`passed ${pass}, failed ${fail}`);
 process.exit(fail ? 1 : 0);

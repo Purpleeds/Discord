@@ -1,23 +1,14 @@
-/* The chat's colours (public/index.html design tokens), one set per theme.
-   The accent is set from the notifier's settings. */
+/* Shared by the pop-up cards and the settings window. The colours here are
+   only the first paint: main.js sends the full set for the chosen theme
+   (lib/logic.js themeTokens()) and the pages apply it. */
+@font-face{font-family:"Figtree";src:url("fonts/figtree.woff2") format("woff2");font-weight:300 900;font-display:block;}
+@font-face{font-family:"Bricolage Grotesque";src:url("fonts/bricolage-grotesque.woff2") format("woff2");font-weight:200 800;font-display:block;}
 :root{
   --floating:#232a4c; --input:#121730; --line:rgba(176,190,255,.085); --line-strong:rgba(176,190,255,.16);
-  --text:#dfe3f5; --muted:#8f97bd; --bright:#f6f7fd; --hover:#232a4a; --mention:rgba(166,178,255,.20); --mention-text:#cdd4ff;
+  --text:#dfe3f5; --muted:#8f97bd; --bright:#f6f7fd; --hover:#2b335a; --mention:rgba(166,178,255,.20); --mention-text:#cdd4ff;
   --brand:#ffb648; --on-brand:#1f1500;
   --shadow:0 14px 30px -12px rgba(4,7,24,.65), 0 2px 6px rgba(4,7,24,.35);
-  --font-ui:"Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  --font-ui:"Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-display:"Bricolage Grotesque", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
-}
-html[data-theme="ash"]{
-  --floating:#24242b; --input:#111114; --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.13);
-  --text:#e3e3ea; --muted:#9a9aa8; --bright:#f6f6f9; --hover:#222228; --mention:rgba(159,176,255,.16); --mention-text:#cfd6ff;
-}
-html[data-theme="midnight"]{
-  --floating:#16161c; --input:#101014; --line:rgba(255,255,255,.07); --line-strong:rgba(255,255,255,.12);
-  --text:#e4e4ec; --muted:#8f8f9e; --bright:#f7f7fa; --hover:#141419; --mention:rgba(159,176,255,.14); --mention-text:#cfd6ff;
-}
-html[data-theme="light"]{
-  --floating:#ffffff; --input:#eef0f8; --line:rgba(27,33,64,.08); --line-strong:rgba(27,33,64,.14);
-  --text:#262b47; --muted:#626a8e; --bright:#0f1330; --hover:#eceff9; --mention:rgba(80,100,220,.12); --mention-text:#2c3a9e;
-  --shadow:0 14px 30px -14px rgba(27,33,64,.35), 0 2px 6px rgba(27,33,64,.10);
+  color-scheme:dark;
 }

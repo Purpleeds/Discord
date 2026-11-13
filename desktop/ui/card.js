@@ -11,9 +11,7 @@ function colourFor(name) {
 let duration = 0;
 
 function render(card) {
-  document.documentElement.dataset.theme = card.theme === 'afterhours' ? '' : card.theme;
-  document.documentElement.style.setProperty('--brand', card.accent);
-  document.documentElement.style.setProperty('--on-brand', card.onAccent);
+  for (const [k, v] of Object.entries(card.tokens || {})) document.documentElement.style.setProperty(k, v);
   $('card').classList.toggle('call', !!card.sticky);
   $('name').textContent = card.name;
   $('where').textContent = card.where;

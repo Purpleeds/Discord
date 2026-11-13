@@ -108,4 +108,6 @@ jobs:
 
             **"Windows protected your PC"?** The app isn't code-signed, so SmartScreen warns the first time: click **More info** → **Run anyway**.
 
+            **Installer closed without doing anything?** Installers before 1.2.0 could crash on Windows 11 24H2 when opened; this one is built with a newer NSIS and is tested by double-clicking it on that Windows build. If yours still doesn't open, the log is in `%APPDATA%\Chat Notifier\notifier.log`.
+
             From 1.1.0 the installed app updates itself (Settings > Update automatically). The portable .exe offers new versions from its tray icon instead.

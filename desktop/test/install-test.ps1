@@ -112,7 +112,12 @@ Start-Process $exe
 Check 'starts by hand (signed out)' (Wait-Until { (AppWindow).Count -gt 0 } 45)
 $second = Start-Process $exe -PassThru
 Check 'a second start exits by itself' ($second.WaitForExit(20000))
-Check 'the first copy still runs with its window' (Wait-Until { (AppWindow).Count -gt 0 } 15)
+$still = Wait-Until { (AppWindow).Count -gt 0 } 15
+Check 'the first copy still runs with its window' $still
+if (-not $still) {
+  AppProcesses | ForEach-Object { Write-Host "    process $($_.Id): handle $($_.MainWindowHandle) title '$($_.MainWindowTitle)'" }
+  Show-Log
+}
 
 Stop-App
 Write-SignedIn

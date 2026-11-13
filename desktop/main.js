@@ -562,7 +562,21 @@ function setOption(key, value) {
   pushState();
 }
 function openSettings() {
-  if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return; }
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    const win = settingsWin;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    // Windows won't let a background program take the front by itself: a
+    // moment of always-on-top brings the window up where it can be seen
+    win.setAlwaysOnTop(true);
+    win.focus();
+    setTimeout(() => {
+      if (win.isDestroyed()) return;
+      win.setAlwaysOnTop(false);
+      log('window shown again: visible', win.isVisible(), 'minimized', win.isMinimized(), 'focused', win.isFocused());
+    }, 400);
+    return;
+  }
   const t = currentTokens();
   // fits a small laptop screen (and its scaling) with room to spare
   const area = screen.getPrimaryDisplay().workAreaSize;

@@ -1718,6 +1718,8 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .deviceRow.current{border-color:color-mix(in srgb,var(--brand) 55%,transparent);}
 .deviceIcon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--raised-2);color:var(--text-muted);}
 .deviceRow.current .deviceIcon{color:var(--brand);}
+.siteAdminAvatar{border-radius:50%;overflow:hidden;font-weight:700;font-size:16px;color:var(--text-bright);}
+.siteAdminAvatar img{width:100%;height:100%;object-fit:cover;}
 .deviceInfo{flex:1;min-width:0;}
 .deviceName{font-weight:650;color:var(--text-bright);display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
 .deviceTag{font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--brand);color:var(--on-brand);}
@@ -2123,7 +2125,7 @@ let socket = null;
 let token = '';
 let username = '';
 let myProfile = { username:'', displayName:'', avatarUrl:'', isAdmin:false, censorSwears:false };
-let globalCensorEnabled = false; // site-wide censor, toggleable only by Purple
+let globalCensorEnabled = false; // site-wide censor, toggleable by site admins
 
 const ICON_CHAT_SVG = '<svg viewBox="0 0 24 24" width="26" height="26" fill="currentColor"><path d="M4 4.5A1.5 1.5 0 0 1 5.5 3h13A1.5 1.5 0 0 1 20 4.5v11A1.5 1.5 0 0 1 18.5 17H10l-4.4 3.5A.8.8 0 0 1 4.3 20V17h-.8A1.5 1.5 0 0 1 2 15.5v-9A1.5 1.5 0 0 1 3.5 5H4v-.5z" transform="translate(1,0) scale(0.94)"/></svg>';
 
@@ -2327,7 +2329,36 @@ function avatarUrlFor(user){
   const p = profiles[user];
   return (p && p.avatarUrl) ? p.avatarUrl : '';
 }
-function isAdminUser(user){ const p = profiles[user]; return !!(p && p.isAdmin); }
+// Site admins (as far as this page knows): other admins also see the ones who
+// hide their badge, from the Site Admin list (siteAdminNames).
+let siteAdminNames = null;
+function isAdminUser(user){ if(siteAdminNames && siteAdminNames.has(user)) return true; const p = profiles[user]; return !!(p && p.isAdmin); }
+// Our own full profile (with the real admin status) from the server.
+let selfProfileTimer = null;
+function refreshSelfProfile(){
+  clearTimeout(selfProfileTimer);
+  selfProfileTimer = setTimeout(async () => {
+    try{
+      const response = await fetch('/profile', { headers: bearer() });
+      if(!response.ok) return;
+      const p = await response.json();
+      const wasAdmin = !!myProfile.isAdmin;
+      myProfile = Object.assign({}, myProfile, p);
+      renderUserPanel();
+      if(wasAdmin !== !!myProfile.isAdmin){ siteAdminNames = null; if(myProfile.isAdmin) loadSiteAdminList(); }
+    }catch(e){}
+  }, 150);
+}
+async function loadSiteAdminList(){
+  if(!myProfile || !myProfile.isAdmin){ siteAdminNames = null; return null; }
+  try{
+    const response = await fetch('/admin/overview', { headers: bearer() });
+    if(!response.ok) return null;
+    const data = await response.json();
+    siteAdminNames = new Set(data.admins.map(a => a.username));
+    return data;
+  }catch(e){ return null; }
+}
 
 function formatBytes(bytes){
   const n = Number(bytes || 0);
@@ -2629,7 +2660,7 @@ function connectSocket(){
     connectionBack();
     lastVisibleSent = null; reportVisible();
     reportedIdle = false;
-    await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends()]);
+    await Promise.all([loadServers(), loadGroups(), loadDirectory(), loadSiteSettings(), loadFriends(), loadSiteAdminList()]);
     socket.emit('syncRooms');
     loadUnread(); // badges for everything that arrived while this device was away
     // a REconnect (phone waking up, wifi blip, server redeploy) keeps you
@@ -2740,6 +2771,10 @@ function connectSocket(){
     if(settingsState.mode === 'server' && settingsState.section === 'members' && data && settingsState.ctx.serverId === data.serverId) rerenderSettingsSection();
   });
   socket.on('adminNotice', data => toast(data && data.message ? data.message : 'Admin notice'));
+  socket.on('siteAdminChanged', async () => {
+    const data = await loadSiteAdminList();
+    if(data && $('siteAdminPage')) paintSiteAdminPage(data);
+  });
   // read somewhere else (another tab, your phone): clear the same badges here
   socket.on('readSync', data => {
     if(!data || data.from === socket.id) return;
@@ -2759,9 +2794,11 @@ function connectSocket(){
       cacheProfile(data.username, data.profile);
       if(data.username === username){
         // the broadcast is the PUBLIC profile - keep our private presence choice
-        myProfile = Object.assign({}, myProfile, data.profile, { presence: myProfile.presence });
+        // (and our real admin status: the public one says no while the badge is hidden)
+        myProfile = Object.assign({}, myProfile, data.profile, { presence: myProfile.presence, isAdmin: myProfile.isAdmin, adminHidden: myProfile.adminHidden });
         renderUserPanel();
         if(currentRoom) loadHistory(currentRoom);
+        refreshSelfProfile(); // then the real thing (e.g. just made or unmade a site admin)
       }
       renderMembers();
       renderSidebar();
@@ -5863,7 +5900,11 @@ function showUserMenu(event, user, room){
       : { label:'Make Server Admin', action:() => setServerRole(server, user, 'admin') });
   }
 
-  if(myProfile.isAdmin && user !== username){
+  const otherAdmin = isAdminUser(user) || user === 'Purple';
+  if(myProfile.isAdmin && user !== username && otherAdmin && username !== 'Purple'){
+    items.push({ sep:true });
+    items.push({ header:'Site admin (only Purple can moderate admins)' });
+  }else if(myProfile.isAdmin && user !== username){
     items.push({ sep:true });
     items.push({ label:'Kick', danger:true, action:() => adminAction('kick', { username:user }) });
     items.push({ label:'Mute 60 min', danger:true, action:() => adminAction('mute', { username:user, minutes:60 }) });
@@ -9131,7 +9172,7 @@ function openSettings(sectionKey){
       { key:'notifications', label:'Notifications', render:renderNotificationsSection },
       { key:'keybinds', label:'Keybinds', render:renderKeybindsSection }
     ]},
-    username === 'Purple' ? { title:'Site Admin', items:[{ key:'site', label:'Site Moderation', render:renderSiteSection }] } : null,
+    myProfile.isAdmin ? { title:'Site Admin', items:[{ key:'site', label:'Admins & moderation', render:renderSiteSection }] } : null,
     { sep:true },
     { items:[{ label:'Log Out', danger:true, action:() => { closeSettings(true); logout(); } }], foot:'Signed in as ' + username }
   ].filter(Boolean), sectionKey || 'account');
@@ -9739,10 +9780,88 @@ function renderKeybindsSection(c){
       keys.map(k => '<kbd class="kbd">' + escapeHtml(k) + '</kbd>').join('') + '</span></div>').join('');
 }
 
-function renderSiteSection(c){
+// Site Admin page (every site admin sees it): the admins, adding one, bans,
+// mutes and the site-wide swear filter. The server checks every action.
+async function renderSiteSection(c){
   c.innerHTML =
-    '<h2 class="settingsTitle">Site Moderation</h2><div class="settingsSub">Only Purple can see this page.</div>' +
-    section('Content Filter', switchRow('globalCensorToggle', 'Censor swear words everywhere, for everyone', 'Overrides every server and personal setting while it\'s on.', globalCensorEnabled));
+    '<div id="siteAdminPage"><h2 class="settingsTitle">Site Admin</h2>' +
+    '<div class="settingsSub">Site admins can moderate everyone and act as an admin in every server. Only site admins see this page.</div>' +
+    '<div class="switchDesc">Loading…</div></div>';
+  const data = await loadSiteAdminList();
+  if(!$('siteAdminPage')) return;
+  if(!data){ $('siteAdminPage').querySelector('.switchDesc').textContent = 'Couldn\'t load the admin list. Try again in a moment.'; return; }
+  paintSiteAdminPage(data);
+}
+function siteAdminRow(name, sub, tag, button){
+  const item = document.createElement('div');
+  item.className = 'deviceRow';
+  const icon = document.createElement('div');
+  icon.className = 'deviceIcon siteAdminAvatar';
+  const p = profiles[name];
+  if(p && p.avatarUrl){ const img = document.createElement('img'); img.src = p.avatarUrl; img.alt = ''; img.onerror = () => { img.remove(); icon.textContent = name.charAt(0).toUpperCase(); }; icon.appendChild(img); }
+  else icon.textContent = name.charAt(0).toUpperCase();
+  const info = document.createElement('div');
+  info.className = 'deviceInfo';
+  const title = document.createElement('div');
+  title.className = 'deviceName';
+  title.textContent = name;
+  if(tag) title.appendChild(Object.assign(document.createElement('span'), { className:'deviceTag', textContent:tag }));
+  info.appendChild(title);
+  if(sub) info.appendChild(Object.assign(document.createElement('div'), { className:'deviceSub', textContent:sub }));
+  item.appendChild(icon); item.appendChild(info);
+  if(button) item.appendChild(button);
+  return item;
+}
+function siteAdminButton(label, danger, onClick){
+  const b = document.createElement('button');
+  b.className = 'btn ' + (danger ? 'danger' : 'grey');
+  b.textContent = label;
+  b.onclick = onClick;
+  return b;
+}
+function siteAdminEmit(action, data){
+  return new Promise(resolve => socket.emit('adminAction', Object.assign({ action }, data), result => {
+    if(result && result.error){ inlineMessage($('siteAdminMsg'), capitalise(result.error), true); resolve(false); }
+    else { inlineMessage($('siteAdminMsg'), capitalise((result && result.message) || 'Done')); resolve(true); }
+  }));
+}
+function paintSiteAdminPage(data){
+  const page = $('siteAdminPage');
+  if(!page) return;
+  page.innerHTML =
+    '<h2 class="settingsTitle">Site Admin</h2>' +
+    '<div class="settingsSub">Site admins can moderate everyone and act as an admin in every server. Only site admins see this page.</div>' +
+    section('Site admins', '<div class="deviceList" id="siteAdminList"></div>' +
+      '<div class="rowFlex" style="margin-top:12px"><input type="text" class="settingsInput" id="siteAdminAdd" placeholder="Username" maxlength="30" spellcheck="false" autocomplete="off" style="flex:1;max-width:280px"><button class="btn" id="siteAdminAddBtn">Make site admin</button></div>' +
+      '<div class="switchDesc" style="margin-top:8px">' + (data.canManageAdmins ? 'You can add and remove site admins.' : 'Any site admin can add one. Only Purple can remove a site admin, or mute, kick or ban one.') + '</div>') +
+    section('Banned', '<div class="deviceList" id="siteBannedList"></div>') +
+    section('Muted', '<div class="deviceList" id="siteMutedList"></div>') +
+    section('Content filter', switchRow('globalCensorToggle', 'Censor swear words everywhere, for everyone', 'Overrides every server and personal setting while it\'s on.', data.globalCensor)) +
+    '<div class="inlineMsg" id="siteAdminMsg"></div>';
+  const admins = $('siteAdminList');
+  data.admins.forEach(a => {
+    const tag = a.permanent ? 'Owner' : (a.username === data.me ? 'You' : '');
+    const sub = a.permanent ? 'Always a site admin' : (a.hidden ? 'Hides the Site Admin badge' : 'Site admin');
+    const canRemove = data.canManageAdmins && !a.permanent && a.username !== data.me;
+    admins.appendChild(siteAdminRow(a.username, sub, tag, canRemove ? siteAdminButton('Remove', true, async () => {
+      if(!confirm('Remove site admin from ' + a.username + '?')) return;
+      await siteAdminEmit('setAdmin', { username:a.username, isAdmin:false });
+    }) : null));
+  });
+  const add = async () => {
+    const name = $('siteAdminAdd').value.trim();
+    if(!name) return;
+    if(!confirm('Make ' + name + ' a site admin? They can moderate everyone and manage every server.')) return;
+    if(await siteAdminEmit('setAdmin', { username:name, isAdmin:true })) $('siteAdminAdd').value = '';
+  };
+  $('siteAdminAddBtn').onclick = add;
+  $('siteAdminAdd').onkeydown = e => { if(e.key === 'Enter') add(); };
+  const banned = $('siteBannedList');
+  if(!data.banned.length) banned.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'Nobody is banned.' }));
+  data.banned.forEach(b => banned.appendChild(siteAdminRow(b.username, 'Banned from the whole site', '', siteAdminButton('Unban', false, () => siteAdminEmit('unban', { username:b.username }))))); 
+  const muted = $('siteMutedList');
+  if(!data.muted.length) muted.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'Nobody is muted.' }));
+  data.muted.forEach(m => muted.appendChild(siteAdminRow(m.username, 'Muted until ' + parseTime(m.until).toLocaleString([], { weekday:'short', hour:'2-digit', minute:'2-digit' }) + (m.by ? ' by ' + m.by : ''), '', siteAdminButton('Unmute', false, () => siteAdminEmit('unmute', { username:m.username })))));
   $('globalCensorToggle').onchange = e => setGlobalCensor(e.target.checked);
 }
 

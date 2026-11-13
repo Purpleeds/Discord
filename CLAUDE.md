@@ -73,7 +73,12 @@ to do next) - read it before a big upgrade and add an entry after one.
   role managers, and `/servers` sends `owner: ''` for an owner who hides.
   Site admins can hide the Site Admin badge everywhere (`users.hide_admin`):
   `profileFromRow()` then says `isAdmin: false` to everyone; `selfProfile()`
-  keeps the real `isAdmin` plus `adminHidden`. Your own profile card has an
+  keeps the real `isAdmin` plus `adminHidden` (the client must never overwrite its own
+  `isAdmin` from a public profile - `refreshSelfProfile()`). Every site admin
+  gets Settings > Site Admin (`GET /admin/overview`: admins incl. hidden ones,
+  bans, mutes, the site-wide swear filter). Any site admin can make another;
+  only Purple can mute/kick/ban/remove a site admin (checked in `adminAction`).
+  `regression/site_admins.test.js`. Your own profile card has an
   eye beside your roles (`roleEyeButton()`) - hidden roles show greyed. Banner/avatar media go through
   `/assets` (allow-listed image/video types, `assetProblem()` checks the
   uploader); unused assets are removed after a day. Assets up to 8 MB are in

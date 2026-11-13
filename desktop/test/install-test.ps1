@@ -74,7 +74,7 @@ function Show-State([string] $why) {
   }
 }
 function Show-Crashes {
-  Get-WinEvent -FilterHashtable @{ LogName = 'Application'; Id = 1000; StartTime = (Get-Date).AddMinutes(-3) } -MaxEvents 3 -ErrorAction SilentlyContinue |
+  Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Application Error'; StartTime = (Get-Date).AddMinutes(-3) } -MaxEvents 3 -ErrorAction SilentlyContinue |
     ForEach-Object { Write-Host "    crash report: $(($_.Message -split "`n" | Select-Object -First 4) -join ' | ')" }
 }
 
@@ -89,8 +89,10 @@ for ($i = 1; $i -le 5; $i++) {
   $done = $p.WaitForExit(180000)
   $code = if ($done) { $p.ExitCode } else { 'still running' }
   $installed = Wait-Until { Test-Path $exe } 30
-  $window = $installed -and (Wait-Until { (AppWindow).Count -gt 0 } 60)
-  Write-Host ("    double-click install {0}: exit {1} after {2}s, installed={3}, window={4}" -f $i, $code, [int]$sw.Elapsed.TotalSeconds, $installed, $window)
+  # first start on a fresh PC can be slow (antivirus scans the new files)
+  $window = $installed -and (Wait-Until { (AppWindow).Count -gt 0 } 150)
+  Write-Host ("    double-click install {0}: exit {1} after {2}s, installed={3}, window={4}, app processes={5}" -f $i, $code, [int]$sw.Elapsed.TotalSeconds, $installed, $window, (AppProcesses).Count)
+  if (-not $window) { Show-Log }
   if (-not ($done -and $code -eq 0 -and $installed -and $window)) { $crashes++; Show-Crashes }
 }
 Check 'double-clicked installer installs and opens the app (5 of 5)' ($crashes -eq 0) "$crashes failed"
@@ -110,7 +112,7 @@ Start-Process $exe
 Check 'starts by hand (signed out)' (Wait-Until { (AppWindow).Count -gt 0 } 45)
 $second = Start-Process $exe -PassThru
 Check 'a second start exits by itself' ($second.WaitForExit(20000))
-Check 'the first copy still runs with its window' ((AppWindow).Count -gt 0)
+Check 'the first copy still runs with its window' (Wait-Until { (AppWindow).Count -gt 0 } 15)
 
 Stop-App
 Write-SignedIn

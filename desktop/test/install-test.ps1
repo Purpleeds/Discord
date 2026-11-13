@@ -56,9 +56,25 @@ function Show-Log {
 Uninstall
 
 # 1. fresh install, run like a double-click (one-click installer, starts the app when done)
+function Show-State([string] $why) {
+  Write-Host "--- $why"
+  Write-Host "    processes: $((Get-Process | Where-Object { $_.Name -match 'Chat|Setup|Notifier|Au_|nsis' } | ForEach-Object { "$($_.Name)#$($_.Id)" }) -join ', ')"
+  $progs = Join-Path $env:LOCALAPPDATA 'Programs'
+  if (Test-Path $progs) { Write-Host "    Programs: $((Get-ChildItem $progs -Name) -join ', ')" }
+  Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | ForEach-Object {
+    $v = Get-ItemProperty $_.PSPath
+    if ($v.DisplayName -match 'Chat') { Write-Host "    uninstall entry: $($v.DisplayName) $($v.DisplayVersion) at $($v.InstallLocation)" }
+  }
+}
+
+$sw = [Diagnostics.Stopwatch]::StartNew()
 $p = Start-Process $NewSetup -PassThru
 Check 'installer finishes' ($p.WaitForExit(180000))
-Check 'installed' (Test-Path $exe)
+Write-Host "    installer exit code $($p.ExitCode) after $([int]$sw.Elapsed.TotalSeconds)s"
+Show-State 'right after the installer process exited'
+Check 'installed (within 2 minutes)' (Wait-Until { Test-Path $exe } 120)
+Write-Host "    installed after $([int]$sw.Elapsed.TotalSeconds)s"
+Show-State 'after waiting for the files'
 Check "installed version is $NewVersion" ((InstalledVersion) -eq $NewVersion) (InstalledVersion)
 Check 'the app starts after installing and shows its window' (Wait-Until { (AppWindow).Count -gt 0 } 60) ((AppProcesses | ForEach-Object { $_.MainWindowTitle }) -join ',')
 

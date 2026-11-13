@@ -727,6 +727,10 @@ async function setupSchema() {
   // how far someone has really looked (only the open chat moves it) - unlike
   // last_message_id, which "mark as read" and joining a server also move
   await pool.query(`ALTER TABLE read_receipts ADD COLUMN IF NOT EXISTS seen_message_id INTEGER DEFAULT 0`);
+  // video profile pictures: an /assets/ MP4/WEBM; avatar_url keeps a still
+  // picture (its first frame) for push notifications, the notifier and /avatars
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_video TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS avatar_video TEXT`);
   await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   // roles that let their members hide their roles from everyone else
@@ -889,7 +893,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, banner_url, banner_pos, read_receipts, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
+  bio, banner_color, banner_url, banner_pos, read_receipts, avatar_video, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -1582,7 +1586,7 @@ function cleanBannerPos(value) {
   return out[0] === 50 && out[1] === 50 && out[2] === 1 ? '' : out.join(',');
 }
 function serverProfileFromRow(m) {
-  return { nickname: m.nickname || '', avatarUrl: m.avatar_url || '', bannerUrl: m.banner_url || '', bannerPos: m.banner_pos || '', bio: m.bio || '', hideRoles: !!m.hide_roles };
+  return { nickname: m.nickname || '', avatarUrl: m.avatar_url || '', avatarVideo: m.avatar_video || '', bannerUrl: m.banner_url || '', bannerPos: m.banner_pos || '', bio: m.bio || '', hideRoles: !!m.hide_roles };
 }
 
 // Everything the client needs to draw the server rail + sidebar. This used
@@ -1623,7 +1627,7 @@ async function serversForUser(username) {
   const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
   const stickerRows = await q(`SELECT id, server_id, name, url FROM server_stickers WHERE server_id = ANY($1) ORDER BY id`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
-    q(`SELECT server_id, role, nickname, avatar_url, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
+    q(`SELECT server_id, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids]),
@@ -1915,6 +1919,7 @@ function profileFromRow(u) {
     username: u.username,
     displayName: u.display_name || u.username,
     avatarUrl: avatarUrlOf(u),
+    avatarVideo: u.avatar_video || '',
     // what OTHER people see: a hidden Site Admin badge reads as not-admin
     isAdmin: (u.username === 'Purple' || !!u.is_admin) && !u.hide_admin,
     censorSwears: !!u.censor_swears,
@@ -2045,7 +2050,7 @@ async function serverLooksFor(rows) {
   );
   if (!roomServers.length) return out;
   const looks = await q(
-    `SELECT server_id, username, nickname, avatar_url FROM server_members
+    `SELECT server_id, username, nickname, avatar_url, avatar_video FROM server_members
      WHERE server_id = ANY($1) AND username = ANY($2) AND (COALESCE(nickname, '') <> '' OR COALESCE(avatar_url, '') <> '')`,
     [[...new Set(roomServers.map(r => r.server_id))], [...new Set(rows.map(r => r.user))]]
   );
@@ -2054,7 +2059,7 @@ async function serverLooksFor(rows) {
   const byServer = new Map(looks.map(l => [l.server_id + '\n' + l.username, l]));
   for (const row of rows) {
     const look = byServer.get(serverOf.get(row.room) + '\n' + row.user);
-    if (look) out.set(row.room + '\n' + row.user, { nickname: look.nickname || '', avatarUrl: look.avatar_url || '' });
+    if (look) out.set(row.room + '\n' + row.user, { nickname: look.nickname || '', avatarUrl: look.avatar_url || '', avatarVideo: look.avatar_url ? (look.avatar_video || '') : '' });
   }
   return out;
 }
@@ -2099,6 +2104,7 @@ async function normaliseMessages(rows) {
       webhookId: row.webhook_id || null,
       displayName: row.webhook_id || row.persona ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
       avatarUrl: row.webhook_id ? '' : row.persona ? (row.persona_avatar || '') : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
+      avatarVideo: row.webhook_id || row.persona ? '' : (() => { const look = serverLooks.get(row.room + '\n' + row.user); return look && look.avatarUrl ? (look.avatarVideo || '') : ((u && u.avatar_video) || ''); })(),
       // (personas were removed; messages posted as one keep their label)
       persona: !!row.persona,
       attachments: deleted ? [] : (attachmentsBy.get(row.id) || []),
@@ -2454,6 +2460,14 @@ async function assetProblem(url, owner, allowVideo) {
   if (!allowVideo && row.type.startsWith('video/')) return 'this needs a picture or GIF, not a video';
   return null;
 }
+// A video profile picture must be your own uploaded MP4/WEBM (or '' to clear).
+async function avatarVideoProblem(url, owner) {
+  if (!url) return null;
+  const problem = await assetProblem(url, owner, true);
+  if (problem) return problem;
+  const row = await one(`SELECT type FROM assets WHERE key = $1`, [ASSET_URL_RE.exec(String(url))[1]]);
+  return row && row.type.startsWith('video/') ? null : 'that isn\'t a video';
+}
 app.post('/assets', requireAuth, route(async (req, res) => {
   const type = String(req.headers['x-file-type'] || '').toLowerCase();
   if (!ASSET_TYPES[type]) return res.status(400).json({ error: 'use a PNG, JPG, GIF, WEBP or AVIF picture, or an MP4 or WEBM video' });
@@ -2523,12 +2537,12 @@ app.get('/assets/:file', route(async (req, res) => {
 async function removeUnusedAssets() {
   const removed = await q(
     `DELETE FROM assets a WHERE a.created_at < NOW() - INTERVAL '1 day'
-       AND NOT EXISTS (SELECT 1 FROM users u WHERE u.banner_url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM users u WHERE u.banner_url LIKE '/assets/' || a.key || '.%' OR u.avatar_video LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.banner_url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_emojis e WHERE e.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_stickers st WHERE st.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM messages pm WHERE pm.persona_avatar LIKE '/assets/' || a.key || '.%')
-       AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%' OR m.avatar_video LIKE '/assets/' || a.key || '.%')
      RETURNING key, storage`
   );
   for (const r of removed) {
@@ -2688,6 +2702,11 @@ app.post('/profile', requireAuth, route(async (req, res) => {
       set('avatar_version', value.startsWith('data:') ? crypto.createHash('md5').update(value).digest('hex').slice(0, 10) : null);
     }
   }
+  if ('avatarVideo' in body) {
+    const problem = await avatarVideoProblem(body.avatarVideo, req.username);
+    if (problem) return res.status(400).json({ error: problem });
+    set('avatar_video', String(body.avatarVideo || ''));
+  } else if ('avatarUrl' in body && !String(body.avatarUrl || '').startsWith('/avatars/')) set('avatar_video', ''); // a new still picture replaces a video
   if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
   if ('readReceipts' in body) set('read_receipts', body.readReceipts ? 1 : 0);
   if ('hideAdminBadge' in body) {
@@ -4881,6 +4900,12 @@ app.post('/servers/:id/profile', requireAuth, route(async (req, res) => {
     const problem = await assetProblem(body.avatarUrl, req.username, false);
     if (problem) return res.status(400).json({ error: problem });
     set('avatar_url', String(body.avatarUrl || ''));
+    if (!('avatarVideo' in body)) set('avatar_video', '');
+  }
+  if ('avatarVideo' in body) {
+    const problem = await avatarVideoProblem(body.avatarVideo, req.username);
+    if (problem) return res.status(400).json({ error: problem });
+    set('avatar_video', String(body.avatarVideo || ''));
   }
   if ('bannerUrl' in body) {
     const problem = await assetProblem(body.bannerUrl, req.username, true);
@@ -4900,7 +4925,7 @@ app.post('/servers/:id/profile', requireAuth, route(async (req, res) => {
   }
   await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
   sendToUser(req.username, 'serversChanged', {});
-  const row = await one(`SELECT nickname, avatar_url, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  const row = await one(`SELECT nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
   res.json(serverProfileFromRow(row));
 }));
 
@@ -4916,7 +4941,7 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
     names = await filterChannelViewers(channel, names);
   }
   const [roleRows, customRows, hiders, viewerPerms] = await Promise.all([
-    q(`SELECT username, role, nickname, avatar_url, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE server_id = $1`, [serverId]),
+    q(`SELECT username, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE server_id = $1`, [serverId]),
     q(`SELECT username, role_id FROM server_member_roles WHERE server_id = $1`, [serverId]),
     // who may hide their roles: admins, and members of a role that allows it
     q(`SELECT DISTINCT mr.username FROM server_member_roles mr JOIN server_roles r ON r.id = mr.role_id

@@ -1871,6 +1871,24 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
 @keyframes notiIn{from{opacity:0;transform:translateX(28px) scale(.97);}to{opacity:1;transform:none;}}
 @keyframes notiOut{to{opacity:0;transform:translateX(28px);}}
 @keyframes notiTimer{from{transform:scaleX(1);}to{transform:scaleX(0);}}
+/* "There's a desktop app" offer (Windows, after signing in or a server restart) */
+#notifierOffer{position:fixed;left:22px;bottom:22px;z-index:9001;width:360px;max-width:calc(100vw - 32px);background:var(--bg-floating);border:1px solid var(--line-strong);border-radius:var(--r-card);box-shadow:var(--shadow-float);padding:14px 16px 14px 18px;overflow:hidden;animation:offerIn .32s var(--ease-out);}
+#notifierOffer::before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--brand);}
+#notifierOffer.leaving{animation:offerOut .2s ease-in forwards;}
+.offerHead{display:flex;align-items:center;gap:11px;}
+.offerIcon{flex:none;width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:var(--brand);color:var(--on-brand);}
+.offerIcon svg{width:20px;height:20px;}
+.offerTitle{flex:1;font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--text-bright);}
+.offerText{margin:9px 0 0;color:var(--text);font-size:13.5px;line-height:1.45;}
+.offerFine{margin:7px 0 0;color:var(--text-muted);font-size:12px;line-height:1.4;}
+.offerActions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px;}
+.offerActions a.offerGet{display:inline-flex;align-items:center;padding:8px 14px;border-radius:10px;background:var(--brand);color:var(--on-brand);font-weight:700;font-size:13.5px;text-decoration:none;}
+.offerActions a.offerGet:hover{filter:brightness(1.07);}
+.offerActions button{border:0;background:transparent;color:var(--text-muted);font:inherit;font-size:13px;font-weight:600;padding:8px 8px;border-radius:8px;cursor:pointer;}
+.offerActions button:hover{background:var(--hover);color:var(--text);}
+@keyframes offerIn{from{opacity:0;transform:translateY(16px);}to{opacity:1;transform:none;}}
+@keyframes offerOut{to{opacity:0;transform:translateY(16px);}}
+@media (prefers-reduced-motion: reduce){#notifierOffer,#notifierOffer.leaving{animation:none;}}
 @media (max-width:900px){
   #notiStack{right:auto;left:50%;transform:translateX(-50%);bottom:auto;top:calc(12px + env(safe-area-inset-top, 0px));flex-direction:column-reverse;}
   @keyframes notiIn{from{opacity:0;transform:translateY(-18px);}to{opacity:1;transform:none;}}
@@ -2081,6 +2099,19 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
   <div id="lightboxBar"><span id="lightboxName"></span><a id="lightboxOpen" target="_blank" rel="noopener">Open original</a></div>
 </div>
 <div id="toast"></div>
+<div id="notifierOffer" role="dialog" aria-labelledby="notifierOfferTitle" hidden>
+  <div class="offerHead">
+    <div class="offerIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 10a6 6 0 1 1 12 0v4l2 3H4l2-3z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg></div>
+    <div class="offerTitle" id="notifierOfferTitle">Get pop-ups on your desktop</div>
+  </div>
+  <p class="offerText">There's a small Windows app, Chat Notifier, that sits in the tray and shows a pop-up when someone messages or mentions you, even with this tab closed.</p>
+  <p class="offerFine">It isn't code-signed yet, so Windows may say "Windows protected your PC": click More info, then Run anyway.</p>
+  <div class="offerActions">
+    <a class="offerGet" id="notifierOfferGet" href="https://github.com/Purpleeds/Discord/releases/latest" target="_blank" rel="noopener">Download for Windows</a>
+    <button type="button" id="notifierOfferLater">Not now</button>
+    <button type="button" id="notifierOfferNever">Don't show again</button>
+  </div>
+</div>
 <div id="notiStack" aria-live="polite"></div>
 <div id="incomingCall" class="incomingCall" role="dialog" aria-label="Incoming call"></div>
 <div id="voiceAudio" hidden></div>
@@ -2389,6 +2420,7 @@ async function registerUser(){
   setStatus('Creating your account…');
   try{
     const data = await postAuth('/register', { username:name, password });
+    notifierOfferPending = true;
     completeLogin(data.username, data.token, data.profile);
   }catch(err){
     setStatus(err.message === 'user exists' ? 'That username is taken. Pick another, or log in if it\'s yours.' : capitalise(err.message));
@@ -2402,6 +2434,7 @@ async function login(){
   setStatus('Logging in…');
   try{
     const data = await postAuth('/login', { username:name, password, create:false });
+    notifierOfferPending = true;
     completeLogin(data.username, data.token, data.profile);
   }catch(err){
     if(err.code === 'no_account') setStatus('There\'s no account called "' + name + '". Check the spelling, or create it below.');
@@ -2426,6 +2459,7 @@ function completeLogin(returnedUsername, returnedToken, profile){
 }
 
 async function logout(){
+  hideNotifierOffer(); notifierOffered = false; // the next sign-in may offer it again
   try{ if(token) await fetch('/logout',{method:'POST',headers:authHeaders(),body:'{}'}); }catch(e){}
   resetToLoginScreen('Logged out');
 }
@@ -2544,6 +2578,36 @@ let draftSaveTimer = null;
 function draftChanged(){ clearTimeout(draftSaveTimer); draftSaveTimer = setTimeout(stashDraft, 600); }
 window.addEventListener('pagehide', stashDraft);
 
+/* ============================ desktop app offer ============================ */
+// After signing in, and after the server restarts or updates, people on a
+// Windows computer are told about the Chat Notifier (desktop/) - unless it's
+// already running for their account, they said "don't show again" on this
+// device, or it was already offered on this page.
+let notifierOfferPending = false;
+let notifierOffered = false;
+try{ if(sessionStorage.getItem('offerNotifier')){ sessionStorage.removeItem('offerNotifier'); notifierOfferPending = true; } }catch(e){}
+function onWindowsDesktop(){
+  return /Windows NT/.test(navigator.userAgent) && !(window.matchMedia && matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches);
+}
+function maybeOfferNotifier(){
+  notifierOfferPending = false;
+  if(notifierOffered || notifierRunning || !token || !onWindowsDesktop()) return;
+  try{ if(localStorage.getItem('notifierOffer') === 'never') return; }catch(e){}
+  notifierOffered = true;
+  const box = $('notifierOffer');
+  box.classList.remove('leaving');
+  box.hidden = false;
+}
+function hideNotifierOffer(){
+  const box = $('notifierOffer');
+  if(box.hidden || box.classList.contains('leaving')) return;
+  box.classList.add('leaving');
+  setTimeout(() => { box.hidden = true; box.classList.remove('leaving'); }, 200);
+}
+$('notifierOfferLater').addEventListener('click', hideNotifierOffer);
+$('notifierOfferNever').addEventListener('click', () => { try{ localStorage.setItem('notifierOffer', 'never'); }catch(e){} hideNotifierOffer(); });
+$('notifierOfferGet').addEventListener('click', () => setTimeout(hideNotifierOffer, 300));
+
 /* ============================ sockets ============================ */
 let serverVersion = ''; // the code version the server had when this page loaded
 let notifierRunning = false; // the desktop notifier is connected for this account
@@ -2560,6 +2624,8 @@ function connectSocket(){
   setupVoiceSocket();
 
   socket.on('connect', async () => {
+    // a reconnect after losing the server (a restart, an update) is a moment to offer the desktop app
+    if(everConnected) notifierOfferPending = true;
     connectionBack();
     lastVisibleSent = null; reportVisible();
     reportedIdle = false;
@@ -2575,6 +2641,7 @@ function connectSocket(){
     everConnected = true;
     handleLocationHash();
     syncVoiceAfterConnect();
+    if(notifierOfferPending) setTimeout(maybeOfferNotifier, 2500); // after the 'notifier' state has arrived
   });
   // The NAS updates itself: after it comes back on a new version, reload so
   // this page runs the new code too (drafts are kept). Not mid-call - then
@@ -2586,12 +2653,13 @@ function connectSocket(){
     if(v === serverVersion) return;
     if(voice.key){ toast('The chat was updated - reload when your call ends.'); serverVersion = v; return; }
     stashDraft();
+    try{ sessionStorage.setItem('offerNotifier', '1'); }catch(e){} // offer the desktop app after the restart
     location.reload();
   });
   socket.on('serverUpdating', () => toast('Updating the chat - back in a moment…'));
   // the desktop notifier: told when this page is in front; while one is
   // running it shows the desktop pop-ups, so this page doesn't
-  socket.on('notifier', data => { notifierRunning = !!(data && data.running); });
+  socket.on('notifier', data => { notifierRunning = !!(data && data.running); if(notifierRunning) hideNotifierOffer(); });
   socket.on('connect_error', err => {
     if(err.message === 'not authenticated'){ sessionExpired(); return; }
     connectionLost();

@@ -48,14 +48,21 @@ $pkg = Get-AppxPackage -Name $manifest.Package.Identity.Name
 Check 'installs like a Store app' ([bool]$pkg)
 $appId = $manifest.Package.Applications.Application.Id
 $aumid = "$($pkg.PackageFamilyName)!$appId"
-$dataDir = Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalCache\Roaming\Chat Notifier"
+# Windows keeps the app's data either in the package's own folder or (newer
+# Windows, for files the app creates itself) in the normal AppData - find it
+$dataCandidates = @((Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalCache\Roaming\Chat Notifier"), (Join-Path $env:APPDATA 'Chat Notifier'))
+$dataDir = $dataCandidates[0]
 
 # first start (signed out): the sign-in window
 Start-Process "shell:AppsFolder\$aumid"
 Check 'starts from the Start menu and shows the sign-in window' (Wait-Until { (AppWindow).Count -gt 0 } 90) ((AppProcesses).Count)
 Stop-App
+$found = Wait-Until { $dataCandidates | Where-Object { Test-Path (Join-Path $_ 'notifier.log') } } 10
+$dataDir = @($dataCandidates | Where-Object { Test-Path (Join-Path $_ 'notifier.log') })[0]
+Check 'keeps a log' ([bool]$dataDir) ($dataCandidates -join ' or ')
+if (-not $dataDir) { $dataDir = $dataCandidates[0] }
+Write-Host "    data folder: $dataDir"
 $log = Join-Path $dataDir 'notifier.log'
-Check 'keeps its log in the package folder' (Wait-Until { Test-Path $log } 10) $dataDir
 if (Test-Path $log) { Get-Content $log -Tail 5 | ForEach-Object { Write-Host "    $_" } }
 
 # signed in, started the way Windows does at sign-in: keeps running, tray + a "running" card

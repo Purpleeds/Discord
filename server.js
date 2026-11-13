@@ -720,6 +720,10 @@ async function setupSchema() {
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS hide_roles INTEGER DEFAULT 0`);
   // a site admin can hide their Site Admin badge (everywhere); their powers stay
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS hide_admin INTEGER DEFAULT 0`);
+  // where a banner sits in its frame: "x,y,zoom" (see cleanBannerPos)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   // roles that let their members hide their roles from everyone else
   await pool.query(`ALTER TABLE server_roles ADD COLUMN IF NOT EXISTS allow_hide INTEGER DEFAULT 0`);
   // ---- attachments inside messages ----
@@ -880,7 +884,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, banner_url, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
+  bio, banner_color, banner_url, banner_pos, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -1560,8 +1564,20 @@ async function canHideRoles(username, serverId) {
   );
   return !!(row && (row.admin || row.allowed));
 }
+// A banner's arrangement: "x,y,zoom" - x/y (0-100) say which part of the
+// picture lines up with the frame (50,50 = centred), zoom is relative to
+// just filling the frame (1). Under 1 the whole picture can show, with a
+// blurred copy filling the space around it. '' = the default (50,50,1).
+function cleanBannerPos(value) {
+  const parts = String(value || '').split(',').map(Number);
+  if (parts.length !== 3 || parts.some(n => !Number.isFinite(n))) return '';
+  const [x, y, z] = parts;
+  const round = (n, d) => Math.round(n * 10 ** d) / 10 ** d;
+  const out = [round(Math.min(100, Math.max(0, x)), 1), round(Math.min(100, Math.max(0, y)), 1), round(Math.min(4, Math.max(0.2, z)), 3)];
+  return out[0] === 50 && out[1] === 50 && out[2] === 1 ? '' : out.join(',');
+}
 function serverProfileFromRow(m) {
-  return { nickname: m.nickname || '', avatarUrl: m.avatar_url || '', bannerUrl: m.banner_url || '', bio: m.bio || '', hideRoles: !!m.hide_roles };
+  return { nickname: m.nickname || '', avatarUrl: m.avatar_url || '', bannerUrl: m.banner_url || '', bannerPos: m.banner_pos || '', bio: m.bio || '', hideRoles: !!m.hide_roles };
 }
 
 // Everything the client needs to draw the server rail + sidebar. This used
@@ -1587,7 +1603,7 @@ async function serversForUser(username) {
   const admin = await isAdmin(username);
   const rows = await q(
     `SELECT s.id, s.name, s.owner, s.invite_code, s.is_default, s.censor_swears, s.icon_version,
-            s.description, s.banner_color, s.banner_version, s.system_channel_id,
+            s.description, s.banner_color, s.banner_version, s.system_channel_id, s.banner_pos,
             CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
             CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' WHEN left(s.banner_url, 8) = '/assets/' THEN s.banner_url ELSE 'data:' END AS banner_url
      FROM servers s
@@ -1602,7 +1618,7 @@ async function serversForUser(username) {
   const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
   const stickerRows = await q(`SELECT id, server_id, name, url FROM server_stickers WHERE server_id = ANY($1) ORDER BY id`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
-    q(`SELECT server_id, role, nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
+    q(`SELECT server_id, role, nickname, avatar_url, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids]),
@@ -1663,6 +1679,7 @@ async function serversForUser(username) {
       description: s.description || '',
       bannerColor: s.banner_color || '',
       bannerUrl: serverBannerUrlOf(s),
+      bannerPos: s.banner_pos || '',
       systemChannelId: s.system_channel_id || null,
       roles: customRolesBy.get(s.id) || [],
       categories: categoryRows.filter(c => c.server_id === s.id).map(c => ({ id: c.id, name: c.name, position: c.position })),
@@ -1899,6 +1916,7 @@ function profileFromRow(u) {
     bio: u.bio || '',
     bannerColor: u.banner_color || '',
     bannerUrl: u.banner_url || '',
+    bannerPos: u.banner_pos || '',
     customStatus: u.custom_status || '',
     pronouns: u.pronouns || '',
     memberSince: u.created_at || null,
@@ -2682,6 +2700,7 @@ app.post('/profile', requireAuth, route(async (req, res) => {
     if (problem) return res.status(400).json({ error: problem });
     set('banner_url', String(body.bannerUrl || ''));
   }
+  if ('bannerPos' in body) set('banner_pos', cleanBannerPos(body.bannerPos));
 
   if (sets.length) {
     values.push(req.username);
@@ -4559,6 +4578,7 @@ const COMMUNITY_CHANNELS = [
 // Sets (or clears) a server's banner colour / image from a request body.
 // Returns an error to show, or null.
 async function applyServerBanner(serverId, body) {
+  if ('bannerPos' in body) await pool.query(`UPDATE servers SET banner_pos = $1 WHERE id = $2`, [cleanBannerPos(body.bannerPos), serverId]);
   if ('bannerColor' in body) {
     const color = body.bannerColor ? String(body.bannerColor) : '';
     if (color && !validHexColor(color)) return 'banner colour must be a hex colour like #5865f2';
@@ -4846,6 +4866,7 @@ app.post('/servers/:id/profile', requireAuth, route(async (req, res) => {
     if (problem) return res.status(400).json({ error: problem });
     set('banner_url', String(body.bannerUrl || ''));
   }
+  if ('bannerPos' in body) set('banner_pos', cleanBannerPos(body.bannerPos));
   if ('hideRoles' in body) {
     if (body.hideRoles && !(await canHideRoles(req.username, serverId))) {
       return res.status(403).json({ error: 'only admins, and roles that allow it, can hide their roles' });
@@ -4858,7 +4879,7 @@ app.post('/servers/:id/profile', requireAuth, route(async (req, res) => {
   }
   await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
   sendToUser(req.username, 'serversChanged', {});
-  const row = await one(`SELECT nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  const row = await one(`SELECT nickname, avatar_url, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
   res.json(serverProfileFromRow(row));
 }));
 
@@ -4874,7 +4895,7 @@ app.get('/servers/:id/members', requireAuth, route(async (req, res) => {
     names = await filterChannelViewers(channel, names);
   }
   const [roleRows, customRows, hiders, viewerPerms] = await Promise.all([
-    q(`SELECT username, role, nickname, avatar_url, banner_url, bio, hide_roles FROM server_members WHERE server_id = $1`, [serverId]),
+    q(`SELECT username, role, nickname, avatar_url, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE server_id = $1`, [serverId]),
     q(`SELECT username, role_id FROM server_member_roles WHERE server_id = $1`, [serverId]),
     // who may hide their roles: admins, and members of a role that allows it
     q(`SELECT DISTINCT mr.username FROM server_member_roles mr JOIN server_roles r ON r.id = mr.role_id
@@ -5384,6 +5405,42 @@ app.post('/servers/:id/roles/:roleId/delete', requireAuth, route(async (req, res
   await notifyServerMembers(serverId, 'serversChanged', {});
   auditLog(serverId, req.username, 'role_delete', String(roleId));
   res.json({ message: 'ok' });
+}));
+
+// Give (or, with remove: true, take away) several roles to/from several
+// members at once - the Roles page's "Add people". Same rules as one at a
+// time: manage_roles, and only roles whose powers you have yourself.
+app.post('/servers/:id/roles/assign', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_roles', 'give out roles'))) return;
+  const remove = !!req.body.remove;
+  const usernames = [...new Set((Array.isArray(req.body.usernames) ? req.body.usernames : []).map(cleanUsername).filter(Boolean))];
+  const roleIds = [...new Set((Array.isArray(req.body.roleIds) ? req.body.roleIds : []).map(Number).filter(Number.isInteger))];
+  if (!usernames.length || !roleIds.length) return res.status(400).json({ error: 'pick at least one person and one role' });
+  if (usernames.length > 200 || roleIds.length > 50) return res.status(400).json({ error: 'that is too many at once' });
+  const serverRoles = new Map((await q(`SELECT id, name, permissions FROM server_roles WHERE server_id = $1`, [serverId])).map(r => [r.id, r]));
+  if (!roleIds.every(id => serverRoles.has(id))) return res.status(400).json({ error: 'one of those roles is not in this server' });
+  const mine = await serverPermissions(req.username, serverId);
+  if (roleIds.some(id => !coversRole(mine, serverRoles.get(id).permissions))) {
+    return res.status(403).json({ error: 'you can only give or take away roles whose permissions you have yourself' });
+  }
+  const members = new Set((await q(`SELECT username FROM server_members WHERE server_id = $1 AND username = ANY($2)`, [serverId, usernames])).map(r => r.username));
+  const missing = usernames.filter(u => !members.has(u));
+  if (missing.length) return res.status(404).json({ error: (missing.length === 1 ? missing[0] + ' is' : missing.length + ' of them are') + ' not in this server' });
+  if (remove) {
+    await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND role_id = ANY($2) AND username = ANY($3)`, [serverId, roleIds, usernames]);
+  } else {
+    await pool.query(
+      `INSERT INTO server_member_roles (server_id, role_id, username)
+       SELECT $1, r, u FROM unnest($2::int[]) AS r CROSS JOIN unnest($3::text[]) AS u ON CONFLICT DO NOTHING`,
+      [serverId, roleIds, usernames]
+    );
+  }
+  await resyncRooms(usernames); // roles can open or close private channels
+  await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+  for (const u of usernames) { sendToUser(u, 'serversChanged', {}); sendToUser(u, 'myRolesChanged', { serverId }); }
+  auditLog(serverId, req.username, remove ? 'roles_removed' : 'roles_given', usernames.join(', ').slice(0, 300), roleIds.map(id => serverRoles.get(id).name).join(', '));
+  res.json({ message: 'ok', usernames, roleIds });
 }));
 
 // Replace the full set of custom roles a member has in this server.

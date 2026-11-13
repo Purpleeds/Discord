@@ -60,7 +60,8 @@ to do next) - read it before a big upgrade and add an entry after one.
   have them all; bots and the default server get none from roles) - never
   with `canManageServer()` for something a role could be allowed. No climbing:
   roles can only be made, edited, given or taken by someone covering all
-  their powers (`coversRole()`), and roles with powers can never be
+  their powers (`coversRole()`) - also for `POST /servers/:id/roles/assign` (several
+  people x several roles, the Roles page's "Add people to roles"), and roles with powers can never be
   auto-assigned or picked from a reaction menu. Making/removing server
   admins and deleting the server stay owner-only. Slowmode, announcement and
   forum posting rules are enforced on the server in `channelPostBlock()`.
@@ -85,6 +86,11 @@ to do next) - read it before a big upgrade and add an entry after one.
   Postgres (`storage 'db'`); bigger ones (up to `ASSET_MAX_MB`, 2 GB) stream to
   `ASSET_DIR` on disk (`storage 'disk'`, `data` NULL) - delete both together.
   `server.requestTimeout = 0` (server.js and relay.js) so big uploads aren't cut off.
+- Banners are drawn only by `paintMediaBanner(el, url, colour, shade, pos)`: the
+  picture/video is a positioned element (`layoutBanner()`), arranged by `banner_pos`
+  ("x,y,zoom", `cleanBannerPos()` on the server; users, servers and server_members)
+  with a blurred copy behind it when it doesn't fill the frame. Editors use
+  `openBannerAdjuster()`; a new upload resets the arrangement.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
   `canViewChannel()` (private channels), with `readableChannelRooms()` /
   `allRoomsFor()` as the bulk version. Never check server membership

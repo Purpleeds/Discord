@@ -60,6 +60,34 @@ The notifier trusts the same certificates as your browser (Windows' own list),
 so antivirus HTTPS scanning doesn't block it, and it falls back to plain
 requests where WebSockets are blocked (since 1.1.1).
 
+## Microsoft Store version
+
+The same app is also built as a Store package (`.appx`, electron-builder's
+`appx` target, `build.appx` in package.json). The Store signs it, so there's
+no SmartScreen warning. Differences in that version (`process.windowsStore`,
+or `CHAT_NOTIFIER_STORE=1` to try it from source):
+
+- **Updates** come from the Store; the built-in updater and the GitHub
+  update check are off.
+- **Start with Windows** is a startup task in the package (on by default);
+  people switch it in Windows Settings > Apps > Startup, which the app's
+  General page and tray link to.
+- Windows starts it at sign-in without `--hidden`, so a signed-in start shows
+  a small "running in the tray" card instead of the window. Opening it again
+  shows the window.
+- Its settings and log live in the package's folder
+  (`%LOCALAPPDATA%\Packages\<package>\LocalCache\Roaming\Chat Notifier`).
+
+**Publishing:** in Partner Center, reserve the app name, then copy *Product
+identity* (Package/Identity Name, Publisher `CN=…`, Publisher display name)
+into the repo's Actions variables `MSSTORE_IDENTITY_NAME`, `MSSTORE_PUBLISHER`,
+`MSSTORE_PUBLISHER_NAME`. Every CI run then builds a matching
+`Chat-Notifier-<version>-store.appx` (artifact `chat-notifier-store-<version>`)
+- upload that file in the submission's Packages step. CI also installs a
+test-signed copy and starts it (`test/store-test.ps1`). Tile images are in
+`assets/appx/`. When submitting, the `runFullTrust` capability needs a short
+reason: "Desktop (Electron) app: tray icon and desktop notifications."
+
 ## How it works
 
 - `main.js` - the tray, the sign-in, one Socket.IO connection to the chat as a

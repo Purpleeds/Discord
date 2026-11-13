@@ -24,6 +24,9 @@ try {
 const certNote = (() => { try { return require('tls').getCACertificates ? 'system certificates on' : 'system certificates unavailable'; } catch (_) { return 'no tls'; } })();
 
 const TEST = process.env.CHAT_NOTIFIER_TEST === '1';
+// The Microsoft Store (MSIX) version: the Store signs and updates it, and
+// Windows runs it at sign-in (a startup task in the package manifest).
+const STORE = !!process.windowsStore || process.env.CHAT_NOTIFIER_STORE === '1';
 if (process.env.CHAT_NOTIFIER_DATA) app.setPath('userData', process.env.CHAT_NOTIFIER_DATA);
 // A small log next to the settings (%APPDATA%\Chat Notifier\notifier.log), so
 // "it doesn't open" or "it won't connect" can be looked into. Never holds the
@@ -48,7 +51,7 @@ function crashed(kind, err) {
 }
 process.on('uncaughtException', err => crashed('uncaught exception:', err));
 process.on('unhandledRejection', err => log('unhandled rejection:', err));
-log('starting', app.getVersion(), process.platform, process.arch, 'electron', process.versions.electron, 'args', process.argv.slice(1).filter(a => !/^--?(inspect|remote-debugging)/.test(a)));
+log('starting', app.getVersion(), (process.windowsStore || process.env.CHAT_NOTIFIER_STORE === '1') ? '(Microsoft Store version)' : '', process.platform, process.arch, 'electron', process.versions.electron, 'args', process.argv.slice(1).filter(a => !/^--?(inspect|remote-debugging)/.test(a)));
 const DEFAULT_SERVER = process.env.CHAT_NOTIFIER_SERVER || 'https://discords-zf2n.onrender.com';
 const RELEASES_URL = process.env.CHAT_NOTIFIER_RELEASES_URL || 'https://api.github.com/repos/Purpleeds/Discord/releases?per_page=20';
 const DEFAULT_CARD_MS = Number(process.env.CHAT_NOTIFIER_CARD_MS) || 6500;
@@ -377,6 +380,7 @@ ipcMain.on('card:open', e => {
   const card = cardFor(e);
   if (!card) return;
   if (card.data.updateReady) { closeCard(card); installUpdateNow(); return; }
+  if (card.data.openSettings) { closeCard(card); openSettings(); return; }
   openLink(card.url, card.external);
   closeCard(card);
 });
@@ -398,6 +402,11 @@ function openLink(url, external) {
   shell.openExternal(text);
 }
 function openChat() { openLink(cfg.server + '/'); }
+// Store version: Windows > Settings > Apps > Startup is where it's switched on or off
+function openStartupSettings() {
+  if (TEST) { global.__openedStartup = true; return; }
+  shell.openExternal('ms-settings:startupapps');
+}
 
 /* ---------------- account ---------------- */
 async function signIn(details) {
@@ -441,6 +450,7 @@ function setPresence(status) {
   socket.emit('setPresence', { status }, r => { if (r && r.presence) { live.presence = r.presence; pushState(); } });
 }
 function applyAutostart() {
+  if (STORE) return; // Windows' own Startup apps setting controls the Store version
   const settings = { openAtLogin: !!cfg.autostart, args: ['--hidden'] };
   if (TEST) { global.__loginItem = settings; return; }
   if (!app.isPackaged) return; // running from source: don't register electron.exe
@@ -495,7 +505,9 @@ function menuTemplate() {
   if (live.updateReady) items.push({ label: 'Restart to update to ' + live.updateReady, click: installUpdateNow }, { type: 'separator' });
   else if (live.update) items.push({ label: 'Download update ' + live.update.version, click: () => openLink(live.update.url, true) }, { type: 'separator' });
   items.push(
-    { label: 'Start with Windows', type: 'checkbox', checked: !!cfg.autostart, click: item => setOption('autostart', item.checked) },
+    STORE
+      ? { label: 'Start with Windows…', click: openStartupSettings }
+      : { label: 'Start with Windows', type: 'checkbox', checked: !!cfg.autostart, click: item => setOption('autostart', item.checked) },
     { label: 'Sign out', enabled: on, click: signOut },
     { label: 'Quit Chat Notifier', click: () => { quitting = true; app.quit(); } }
   );
@@ -523,7 +535,7 @@ function stateForUi() {
     customThemes: cfg.customThemes.map(t => publicTheme({ ...t, builtIn: false })), maxCustomThemes: L.MAX_CUSTOM_THEMES,
     pausedUntil: paused() ? cfg.pausedUntil : 0, version: app.getVersion(), notice: live.notice,
     cardSeconds: CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds : '', autoUpdate: !!cfg.autoUpdate,
-    canAutoUpdate: canAutoUpdate(), updateReady: live.updateReady || ''
+    canAutoUpdate: canAutoUpdate(), updateReady: live.updateReady || '', store: STORE
   };
 }
 const publicTheme = t => ({ id: t.id, name: t.name, bg: t.bg, surface: t.surface, text: t.text, muted: t.muted, builtIn: !!t.builtIn });
@@ -603,6 +615,7 @@ ipcMain.handle('settings:signOut', e => (fromSettings(e) ? signOut() : null));
 ipcMain.handle('settings:set', (e, key, value) => { if (fromSettings(e)) setOption(String(key), value); });
 ipcMain.handle('settings:test', e => { if (fromSettings(e)) testCard(); });
 ipcMain.handle('settings:openChat', e => { if (fromSettings(e)) openChat(); });
+ipcMain.handle('settings:openStartupSettings', e => { if (fromSettings(e)) openStartupSettings(); });
 ipcMain.handle('settings:installUpdate', e => { if (fromSettings(e)) installUpdateNow(); });
 ipcMain.handle('settings:openLog', e => {
   if (!fromSettings(e)) return;
@@ -647,7 +660,7 @@ ipcMain.handle('settings:deleteTheme', (e, id) => {
 // the card / tray ("Restart to update"). The portable .exe and copies run
 // from source can't replace themselves, so they get the offer below instead.
 let autoUpdater = null, updateTimer = null;
-function canAutoUpdate() { return app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR && process.platform === 'win32'; }
+function canAutoUpdate() { return !STORE && app.isPackaged && !process.env.PORTABLE_EXECUTABLE_DIR && process.platform === 'win32'; }
 function startAutoUpdate() {
   clearInterval(updateTimer); updateTimer = null;
   if (!canAutoUpdate() || !cfg.autoUpdate || TEST) return;
@@ -682,6 +695,7 @@ function installUpdateNow() {
 // Looks for a newer "notifier-v1.2.3" release on GitHub and offers it (a card
 // and a tray item). Installing is the person's choice.
 async function checkForUpdate() {
+  if (STORE) return; // the Microsoft Store updates it
   if (canAutoUpdate() && cfg.autoUpdate) return; // handled by the automatic updater
   try {
     const res = await net.fetch(RELEASES_URL, { headers: { accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(15000) });
@@ -726,7 +740,15 @@ if (gotLock) app.whenReady().then(() => {
   updateTray();
   if (signedIn()) connect();
   // started by hand (not at Windows sign-in): show that it's running
-  if (!signedIn() || !process.argv.includes('--hidden')) openSettings();
+  if (!signedIn()) openSettings();
+  else if (STORE) {
+    // Windows starts the Store version at sign-in without telling it so (no
+    // --hidden): say it's running instead of putting a window in the way.
+    // Opening it again from the Start menu shows the window.
+    showCard({ key: 'running', openSettings: true, name: 'Chat Notifier', colourKey: 'Chat Notifier',
+      avatar: nativeImage.createFromPath(ICON).resize({ width: 84, height: 84 }).toDataURL(),
+      where: 'Running in the tray', tags: [], text: 'Pop-ups are on. Click here for settings, or use the tray icon.', url: '' });
+  } else if (!process.argv.includes('--hidden')) openSettings();
   log('ready:', signedIn() ? 'signed in' : 'signed out', process.argv.includes('--hidden') ? '(started hidden)' : '');
   powerMonitor.on('resume', () => { if (socket && !socket.connected) socket.connect(); });
   startAutoUpdate();

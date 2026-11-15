@@ -1383,7 +1383,11 @@ html[data-theme="light"] #desk::after{mix-blend-mode:multiply;background:radial-
 #sidebarHeader:hover{background:var(--hover);}
 #sidebarChev{font-family:var(--font-ui);font-size:15px;color:var(--text-muted);transition:transform .2s var(--ease-out);}
 #sidebarHeader:hover #sidebarChev{transform:translateY(1px);}
-#sidebarHeader.hasBanner{height:150px;flex-basis:150px;padding-top:16px;border-bottom:none;}
+/* the server banner is 6:5 of the sidebar's width (220px in a 264px sidebar) -
+   the same shape as its Arrange editor and the settings preview */
+#sidebar{container-type:inline-size;}
+#sidebarHeader.hasBanner{height:calc(100cqw * 5 / 6);flex-basis:calc(100cqw * 5 / 6);padding-top:16px;border-bottom:none;}
+.bannerPreview{height:auto;aspect-ratio:6 / 5;max-width:264px;}
 #sidebarHeader.hasBanner #sidebarChev{color:#fff;}
 #sidebarHeader.hasBanner.collapsed{height:64px;flex-basis:64px;}
 #sidebarBody{padding:10px 10px 16px;}
@@ -10471,7 +10475,7 @@ function renderServerOverview(c, sid){
   $('ovRemove').onclick = () => { draft.iconUrl = ''; changed(); };
   $('ovUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickImageFile(url => { draft.iconUrl = url; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
   $('ovBannerRemove').onclick = () => { draft.bannerUrl = ''; draft.bannerPos = ''; changed(); };
-  $('ovBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '264 / 150', pos => { draft.bannerPos = pos; changed(); });
+  $('ovBannerAdjust').onclick = () => openBannerAdjuster(draft.bannerUrl, draft.bannerPos, '6 / 5', pos => { draft.bannerPos = pos; changed(); });
   $('ovBannerUpload').onclick = () => { inlineMessage($('ovMsg'), 'Uploading…'); pickMediaFile(true, url => { draft.bannerUrl = url; draft.bannerPos = ''; inlineMessage($('ovMsg'), ''); changed(); }, msg => inlineMessage($('ovMsg'), msg, true)); };
   paintIcon(); paintBanner(); paintCount();
 }

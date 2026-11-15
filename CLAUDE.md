@@ -97,7 +97,8 @@ to do next) - read it before a big upgrade and add an entry after one.
   `/avatars/` need an image. A new still without `avatarVideo` clears the video.
   `removeUnusedAssets()` must count `avatar_video` as in use. Client: `addAvatarVideo()`
   - profile cards autoplay, small avatars play while their row is pointed at.
-  Profile card banners are 17:6 (the Arrange frame's shape). `regression/video_avatars.test.js`.
+  Profile card banners are 17:6 and server banners 6:5 of the sidebar width (`cqw`) -
+  each the same shape as its Arrange frame and settings preview. `regression/video_avatars.test.js`.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
   `canViewChannel()` (private channels), with `readableChannelRooms()` /
   `allRoomsFor()` as the bulk version. Never check server membership

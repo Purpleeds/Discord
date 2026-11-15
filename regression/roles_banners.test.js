@@ -103,6 +103,11 @@ const { BASE, CHROME, SHOTS, check, sleep, get, post, reg, done, uid } = require
   check('server banners keep an arrangement', (await post(`/servers/${sid}/update`, O, { name: 'Roles ' + id, bannerUrl: asset.url, bannerPos: '20,40,1.5' })).status === 200 && (await get('/servers', O)).data.find(s => s.id === sid).bannerPos === '20,40,1.5');
   check('…and so do in-server profile banners', (await post(`/servers/${sid}/profile`, O, { bannerUrl: asset.url, bannerPos: '10,10,0.8' })).data.bannerPos === '10,10,0.8');
 
+  // the server banner is 6:5 in the sidebar, like its Arrange frame and the settings preview
+  await page.keyboard.press('Escape');
+  await page.evaluate(s => { closeModal(); switchServer(s); }, sid); await sleep(1200);
+  const side = await page.evaluate(() => { const h = $('sidebarHeader'); const r = h.getBoundingClientRect(); return { banner: h.classList.contains('hasBanner'), ratio: r.width / r.height }; });
+  check('the sidebar server banner is 6:5 (the Arrange shape)', side.banner && Math.abs(side.ratio - 6 / 5) < 0.03, side);
   check('no page errors', errors.length === 0, errors);
   await browser.close();
   done();

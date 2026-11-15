@@ -1099,9 +1099,12 @@ html.compact .systemMessage .msgGutter{display:flex;width:auto;flex:0 0 auto;mar
 /* ---------------- voice + video calls ---------------- */
 .callPanel{display:none;flex-direction:column;gap:12px;padding:14px 16px;background:var(--bg-floating);border-bottom:1px solid var(--divider);max-height:62vh;}
 .callPanel.show{display:flex;}
-.callGrid{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;overflow-y:auto;min-height:0;}
+.callGrid{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;overflow-y:auto;min-height:0;padding:3px;}
 .callTile{position:relative;width:180px;height:120px;border-radius:10px;background:var(--bg-tertiary);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 0 0 2px transparent;transition:box-shadow .12s ease;}
-.callTile.speaking{box-shadow:0 0 0 3px var(--green);}
+/* the speaking ring is drawn INSIDE the tile, over any video: an outside ring
+   was cut off at the top and bottom by the scrolling grid */
+.callTile::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 3px var(--green);opacity:0;transition:opacity .12s ease;pointer-events:none;z-index:4;}
+.callTile.speaking::after{opacity:1;}
 .callTile .avatarWrap .avatar,.callTile > .avatarWrap{width:64px;height:64px;font-size:24px;}
 .callTile.hasVideo{width:280px;height:158px;background:#000;}
 .callTile video{width:100%;height:100%;object-fit:cover;}
@@ -1154,7 +1157,8 @@ video.mirror{transform:scaleX(-1);}
 .voiceMember{display:flex;align-items:center;gap:8px;padding:3px 8px 3px 30px;margin-bottom:1px;border-radius:4px;color:var(--text-muted);font-size:14px;cursor:pointer;}
 .voiceMember:hover{background:var(--hover);color:var(--text);}
 .voiceMember .avatarWrap{border-radius:50%;box-shadow:0 0 0 2px transparent;}
-.voiceMember.speaking .avatarWrap{box-shadow:0 0 0 2px var(--green);}
+.voiceMember .avatarWrap .avatar{transition:box-shadow .12s ease;}
+.voiceMember.speaking .avatarWrap .avatar{box-shadow:0 0 0 2px var(--green);} /* on the picture itself, so it follows its shape (round or rounded square) */
 .vmIcons{display:flex;align-items:center;gap:3px;margin-left:auto;}
 .vmIcons svg{width:14px;height:14px;}
 .liveTag{font-size:10px;font-weight:700;color:#fff;background:var(--red);border-radius:3px;padding:0 4px;}

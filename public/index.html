@@ -1734,6 +1734,10 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .deviceRow.current{border-color:color-mix(in srgb,var(--brand) 55%,transparent);}
 .deviceIcon{width:42px;height:42px;flex:none;display:grid;place-items:center;border-radius:12px;background:var(--raised-2);color:var(--text-muted);}
 .deviceRow.current .deviceIcon{color:var(--brand);}
+.bridgeKey{margin:0 0 12px;padding:12px;border-radius:12px;background:var(--bg-input);border:1px solid var(--line-strong);}
+.bridgeKey .settingsInput{flex:1;font-family:ui-monospace,monospace;font-size:13px;}
+.bridgeKey .switchDesc{margin-top:8px;}
+.sourceTag{float:right;margin:2px 0 0 12px;padding:1px 7px;border-radius:999px;background:var(--bg-input);color:var(--text-muted);font-size:11px;font-weight:600;line-height:1.5;user-select:none;}
 .seenRow{display:flex;justify-content:flex-end;align-items:center;margin-top:3px;user-select:none;}
 .seenText{font-size:11.5px;color:var(--text-muted);font-weight:600;}
 .seenFaces{gap:0;}
@@ -4447,6 +4451,15 @@ function buildMessageEl(item, grouped){
   }else{
     if(data.persona){
       gutter.appendChild(personaAvatar(data));
+    }else if(data.source && data.avatarUrl){
+      // someone on Discord (the Discord bridge): their Discord picture
+      const wrapA = document.createElement('div');
+      wrapA.className = 'avatarWrap onChat';
+      const av = document.createElement('div');
+      av.className = 'avatar';
+      paintAvatarFrom(av, data.displayName || 'Discord', data.avatarUrl);
+      wrapA.appendChild(av);
+      gutter.appendChild(wrapA);
     }else if(data.bot){
       gutter.appendChild(botAvatar(data.displayName, '', 'onChat'));
     }else{
@@ -4463,6 +4476,13 @@ function buildMessageEl(item, grouped){
   const body = document.createElement('div');
   body.className = 'msgBody';
 
+  if(data.source === 'discord'){
+    const tag = document.createElement('span');
+    tag.className = 'sourceTag';
+    tag.textContent = 'from Discord';
+    tag.title = 'Sent on Discord, in the linked #cross-platform channel';
+    body.appendChild(tag);
+  }
   if(item.kind === 'message' && data.replyTo){
     const reply = document.createElement('div');
     reply.className = 'replyPreview';
@@ -4494,6 +4514,12 @@ function buildMessageEl(item, grouped){
       tag.title = author.title;
       head.appendChild(tag);
       head.appendChild(Object.assign(document.createElement('span'), { className:'personaBy', textContent:'by ' + displayNameFor(data.user) }));
+    }else if(data.source === 'discord'){
+      // someone on Discord, through the Discord bridge (the tag is on the right)
+      author.className = 'msgAuthor';
+      author.textContent = data.displayName || 'Someone on Discord';
+      author.title = data.displayName + ' on Discord - brought here by the Discord bridge';
+      head.appendChild(author);
     }else if(data.bot){
       // a webhook: its own name, a BOT tag, and no profile to open
       author.className = 'msgAuthor';
@@ -10238,6 +10264,7 @@ function paintSiteAdminPage(data){
       '<div class="switchDesc" style="margin-top:8px">' + (data.canManageAdmins ? 'You can add and remove site admins.' : 'Any site admin can add one. Only Purple can remove a site admin, or mute, kick or ban one.') + '</div>') +
     section('Banned', '<div class="deviceList" id="siteBannedList"></div>') +
     section('Muted', '<div class="deviceList" id="siteMutedList"></div>') +
+    section('Discord bridge', '<div id="bridgeBox"><div class="switchDesc">Loading…</div></div>') +
     section('Content filter', switchRow('globalCensorToggle', 'Censor swear words everywhere, for everyone', 'Overrides every server and personal setting while it\'s on.', data.globalCensor)) +
     '<div class="inlineMsg" id="siteAdminMsg"></div>';
   const admins = $('siteAdminList');
@@ -10265,6 +10292,63 @@ function paintSiteAdminPage(data){
   if(!data.muted.length) muted.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'Nobody is muted.' }));
   data.muted.forEach(m => muted.appendChild(siteAdminRow(m.username, 'Muted until ' + parseTime(m.until).toLocaleString([], { weekday:'short', hour:'2-digit', minute:'2-digit' }) + (m.by ? ' by ' + m.by : ''), '', siteAdminButton('Unmute', false, () => siteAdminEmit('unmute', { username:m.username })))));
   $('globalCensorToggle').onchange = e => setGlobalCensor(e.target.checked);
+  paintBridgeBox();
+}
+// The Discord bridge (see DISCORD_BRIDGE.md): links #cross-platform here with
+// a channel on real Discord. Turning it on makes the channel and shows a key
+// once - it goes in the Render service as DISCORDS_BRIDGE_KEY.
+async function paintBridgeBox(shownKey){
+  const box = $('bridgeBox');
+  if(!box) return;
+  let st;
+  try{ const r = await fetch('/admin/bridge', { headers: bearer() }); st = await r.json(); if(!r.ok) throw new Error(st.error); }
+  catch(e){ box.innerHTML = '<div class="switchDesc">Couldn\'t load the bridge settings.</div>'; return; }
+  if(!$('bridgeBox')) return;
+  box.innerHTML = '';
+  const desc = document.createElement('div');
+  desc.className = 'switchDesc';
+  desc.style.marginBottom = '12px';
+  desc.textContent = st.on
+    ? (st.connected ? 'On and connected: #' + st.channel + ' here is linked with #cross-platform on Discord.' : 'On, but the bridge isn\'t connected right now. #' + st.channel + ' is ready; check the Render settings (DISCORD_BOT_TOKEN and DISCORDS_BRIDGE_KEY).')
+    : 'Links a #cross-platform channel here with one on your Discord server: messages from here appear there with the person\'s name and picture, and Discord messages appear here marked "from Discord". It runs on Render, not your PC or NAS.';
+  box.appendChild(desc);
+  if(shownKey){
+    const keyBox = document.createElement('div');
+    keyBox.className = 'bridgeKey';
+    keyBox.innerHTML = '<div class="fieldLabel">Bridge key - copy it now, it won\'t be shown again</div>';
+    const input = Object.assign(document.createElement('input'), { className:'settingsInput', value:shownKey, readOnly:true });
+    input.onclick = () => input.select();
+    const copy = Object.assign(document.createElement('button'), { className:'btn', textContent:'Copy' });
+    copy.onclick = async () => { try{ await navigator.clipboard.writeText(shownKey); toast('Bridge key copied'); }catch(e){ input.select(); } };
+    const row = document.createElement('div'); row.className = 'rowFlex'; row.appendChild(input); row.appendChild(copy);
+    keyBox.appendChild(row);
+    keyBox.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'In Render: your service > Environment > add DISCORDS_BRIDGE_KEY with this value (and DISCORD_BOT_TOKEN from the Discord Developer Portal), then save.' }));
+    box.appendChild(keyBox);
+  }
+  const buttons = document.createElement('div');
+  buttons.className = 'rowFlex';
+  const on = Object.assign(document.createElement('button'), { className:'btn', textContent: st.on ? 'New bridge key' : 'Turn on the Discord bridge' });
+  on.onclick = async () => {
+    if(st.on && !confirm('Make a new bridge key? The old one stops working until you put the new one in Render.')) return;
+    try{
+      const r = await fetch('/admin/bridge', { method:'POST', headers:authHeaders(), body:'{}' });
+      const data = await r.json();
+      if(!r.ok) throw new Error(data.error || 'Could not turn it on');
+      await loadServers();
+      paintBridgeBox(data.key);
+    }catch(err){ toast(err.message); }
+  };
+  buttons.appendChild(on);
+  if(st.on){
+    const off = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Turn off' });
+    off.onclick = async () => {
+      if(!confirm('Turn off the Discord bridge? #cross-platform stays, but nothing is passed between the two any more.')) return;
+      await fetch('/admin/bridge/off', { method:'POST', headers:authHeaders(), body:'{}' });
+      paintBridgeBox();
+    };
+    buttons.appendChild(off);
+  }
+  box.appendChild(buttons);
 }
 
 /* ============================ server settings ============================ */

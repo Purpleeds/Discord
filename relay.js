@@ -122,6 +122,23 @@ server.keepAliveTimeout = 65 * 1000;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Relay running on port ${PORT}, passing everything to ${target.origin}`);
 });
-const stop = () => server.close(() => process.exit(0));
+
+// The Discord bridge (discord-bridge.js, DISCORD_BRIDGE.md) runs here too, so
+// it's online whenever the relay is - no PC or NAS needed to run it.
+let bridge = null;
+if (process.env.DISCORD_BOT_TOKEN && process.env.DISCORDS_BRIDGE_KEY) {
+  try {
+    bridge = require('./discord-bridge').startDiscordBridge({
+      chatUrl: target.origin,
+      publicUrl: process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || target.origin,
+      botToken: process.env.DISCORD_BOT_TOKEN,
+      bridgeKey: process.env.DISCORDS_BRIDGE_KEY,
+      guildId: process.env.DISCORD_GUILD_ID || ''
+    });
+  } catch (err) { console.error('[bridge] could not start:', err.message); }
+} else if (process.env.DISCORD_BOT_TOKEN || process.env.DISCORDS_BRIDGE_KEY) {
+  console.warn('[bridge] needs both DISCORD_BOT_TOKEN and DISCORDS_BRIDGE_KEY - not started');
+}
+const stop = () => { if (bridge) bridge.stop(); server.close(() => process.exit(0)); };
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);

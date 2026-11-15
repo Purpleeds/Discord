@@ -26,6 +26,8 @@ to do next) - read it before a big upgrade and add an entry after one.
   start (skipped when `.version` already matches) - and with `AUTO_UPDATE_REPO`
   the server polls GitHub and restarts itself after a merge (waits for calls),
   and open pages reload when `serverInfo.version` changes.
+- `discord-bridge.js`: the Discord bridge bot (discord.js), run by `relay.js` on
+  Render when `DISCORD_BOT_TOKEN` + `DISCORDS_BRIDGE_KEY` are set - see DISCORD_BRIDGE.md.
 - `public/sw.js`: Web Push service worker.
 - `desktop/`: the Chat Notifier, a Windows tray program (Electron) - see
   desktop/README.md. Released by `.github/workflows/notifier.yml`.
@@ -126,6 +128,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   token once, compare with `webhookTokenMatches()` (constant time). Webhook
   messages are `"user" = 'webhook:<id>'` (never a real username) with
   `bot: true`; they never ping and the client shows no profile for them.
+- Discord bridge: one `bridges` row (key as `sha256Hex` only, `bridgeKeyMatches()`)
+  links #cross-platform in the original chat with Discord. Bridged messages are
+  `"user" = 'bridge:discord'`, `source = 'discord'` (+ `author_name`, `author_avatar`,
+  Discord CDN pictures only): bot messages, no profile, never ping; `bridgeOut()` sends
+  people's messages in that room to the `/bridge` namespace and never sends bridged ones
+  back (no loops). The client shows a "from Discord" tag (`.sourceTag`).
+  `regression/discord_bridge.test.js`.
 - Message kinds made by the server (`roll`, `command`, `call`, `join`,
   `event`, `poll`) can't be edited - `editMessage` refuses any `kind`.
 - Anything that fetches a URL a user supplied must go through the

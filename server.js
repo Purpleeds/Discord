@@ -730,6 +730,20 @@ async function setupSchema() {
   // video profile pictures: an /assets/ MP4/WEBM; avatar_url keeps a still
   // picture (its first frame) for push notifications, the notifier and /avatars
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_video TEXT`);
+  // Bridged messages (the Discord bridge): source = 'discord', the Discord
+  // person's name in author_name and picture in author_avatar
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS source TEXT`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS author_avatar TEXT`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bridges (
+      platform TEXT PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      channel_id INTEGER NOT NULL,
+      key_hash TEXT NOT NULL,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ
+    )`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS avatar_video TEXT`);
   await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
@@ -1026,7 +1040,7 @@ async function getMessageById(id) {
 async function getMessagesForRoom(room, limit = 300) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, sticker_id, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, sticker_id, source, author_avatar, created_at
        FROM messages WHERE room = $1 ORDER BY id DESC LIMIT $2
      ) recent ORDER BY id ASC`,
     [room, limit]
@@ -1035,7 +1049,7 @@ async function getMessagesForRoom(room, limit = 300) {
 async function getMessagesBefore(room, beforeId, limit) {
   return q(
     `SELECT * FROM (
-       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, sticker_id, created_at
+       SELECT id, room, "user", text, to_user, is_group, reply_to, edited_at, deleted_at, deleted_by, pinned_at, pinned_by, kind, mentions_everyone, mention_role_ids, webhook_id, author_name, command_name, invoked_by, persona, persona_avatar, sticker_id, source, author_avatar, created_at
        FROM messages WHERE room = $1 AND id < $2 ORDER BY id DESC LIMIT $3
      ) older ORDER BY id ASC`,
     [room, beforeId, limit]
@@ -1979,16 +1993,16 @@ async function replyPreviews(ids) {
   const out = new Map();
   const wanted = [...new Set(ids.filter(Boolean))];
   if (!wanted.length) return out;
-  const rows = await q(`SELECT id, room, "user", left(text, 180) AS text, deleted_at, webhook_id, author_name FROM messages WHERE id = ANY($1)`, [wanted]);
+  const rows = await q(`SELECT id, room, "user", left(text, 180) AS text, deleted_at, webhook_id, author_name, source FROM messages WHERE id = ANY($1)`, [wanted]);
   const [authors, serverLooks] = await Promise.all([getUsers(rows.map(r => r.user)), serverLooksFor(rows)]);
   for (const row of rows) {
     const u = row.webhook_id ? null : authors.get(row.user);
     out.set(row.id, {
       id: row.id,
       user: row.user,
-      bot: !!row.webhook_id,
-      displayName: row.webhook_id ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
-      avatarUrl: row.webhook_id ? '' : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
+      bot: !!row.webhook_id || !!row.source,
+      displayName: row.webhook_id || row.source ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
+      avatarUrl: row.webhook_id || row.source ? '' : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
       text: row.deleted_at ? '[message deleted]' : String(row.text || '')
     });
   }
@@ -2093,18 +2107,20 @@ async function normaliseMessages(rows) {
   }
   return rows.map(row => {
     const deleted = !!row.deleted_at;
-    const u = row.webhook_id ? null : authors.get(row.user);
+    const u = row.webhook_id || row.source ? null : authors.get(row.user);
     return {
       id: row.id,
       room: row.room,
       user: row.user,
-      // webhook posts show their own name, always marked as a bot
-      bot: !!row.webhook_id,
+      // webhook posts show their own name, always marked as a bot; bridged
+      // ones (source 'discord') are someone on Discord, labelled as such
+      bot: !!row.webhook_id || !!row.source,
+      source: row.source || '',
       botAccount: !!(u && u.is_bot), // written by a bot account (has a profile, unlike webhooks)
       webhookId: row.webhook_id || null,
-      displayName: row.webhook_id || row.persona ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
-      avatarUrl: row.webhook_id ? '' : row.persona ? (row.persona_avatar || '') : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
-      avatarVideo: row.webhook_id || row.persona ? '' : (() => { const look = serverLooks.get(row.room + '\n' + row.user); return look && look.avatarUrl ? (look.avatarVideo || '') : ((u && u.avatar_video) || ''); })(),
+      displayName: row.webhook_id || row.persona || row.source ? (row.author_name || 'Webhook') : ((serverLooks.get(row.room + '\n' + row.user) || {}).nickname || (u ? (u.display_name || u.username) : row.user)),
+      avatarUrl: row.source ? (row.author_avatar || '') : row.webhook_id ? '' : row.persona ? (row.persona_avatar || '') : ((serverLooks.get(row.room + '\n' + row.user) || {}).avatarUrl || (u ? avatarUrlOf(u) : '')),
+      avatarVideo: row.webhook_id || row.persona || row.source ? '' : (() => { const look = serverLooks.get(row.room + '\n' + row.user); return look && look.avatarUrl ? (look.avatarVideo || '') : ((u && u.avatar_video) || ''); })(),
       // (personas were removed; messages posted as one keep their label)
       persona: !!row.persona,
       attachments: deleted ? [] : (attachmentsBy.get(row.id) || []),
@@ -3674,6 +3690,121 @@ app.post('/api/webhooks/:id/:token', route(async (req, res) => {
     return res.json({ id: String(msg.id), type: 0, channel_id: String(channel.id), content: msg.text, timestamp: msg.createdAt, author: { id: String(hook.id), username: name, bot: true } });
   }
   res.status(204).end();
+}));
+
+// ---------------- DISCORD BRIDGE ----------------
+// Links one channel here (#cross-platform in the original chat) with a channel
+// on real Discord. The Discord side runs in the Render relay (discord-bridge.js),
+// not here: it holds the Discord bot login. A site admin turns it on in
+// Settings > Site Admin, which makes the channel and shows a bridge key once
+// (stored here only as its hash, like webhook tokens). The relay uses the key:
+//   GET  /bridge/discord            -> which channel
+//   POST /bridge/discord/messages   -> a Discord message, posted here labelled "from Discord"
+//   socket.io namespace /bridge     -> people's messages in that channel, to send to Discord
+// Bridged messages are bot messages (no profile, never ping anyone).
+const BRIDGE_CHANNEL_NAME = 'cross-platform';
+const DISCORD_AVATAR_RE = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\/[A-Za-z0-9_./?=&%-]{1,400}$/;
+let bridgeCache = { at: 0, row: null };
+function bridgeKeyMatches(key, hash) {
+  if (!/^brg_[A-Za-z0-9_-]{20,60}$/.test(String(key || '')) || !hash) return false;
+  const a = Buffer.from(sha256Hex(key), 'hex');
+  const b = Buffer.from(String(hash), 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+async function discordBridge() {
+  if (Date.now() - bridgeCache.at < 10000) return bridgeCache.row;
+  const row = await one(`SELECT b.*, c.room FROM bridges b JOIN server_channels c ON c.id = b.channel_id WHERE b.platform = 'discord'`);
+  bridgeCache = { at: Date.now(), row: row || null };
+  return bridgeCache.row;
+}
+async function bridgeFromRequest(req) {
+  const header = String(req.headers['x-bridge-key'] || '');
+  const bridge = await discordBridge();
+  if (!bridge || !header) return null;
+  return bridgeKeyMatches(header, bridge.key_hash) ? bridge : null;
+}
+const bridgeNs = io.of('/bridge');
+bridgeNs.use(async (socket, next) => {
+  try {
+    const key = String((socket.handshake.auth && socket.handshake.auth.key) || '');
+    const bridge = await discordBridge();
+    if (!bridge || !key || !bridgeKeyMatches(key, bridge.key_hash)) return next(new Error('not authenticated'));
+    socket.data.room = bridge.room;
+    next();
+  } catch (err) { next(new Error('bridge unavailable')); }
+});
+bridgeNs.on('connection', socket => {
+  pool.query(`UPDATE bridges SET last_seen_at = NOW() WHERE platform = 'discord'`).catch(() => {});
+  socket.emit('ready', { room: socket.data.room, channel: BRIDGE_CHANNEL_NAME });
+});
+function bridgeOut(msg) {
+  if (!msg || msg.source) return; // never send a bridged message back where it came from
+  const bridge = bridgeCache.row;
+  if (!bridge || msg.room !== bridge.room) return;
+  bridgeNs.emit('message', {
+    id: msg.id, user: msg.user, displayName: msg.displayName, avatarUrl: msg.avatarUrl || '',
+    text: msg.text || '', createdAt: msg.createdAt,
+    attachments: (msg.attachments || []).map(a => ({ name: a.name, url: a.url })),
+    sticker: msg.sticker && msg.sticker.url ? { name: msg.sticker.name, url: msg.sticker.url } : null
+  });
+}
+app.get('/bridge/discord', route(async (req, res) => {
+  const bridge = await bridgeFromRequest(req);
+  if (!bridge) return res.status(401).json({ error: 'bad bridge key' });
+  pool.query(`UPDATE bridges SET last_seen_at = NOW() WHERE platform = 'discord'`).catch(() => {});
+  res.json({ room: bridge.room, channel: BRIDGE_CHANNEL_NAME });
+}));
+app.post('/bridge/discord/messages', route(async (req, res) => {
+  if (rateLimited('bridgeip:' + req.ip, 120, 60 * 1000)) return res.status(429).json({ error: 'slow down' });
+  const bridge = await bridgeFromRequest(req);
+  if (!bridge) return res.status(401).json({ error: 'bad bridge key' });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const text = cleanText(body.text, 4000);
+  if (!text) return res.status(400).json({ error: 'empty message' });
+  const name = cleanBotName(body.authorName) || 'Someone on Discord';
+  const avatar = DISCORD_AVATAR_RE.test(String(body.avatarUrl || '')) ? String(body.avatarUrl) : '';
+  const created = await one(
+    `INSERT INTO messages (room, "user", text, is_group, author_name, source, author_avatar) VALUES ($1, 'bridge:discord', $2, 0, $3, 'discord', $4) RETURNING *`,
+    [bridge.room, text, name, avatar]
+  );
+  const msg = await normaliseMessage(created);
+  io.to(bridge.room).emit('message', msg);
+  res.json({ id: msg.id });
+}));
+// Site admins: turn it on (makes #cross-platform, gives a key), see it, turn it off.
+app.get('/admin/bridge', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const bridge = await discordBridge();
+  const connected = [...bridgeNs.sockets.values()].length > 0;
+  res.json(bridge ? { on: true, channel: BRIDGE_CHANNEL_NAME, room: bridge.room, connected, lastSeenAt: bridge.last_seen_at, createdBy: bridge.created_by } : { on: false, connected: false });
+}));
+app.post('/admin/bridge', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const serverId = DEFAULT_SERVER.id;
+  let channel = await one(`SELECT * FROM server_channels WHERE server_id = $1 AND name = $2`, [serverId, BRIDGE_CHANNEL_NAME]);
+  if (!channel) {
+    if (!(await getChannelByRoom(BRIDGE_CHANNEL_NAME))) await insertChannel(BRIDGE_CHANNEL_NAME, req.username);
+    channel = await insertServerChannel(serverId, BRIDGE_CHANNEL_NAME, BRIDGE_CHANNEL_NAME, (await getChannelsForServer(serverId)).length, req.username);
+    await pool.query(`UPDATE server_channels SET topic = $1 WHERE id = $2`, ['Linked with Discord: messages here appear there, and theirs appear here marked "from Discord".', channel.id]).catch(() => {});
+    io.emit('serversChanged', {});
+  }
+  const key = 'brg_' + crypto.randomBytes(24).toString('base64url');
+  await pool.query(
+    `INSERT INTO bridges (platform, server_id, channel_id, key_hash, created_by) VALUES ('discord', $1, $2, $3, $4)
+     ON CONFLICT (platform) DO UPDATE SET server_id = EXCLUDED.server_id, channel_id = EXCLUDED.channel_id, key_hash = EXCLUDED.key_hash, created_by = EXCLUDED.created_by, created_at = NOW(), last_seen_at = NULL`,
+    [serverId, channel.id, sha256Hex(key), req.username]
+  );
+  bridgeCache = { at: 0, row: null };
+  for (const s of bridgeNs.sockets.values()) s.disconnect(true); // an old key stops working now
+  await discordBridge();
+  res.json({ key, channel: BRIDGE_CHANNEL_NAME, room: channel.room });
+}));
+app.post('/admin/bridge/off', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  await pool.query(`DELETE FROM bridges WHERE platform = 'discord'`);
+  bridgeCache = { at: 0, row: null };
+  for (const s of bridgeNs.sockets.values()) s.disconnect(true);
+  res.json({ on: false });
 }));
 
 // ---- managing webhooks (server admins)
@@ -6151,6 +6282,7 @@ io.on('connection', (socket) => {
     if (sticker) created = await one(`UPDATE messages SET sticker_id = $1 WHERE id = $2 RETURNING *`, [sticker.id, created.id]);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
+    bridgeOut(msg);
     await touchThread(room).catch(err => console.error('touchThread failed:', err.message)); // before the reply, so the thread's count is right when the sender reads it
     pushMentions(room, text, socket.username, mentions, msg).catch(err => console.error('pushMentions failed:', err.message));
     if (typeof ack === 'function') ack({ message: 'ok', id: msg.id });

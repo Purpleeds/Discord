@@ -38,6 +38,7 @@ function paint(next) {
   $('signedIn').hidden = !state.signedIn;
   if (!state.signedIn) {
     if (!$('server').value) $('server').value = state.server;
+    $('useChatWindow').hidden = state.openIn !== 'app';
     if (state.notice) showMsg(state.notice, false);
     if (window.ColourPicker && ColourPicker.isOpen()) ColourPicker.close(false);
     editing = null;
@@ -47,6 +48,7 @@ function paint(next) {
   document.querySelectorAll('input[name=mode]').forEach(r => { r.checked = r.value === state.mode; });
   document.querySelectorAll('#cardTime button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.value === String(state.cardSeconds))));
   $('autostart').checked = state.autostart;
+  $('openIn').value = state.openIn;
   $('autoUpdate').checked = state.autoUpdate;
   $('autoUpdateRow').hidden = !state.canAutoUpdate;
   $('autostartRow').hidden = !!state.store;
@@ -248,6 +250,8 @@ try { const last = localStorage.getItem('page'); if (last && document.querySelec
 $('signOut').addEventListener('click', () => notifier.signOut());
 document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => notifier.set('mode', r.value)));
 $('cardTime').addEventListener('click', e => { const b = e.target.closest('button[data-value]'); if (b) notifier.set('cardSeconds', b.dataset.value); });
+$('openIn').addEventListener('change', () => notifier.set('openIn', $('openIn').value));
+$('useChatWindow').addEventListener('click', () => notifier.openChat());
 $('autostart').addEventListener('change', () => notifier.set('autostart', $('autostart').checked));
 $('autoUpdate').addEventListener('change', () => notifier.set('autoUpdate', $('autoUpdate').checked));
 $('installNow').addEventListener('click', () => notifier.installUpdate());

@@ -1208,6 +1208,7 @@ function deviceLabel(userAgent) {
   if (!ua) return 'Unknown device';
   let browser = 'Browser';
   if (/ChatNotifier\//.test(ua)) browser = 'Chat Notifier';
+  else if (/ChatDesktop\//.test(ua)) browser = 'Chat app'; // the Windows app's chat window (desktop/)
   else if (/Edg(e|A|iOS)?\//.test(ua)) browser = 'Edge';
   else if (/OPR\/|Opera/.test(ua)) browser = 'Opera';
   else if (/SamsungBrowser\//.test(ua)) browser = 'Samsung Internet';

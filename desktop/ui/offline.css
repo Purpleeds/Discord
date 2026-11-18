@@ -1,0 +1,11 @@
+[hidden]{display:none !important;}
+*{box-sizing:border-box;}
+html,body{margin:0;height:100%;background:var(--floating);color:var(--text);font:14px/1.45 var(--font-ui);-webkit-font-smoothing:antialiased;}
+body{display:flex;flex-direction:column;overflow:hidden;}
+button,input{font:inherit;color:inherit;}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
+main{flex:1;display:grid;place-content:center;justify-items:center;gap:6px;text-align:center;padding:24px;}
+img{width:72px;height:72px;margin-bottom:10px;}
+h1{margin:0;font:700 22px var(--font-display);color:var(--bright);}
+p{margin:0;color:var(--muted);max-width:44ch;}
+.why{font-size:12px;opacity:.8;}

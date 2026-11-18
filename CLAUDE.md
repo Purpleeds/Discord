@@ -136,6 +136,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   The speaking ring is drawn inside the tile (`.callTile::after`, inset) and on the
   picture itself in the voice channel list; `regression/call_looks.test.js` checks
   both (and video profile pictures in calls) on real screenshots.
+- Bigger calls (SFU): with `LIVEKIT_URL` + key, group calls and voice channels
+  carry media through LiveKit (`call.sfu`); DMs stay mesh. The chat stays the
+  only judge of who's in a call - LiveKit tokens (`sfuJoinToken()`) are
+  10-minute, one-room, issued only from `voice:join` after `callJoinProblem()`;
+  `leaveCall()` also removes them from LiveKit, `sweepSfuRooms()` drops
+  strays. Only `/livekit/rtc...` is proxied to LiveKit, never its API.
+  `regression/sfu_calls.test.js`.
 - Webhook tokens are passwords: store only `sha256Hex(token)`, show the
   token once, compare with `webhookTokenMatches()` (constant time). Webhook
   messages are `"user" = 'webhook:<id>'` (never a real username) with

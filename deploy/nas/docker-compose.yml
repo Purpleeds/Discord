@@ -1,4 +1,5 @@
-# The chat on a NAS: app + database + public address + call relay.
+# The chat on a NAS: app + database + public address + call relay + call
+# media server (for group calls and voice channels of up to 25 people).
 # Paste into the NAS's Docker app (Project > Create, name it "chat") and fill
 # in the settings below. Guide: deploy/nas/README.md
 name: chat
@@ -93,6 +94,11 @@ services:
       # a full backup (database + files) every day, into ./backups below;
       # Settings > Backups in the chat shows them (BACKUPS.md)
       BACKUP_DIR: /backups
+      # group calls and voice channels go through the media server below
+      # (reached at the "turn" container, whose network it shares); remove
+      # these two lines to go back to direct calls (8 people max)
+      LIVEKIT_URL: http://turn:7880
+      LIVEKIT_KEY_FILE: /shared/livekit-keys.yaml
     volumes:
       - chat-code:/app
       - chat-files:/data
@@ -110,6 +116,9 @@ services:
         set -e
         [ -s /shared/turn-secret ] || head -c 32 /dev/urandom | base64 > /shared/turn-secret
         chmod 644 /shared/turn-secret
+        # the media server's login, made once ("key: secret", only root can read it)
+        [ -s /shared/livekit-keys.yaml ] || echo "chat: $$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 48)" > /shared/livekit-keys.yaml
+        chmod 600 /shared/livekit-keys.yaml
         # newest commit on main (empty if GitHub can't be reached)
         SHA=$$(wget -qO- --header "Accept: application/vnd.github.sha" "https://api.github.com/repos/$$CODE_REPO/commits/main" 2>/dev/null || true)
         if [ -n "$$SHA" ] && [ "$$SHA" = "$$(cat /app/.version 2>/dev/null)" ] && [ -d /app/node_modules ]; then
@@ -154,10 +163,39 @@ services:
         SELF=$$(hostname -i | awk '{print $$1}')
         exec turnserver -n --log-file=stdout --no-cli --no-tls --no-dtls --listening-port=3478 \
           --fingerprint --use-auth-secret --static-auth-secret="$$(cat /shared/turn-secret)" --realm=chat \
-          --min-port=49160 --max-port=49260 --no-multicast-peers --total-quota=40 --max-bps=2500000 \
+          --min-port=49160 --max-port=49260 --no-multicast-peers --total-quota=120 --max-bps=8000000 \
           --denied-peer-ip=10.0.0.0-10.255.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255 \
           --denied-peer-ip=192.168.0.0-192.168.255.255 --denied-peer-ip=100.64.0.0-100.127.255.255 \
           --allowed-peer-ip=$$SELF
+
+  # Media server (LiveKit) for group calls and voice channels: everyone sends
+  # their voice/video once and it forwards it to the others, so calls stay
+  # smooth with 10-25 people. It shares the call relay's network, so the relay
+  # (which may only relay to itself) carries callers to it - no new ports or
+  # router changes. Browsers reach its setup connection through the chat at
+  # /livekit; only the chat hands out (10-minute) logins for it.
+  livekit:
+    image: livekit/livekit-server:v1.13.11
+    container_name: chat-livekit
+    restart: unless-stopped
+    network_mode: "service:turn"
+    depends_on:
+      - turn
+    volumes:
+      - turn-shared:/shared:ro
+    command: ["--key-file", "/shared/livekit-keys.yaml"]
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+        room:
+          empty_timeout: 60
+          max_participants: 30
+        logging:
+          level: warn
 
   # Publishes the chat (443) and the call relay (8443) with Tailscale Funnel.
   funnel:

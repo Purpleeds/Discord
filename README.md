@@ -47,6 +47,10 @@ tables itself on startup, so an empty database is all it needs.
 | `LINK_PREVIEW_TEST_HOSTS` | no | Tests only (ignored unless `RATE_LIMITS=off`): exact `host:port` pairs link previews may fetch even though they're private. |
 | `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
 | `TURN_USERNAME` / `TURN_CREDENTIAL` | no | Login for that TURN relay. |
+| `LIVEKIT_URL` | no | Address of a LiveKit media server the chat can reach, e.g. `http://livekit:7880`. With it (and a key), group calls and voice channels go through it and hold up to 25 people. |
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | no | LiveKit's API key and secret (32+ characters). Or `LIVEKIT_KEY_FILE`: LiveKit's own key file (`key: secret`), as the NAS setup makes. |
+| `LIVEKIT_PUBLIC_URL` | no | Where browsers reach LiveKit (`wss://...`). Leave unset to go through the chat itself at `/livekit/rtc`. |
+| `SFU_MAX_CALL_SIZE` | no | Biggest call through the media server (default `25`). |
 
 ### Calls and TURN
 
@@ -60,6 +64,17 @@ needs a TURN relay (a paid or self-hosted service such as coturn or
 Cloudflare/Twilio TURN) set with the three variables above. Calls live in
 the server's memory, so a restart or redeploy ends them (people's apps
 rejoin automatically when the server comes back).
+
+**Bigger calls (media server).** With `LIVEKIT_URL` and a key set, group
+calls and voice channels go through a [LiveKit](https://livekit.io) media
+server (an SFU) instead: everyone sends their voice and video once and the
+server forwards it, so calls stay smooth with 10 to 25 people and screen
+shares don't slow everyone down. DM calls stay direct. The chat still
+decides who may join (the same checks as before) and hands out a 10-minute
+LiveKit login for that one call only; anyone who leaves, is kicked or loses
+access is removed from the media server too. Browsers reach LiveKit through
+the chat at `/livekit/rtc` (only those paths are passed on), so it needs no
+public address of its own. The NAS setup runs it (`deploy/nas/`).
 
 ### Webhooks
 

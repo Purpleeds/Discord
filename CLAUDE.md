@@ -32,8 +32,12 @@ to do next) - read it before a big upgrade and add an entry after one.
   "Export channel" - see BACKUPS.md. New tables/columns are backed up
   automatically (every table in the schema); routes are owner-only (Purple).
 - `public/sw.js`: Web Push service worker.
-- `desktop/`: the Chat Notifier, a Windows tray program (Electron) - see
-  desktop/README.md. Released by `.github/workflows/notifier.yml`.
+- `desktop/`: the Windows app (Electron, still named Chat Notifier): tray +
+  pop-ups, and the chat window (the live site) with global push to talk and
+  a screen-share picker - see desktop/README.md. Released by
+  `.github/workflows/notifier.yml`. The page there gets `window.chatDesktop`
+  (`desktop/ui/chat-preload.js`); `public/index.html` uses it as `desktopApp`
+  and must keep working without it. Keep the two in step.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
   Calls need a real browser to check audio/video: Playwright's Chromium
   with `--use-fake-ui-for-media-stream --use-fake-device-for-media-stream`.
@@ -248,6 +252,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   `build.toolsets.nsis` (NSIS 3.12) - the default NSIS 3.0.4 installer crashes on Windows 11 24H2.
   The Microsoft Store build (`appx` target, `STORE` in main.js) must not self-update or
   set login items; `desktop/test/store-test.ps1` installs and starts it in CI.
+- The app's chat window (`openChatWindow()` in desktop/main.js) may only show
+  the chat's own origin: other sites go to the browser (`D.externalOk()`),
+  permissions only for the chat origin. The global push-to-talk hook runs only
+  while the page asks (in a call, push-to-talk mode) and reports only that
+  one key - never forward or log other keys. Screen-share audio travels in
+  the screen's stream (receivers play it via `attachScreenAudio()`).
+  `regression/desktop_app.test.js`.
 - The web app offers the Chat Notifier (`#notifierOffer`, `maybeOfferNotifier()`) on
   Windows desktops after signing in and after a server restart/update reload -
   never while one runs for the account (`notifierRunning`) or after "Don't show

@@ -27,7 +27,7 @@ async function until(fn, ms = 8000) { const end = Date.now() + ms; let v; while 
   const u = 'store' + Date.now().toString(36).slice(-5);
   const token = (await (await fetch(BASE + '/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: u, password: 'secret123' }) })).json()).token;
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'store-app-'));
-  fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ server: BASE, username: u, token }));
+  fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ server: BASE, username: u, token, openIn: 'browser' }));
   const launch = () => _electron.launch({ executablePath: ELECTRON, args: [DESKTOP, '--no-sandbox'],
     env: Object.assign({}, env, { CHAT_NOTIFIER_TEST: '1', CHAT_NOTIFIER_STORE: '1', CHAT_NOTIFIER_DATA: data, CHAT_NOTIFIER_NO_UPDATE_CHECK: '1' }) });
   const app = await launch();

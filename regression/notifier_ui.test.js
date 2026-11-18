@@ -70,6 +70,8 @@ async function stopServer() { if (server) { server.kill('SIGTERM'); await server
   await post('/friends/block', W, { username: p });
 
   const appData = fs.mkdtempSync(path.join(os.tmpdir(), 'notifier-app-'));
+  // this suite is the notifier on its own (chat in the browser); desktop_app.test.js covers the chat window
+  fs.writeFileSync(path.join(appData, 'config.json'), JSON.stringify({ openIn: 'browser' }));
   const launch = () => _electron.launch({
     executablePath: ELECTRON, args: PACKAGED ? ['--no-sandbox'] : [DESKTOP, '--no-sandbox'],
     env: Object.assign({}, env, { CHAT_NOTIFIER_TEST: '1', CHAT_NOTIFIER_DATA: appData, CHAT_NOTIFIER_SERVER: BASE, CHAT_NOTIFIER_CARD_MS: '60000', CHAT_NOTIFIER_RELEASES_URL: 'http://127.0.0.1:' + RELEASES_PORT + '/releases' })

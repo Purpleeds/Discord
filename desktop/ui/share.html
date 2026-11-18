@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src data:">
+<title>Share your screen</title>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="share.css">
+</head>
+<body>
+<header class="titlebar">Share your screen</header>
+<nav class="tabs" role="tablist">
+  <button role="tab" id="tabScreens" aria-selected="true">Screens</button>
+  <button role="tab" id="tabWindows" aria-selected="false">Windows</button>
+</nav>
+<main id="grid" class="grid" role="listbox" aria-label="What to share"></main>
+<p id="empty" class="empty" hidden>Nothing to show here.</p>
+<footer class="foot">
+  <label class="audio"><input type="checkbox" id="audio"> <span>Also share my computer's sound<small id="audioNote">Everything your PC plays is sent, so others may hear the call too.</small></span></label>
+  <div class="grow"></div>
+  <button class="ghost" id="cancel">Cancel</button>
+  <button class="primary" id="go" disabled>Share</button>
+</footer>
+<script src="share.js"></script>
+</body>
+</html>

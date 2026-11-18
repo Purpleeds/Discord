@@ -29,7 +29,20 @@ the normal browser.
 - Releases: `.github/workflows/notifier.yml` (Windows build + smoke test on
   every PR; publish with Run workflow).
 
-## Option B: a thin Electron shell around the live chat
+## Option B: a thin Electron shell around the live chat - BUILT (Nov 2026, 2.0.0)
+
+Built into the same app as Option A (so installed notifiers update into it):
+the chat window, one sign-in for window + pop-ups, global push to talk
+(`uiohook-napi`, keys and mouse buttons, only during a push-to-talk call),
+the app's own screen-share picker with optional computer sound, taskbar
+badge/flash, close to tray, remembered window, offline retry page, links to
+other sites in the browser. Pop-ups and the tray were already phase 2.
+Tested by `regression/desktop_app.test.js` (45 checks) and on Windows by the
+packaged smoke test. Not done: "Playing <game>" status (phase 3, optional),
+code signing, the app name stays "Chat Notifier" (renaming changes the
+install and settings folder, so updates wouldn't carry over).
+
+The original plan:
 
 The app is a small window that loads the real chat (the same address as the
 website). All the chat code stays in `public/index.html` and the server, so

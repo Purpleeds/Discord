@@ -212,8 +212,14 @@ large, new system - also split it over several sessions).
   program (Electron) with desktop pop-up cards; opens the chat in the browser.
   Tested end to end (`regression/notifier_ui.test.js`); built and smoke-tested
   on Windows by `.github/workflows/notifier.yml`. See [DESKTOP_APP.md](DESKTOP_APP.md).
-- [ ] **Full Windows app** (Option B) - Electron shell with tray, push-to-talk
-  in games, screen-share picker, installer + auto-update.
+- [x] **Full Windows app** (Option B) - *done Nov 2026* (desktop 2.0.0): the
+  notifier grew a chat window (the live site), one sign-in for the window and
+  pop-ups, push to talk in games (global hook, also mouse side buttons, only
+  during a push-to-talk call), its own screen-share picker (screens/windows,
+  optional PC sound - Windows loopback, may echo the call), taskbar badge,
+  close to tray; same installer + auto-update. `regression/desktop_app.test.js`.
+  Learned: `--use-fake-ui-for-media-stream` skips Electron's
+  display-media handler, so the picker test runs without it.
 
 - [x] **Phone fixes** (Nov 2026) - hold a message for reactions/reply/edit/
   delete/copy (phones have no hover); hold names, channels, servers for their

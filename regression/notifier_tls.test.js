@@ -42,7 +42,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   const u = 'mitm' + Date.now().toString(36).slice(-6);
   const token = (await (await fetch('http://localhost:4103/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username: u, password: 'secret123' }) })).json()).token;
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'mitm-app-'));
-  fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ server: 'https://localhost:45997', username: u, token }));
+  fs.writeFileSync(path.join(data, 'config.json'), JSON.stringify({ server: 'https://localhost:45997', username: u, token, openIn: 'browser' }));
   const env = Object.assign({}, process.env);
   let xvfb = null;
   if (!env.DISPLAY && process.platform === 'linux') { xvfb = spawn('Xvfb', [':98', '-screen', '0', '1280x800x24'], { stdio: 'ignore' }); env.DISPLAY = ':98'; await sleep(800); }

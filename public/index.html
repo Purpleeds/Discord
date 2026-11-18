@@ -2179,6 +2179,9 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
 /* ============================ state ============================ */
 let socket = null;
 let token = '';
+// the Windows app (desktop/): its window gives the page this small API (desktop/ui/chat-preload.js)
+const desktopApp = window.chatDesktop || null;
+const globalPtt = !!(desktopApp && desktopApp.globalPushToTalk);
 let username = '';
 let myProfile = { username:'', displayName:'', avatarUrl:'', isAdmin:false, censorSwears:false };
 let globalCensorEnabled = false; // site-wide censor, toggleable by site admins
@@ -2683,7 +2686,7 @@ function onWindowsDesktop(){
 }
 function maybeOfferNotifier(){
   notifierOfferPending = false;
-  if(notifierOffered || notifierRunning || !token || !onWindowsDesktop()) return;
+  if(notifierOffered || notifierRunning || desktopApp || !token || !onWindowsDesktop()) return; // (not inside the app itself)
   try{ if(localStorage.getItem('notifierOffer') === 'never') return; }catch(e){}
   notifierOffered = true;
   const box = $('notifierOffer');
@@ -6043,6 +6046,7 @@ function stopTyping(){
 /* ============================ tab alert ============================ */
 function startTabAlert(label){
   if(tabAlertTimer) return;
+  if(desktopApp){ try{ desktopApp.setUnread(1, true); }catch(e){} } // the app: a badge + a flashing taskbar button
   const text = label || 'NEW MESSAGE';
   tabAlertTimer = setInterval(() => {
     tabAlertState = !tabAlertState;
@@ -6051,6 +6055,7 @@ function startTabAlert(label){
   }, 700);
 }
 function stopTabAlert(){
+  if(desktopApp && tabAlertTimer){ try{ desktopApp.setUnread(0, false); }catch(e){} }
   if(tabAlertTimer) clearInterval(tabAlertTimer);
   tabAlertTimer = null;
   tabAlertState = false;
@@ -8545,12 +8550,15 @@ function ensurePeer(user){
   const pc = new RTCPeerConnection({ iceServers: voice.iceServers || [] });
   // "perfect negotiation": both sides may (re)negotiate at any time - e.g.
   // when someone turns a camera on - and the polite side yields on clashes
-  const peer = { pc, polite: username > user, makingOffer:false, ignoreOffer:false, streams:new Map(), camSender:null, screenSender:null, state:'connecting', audioEl:null, failTimer:null };
+  const peer = { pc, polite: username > user, makingOffer:false, ignoreOffer:false, streams:new Map(), camSender:null, screenSender:null, screenAudioSender:null, state:'connecting', audioEl:null, screenAudioEl:null, failTimer:null };
   voice.peers.set(user, peer);
   if(voice.mic) pc.addTrack(micTrack(), voice.mic);
   else pc.addTransceiver('audio', { direction:'recvonly' }); // still hear them without a mic
   if(voice.cam) peer.camSender = pc.addTrack(voice.cam.getVideoTracks()[0], voice.cam);
-  if(voice.screen) peer.screenSender = pc.addTrack(voice.screen.getVideoTracks()[0], voice.screen);
+  if(voice.screen){
+    peer.screenSender = pc.addTrack(voice.screen.getVideoTracks()[0], voice.screen);
+    if(voice.screen.getAudioTracks()[0]) peer.screenAudioSender = pc.addTrack(voice.screen.getAudioTracks()[0], voice.screen);
+  }
   pc.onnegotiationneeded = async () => {
     try{
       peer.makingOffer = true;
@@ -8563,7 +8571,8 @@ function ensurePeer(user){
   pc.ontrack = e => {
     const stream = e.streams[0] || new MediaStream([e.track]);
     peer.streams.set(stream.id, stream);
-    if(e.track.kind === 'audio') attachAudio(user, stream);
+    // a shared screen's sound comes in the screen's own stream (with its video)
+    if(e.track.kind === 'audio') (stream.getVideoTracks().length ? attachScreenAudio(user, stream) : attachAudio(user, stream));
     stream.onremovetrack = () => renderCallUI();
     e.track.onunmute = () => renderCallUI();
     renderCallUI();
@@ -8607,6 +8616,7 @@ function closePeer(user){
   clearTimeout(peer.failTimer);
   try{ peer.pc.close(); }catch(e){}
   if(peer.audioEl) peer.audioEl.remove();
+  if(peer.screenAudioEl) peer.screenAudioEl.remove();
   voice.meters.delete(user);
   voice.speaking.delete(user);
   voice.peers.delete(user);
@@ -8625,9 +8635,28 @@ function setUserVolumePref(user, change){
 }
 function applyPeerAudio(user){
   const peer = voice.peers.get(user);
-  if(!peer || !peer.audioEl) return;
-  peer.audioEl.muted = voice.deafened || mutedForMe(user);
-  peer.audioEl.volume = userVolume(user);
+  if(!peer) return;
+  [peer.audioEl, peer.screenAudioEl].forEach(el => {
+    if(!el) return;
+    el.muted = voice.deafened || mutedForMe(user);
+    el.volume = userVolume(user);
+  });
+}
+// the sound of someone's shared screen (desktop app, "share sound" ticked)
+function attachScreenAudio(user, stream){
+  const peer = voice.peers.get(user);
+  if(!peer) return;
+  if(!peer.screenAudioEl){
+    peer.screenAudioEl = document.createElement('audio');
+    peer.screenAudioEl.autoplay = true;
+    peer.screenAudioEl.dataset.user = user;
+    peer.screenAudioEl.dataset.screen = '1';
+    $('voiceAudio').appendChild(peer.screenAudioEl);
+  }
+  peer.screenAudioEl.srcObject = stream;
+  applyPeerAudio(user);
+  if(voicePrefs.outputId && peer.screenAudioEl.setSinkId) peer.screenAudioEl.setSinkId(voicePrefs.outputId).catch(() => {});
+  peer.screenAudioEl.play().catch(() => {});
 }
 function attachAudio(user, stream){
   const peer = voice.peers.get(user);
@@ -8724,16 +8753,24 @@ const canShareScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDi
 async function toggleScreen(){
   if(!voice.key || !canShareScreen) return;
   if(voice.screen){
-    voice.peers.forEach(p => { if(p.screenSender){ try{ p.pc.removeTrack(p.screenSender); }catch(e){} p.screenSender = null; } });
+    voice.peers.forEach(p => ['screenSender', 'screenAudioSender'].forEach(k => { if(p[k]){ try{ p.pc.removeTrack(p[k]); }catch(e){} p[k] = null; } }));
     voice.screen.getTracks().forEach(t => t.stop());
     voice.screen = null;
   }else{
-    try{ voice.screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15 } }, audio: false }); }
+    // the desktop app has its own picker, which can also share the computer's
+    // sound (people tick it there); the call's own sound is kept out where Windows allows
+    const withSound = !!(desktopApp && desktopApp.screenPicker);
+    try{ voice.screen = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15 } }, audio: withSound ? { restrictOwnAudio: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false } : false }); }
     catch(e){ return; } // picker cancelled
+    if(!voice.key){ voice.screen.getTracks().forEach(t => t.stop()); voice.screen = null; return; } // left the call meanwhile
     const track = voice.screen.getVideoTracks()[0];
     track.contentHint = 'detail';
     track.onended = () => { if(voice.screen) toggleScreen(); }; // the browser's own "Stop sharing" button
-    voice.peers.forEach(p => { p.screenSender = p.pc.addTrack(track, voice.screen); });
+    const sound = voice.screen.getAudioTracks()[0];
+    voice.peers.forEach(p => {
+      p.screenSender = p.pc.addTrack(track, voice.screen);
+      if(sound) p.screenAudioSender = p.pc.addTrack(sound, voice.screen);
+    });
   }
   publishVoiceState();
   renderCallUI();
@@ -8861,7 +8898,24 @@ function syncVoiceAfterConnect(){
   });
 }
 
-// ---- push to talk (only while this tab is focused - browsers can't see keys otherwise)
+// ---- push to talk (only while this tab is focused - browsers can't see keys otherwise;
+// the desktop app watches the key everywhere, also while a game is in front)
+let desktopPttSent = '';
+function syncDesktopPtt(){
+  if(!globalPtt) return;
+  const want = { enabled: voicePrefs.mode === 'ptt' && !!voicePrefs.pttKey && !!voice.key, code: voicePrefs.pttKey || '' };
+  const key = JSON.stringify(want);
+  if(key === desktopPttSent) return;
+  desktopPttSent = key;
+  try{ desktopApp.pushToTalk(want); }catch(e){}
+}
+if(globalPtt) desktopApp.onPushToTalk(down => {
+  if(voicePrefs.mode !== 'ptt' || !voice.key) return;
+  // typing that letter into the chat itself isn't talking
+  if(down && document.hasFocus() && isTypingTarget(document.activeElement) && /^(Key|Digit)|^Space$/.test(voicePrefs.pttKey)) return;
+  if(voice.pttHeld === down) return;
+  voice.pttHeld = down; applyMicEnabled(); renderVoiceBar();
+});
 function isTypingTarget(el){ return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable); }
 window.addEventListener('keydown', e => {
   if(voicePrefs.mode !== 'ptt' || !voicePrefs.pttKey || !voice.key || e.code !== voicePrefs.pttKey) return;
@@ -8871,7 +8925,8 @@ window.addEventListener('keydown', e => {
 window.addEventListener('keyup', e => {
   if(voicePrefs.mode === 'ptt' && e.code === voicePrefs.pttKey && voice.pttHeld){ voice.pttHeld = false; applyMicEnabled(); renderVoiceBar(); }
 });
-window.addEventListener('blur', () => { if(voice.pttHeld){ voice.pttHeld = false; applyMicEnabled(); renderVoiceBar(); } });
+// (the desktop app keeps holding while it's in the background: the key is watched everywhere)
+window.addEventListener('blur', () => { if(voice.pttHeld && !globalPtt){ voice.pttHeld = false; applyMicEnabled(); renderVoiceBar(); } });
 
 // ---- UI
 function callButton(icon, label, fn, cls, pressed){
@@ -9035,6 +9090,7 @@ function renderCallPanel(){
   panel.appendChild(controls);
 }
 function renderVoiceBar(){
+  syncDesktopPtt();
   const bar = $('voiceBar');
   if(!voice.key){ bar.classList.remove('show'); bar.innerHTML = ''; return; }
   bar.classList.add('show');
@@ -9113,7 +9169,7 @@ async function renderVoiceSection(c){
       '<label class="statusOption wide" style="max-width:420px"><input type="radio" name="vMode" value="voice"> Voice Activity - your mic is open while you\'re unmuted</label>' +
       '<label class="statusOption wide" style="max-width:420px"><input type="radio" name="vMode" value="ptt"> Push to Talk - only sends while you hold a key</label>' +
       '<div class="rowFlex" id="vPttRow" style="margin-top:10px"><span class="switchDesc" style="margin:0">Push to Talk key:</span><span class="kbd" id="vPttKey"></span><button class="btn grey" id="vPttRecord">Record Keybind</button></div>' +
-      '<div class="switchDesc">Push to Talk works while this tab is focused - browsers can\'t see keys pressed in other apps.</div>') +
+      '<div class="switchDesc">' + (globalPtt ? 'Push to Talk works everywhere in the desktop app, also while a game is in front. A mouse side button works too. The app only watches this one key, and only during a call.' : 'Push to Talk works while this tab is focused - browsers can\'t see keys pressed in other apps. The Windows app makes it work everywhere, even in games.') + '</div>') +
     section('Voice Processing',
       switchRow('vNoise', 'Noise suppression', 'Filters out background noise like keyboards and fans.', voicePrefs.noiseSuppression) +
       switchRow('vEcho', 'Echo cancellation', 'Stops others hearing themselves through your speakers.', voicePrefs.echoCancellation) +
@@ -9139,7 +9195,7 @@ async function renderVoiceSection(c){
   await fillDevices();
   if(!('setSinkId' in HTMLMediaElement.prototype)) $('vOutputBox').style.display = 'none'; // only some browsers can pick speakers
   $('vInput').onchange = e => { voicePrefs.inputId = e.target.value; saveVoicePrefs(); swapMicrophone(); };
-  $('vOutput').onchange = e => { voicePrefs.outputId = e.target.value; saveVoicePrefs(); voice.peers.forEach(p => { if(p.audioEl && p.audioEl.setSinkId) p.audioEl.setSinkId(voicePrefs.outputId).catch(() => {}); }); };
+  $('vOutput').onchange = e => { voicePrefs.outputId = e.target.value; saveVoicePrefs(); voice.peers.forEach(p => [p.audioEl, p.screenAudioEl].forEach(el => { if(el && el.setSinkId) el.setSinkId(voicePrefs.outputId).catch(() => {}); })); };
   $('vCamera').onchange = e => { voicePrefs.cameraId = e.target.value; saveVoicePrefs(); };
   $('vMicTest').onclick = async () => {
     if(testStream){ stopTests(); $('vMicTest').textContent = 'Test Microphone'; $('vMeter').style.width = '0%'; return; }
@@ -9179,14 +9235,27 @@ async function renderVoiceSection(c){
   paintPtt();
   $('vPttRecord').onclick = () => {
     $('vPttRecord').textContent = 'Press a key…';
-    const grab = e => {
-      e.preventDefault(); e.stopPropagation();
-      if(e.key !== 'Escape'){ voicePrefs.pttKey = e.code; voicePrefs.pttLabel = e.key === ' ' ? 'Space' : (e.key.length === 1 ? e.key.toUpperCase() : e.key); saveVoicePrefs(); }
+    const done = () => {
       window.removeEventListener('keydown', grab, true);
+      window.removeEventListener('mousedown', grabMouse, true);
       $('vPttRecord').textContent = 'Record Keybind';
       paintPtt(); renderVoiceBar();
     };
+    const grab = e => {
+      e.preventDefault(); e.stopPropagation();
+      if(e.key !== 'Escape'){ voicePrefs.pttKey = e.code; voicePrefs.pttLabel = e.key === ' ' ? 'Space' : (e.key.length === 1 ? e.key.toUpperCase() : e.key); saveVoicePrefs(); }
+      done();
+    };
+    // the desktop app can also use the middle or a side mouse button (the hook sees those everywhere)
+    const grabMouse = e => {
+      const code = { 1:'Mouse3', 3:'Mouse4', 4:'Mouse5' }[e.button];
+      if(!code) return;
+      e.preventDefault(); e.stopPropagation();
+      voicePrefs.pttKey = code; voicePrefs.pttLabel = { Mouse3:'Middle mouse button', Mouse4:'Mouse button 4', Mouse5:'Mouse button 5' }[code]; saveVoicePrefs();
+      done();
+    };
     window.addEventListener('keydown', grab, true);
+    if(globalPtt) setTimeout(() => window.addEventListener('mousedown', grabMouse, true), 0);
   };
   const processing = { vNoise:'noiseSuppression', vEcho:'echoCancellation', vGain:'autoGain' };
   Object.entries(processing).forEach(([id, prop]) => {

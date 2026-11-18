@@ -51,3 +51,7 @@ check that people reconnect, so run them on a server only the tests use.
 Electron support against its own server on port 4102. It needs `npm install`
 in `desktop/` (it skips itself otherwise) and a display: on Linux it starts
 `Xvfb :97` when `DISPLAY` isn't set.
+`desktop_app` does the same for the app's chat window (port 4104, `Xvfb :95`):
+sign-in, other sites kept out, push to talk from the global hook, the
+screen-share picker, badge, close to tray, sign out. Run it with
+`NODE_PATH=desktop/node_modules` if playwright-core isn't installed at the top.

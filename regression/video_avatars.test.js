@@ -67,7 +67,9 @@ const VIDEO = path.join(__dirname, 'fixtures', 'avatar-test.webm');
   const hist = (await get('/history?room=' + encodeURIComponent(general.room), A)).data.messages.pop();
   check('messages in that server carry the in-server video', hist.avatarVideo === vid2.url && hist.avatarUrl === png.url, hist);
   // the member list shows the in-server video (still until pointed at)
-  await page.evaluate(async () => { await refreshServers(); renderMembers(true); }); await sleep(1200);
+  // (waits for the list rather than a fixed time: late in a full run the server is slower)
+  await page.evaluate(async () => { await refreshServers(); await renderMembers(true); });
+  await page.waitForFunction(src => [...document.querySelectorAll('.memberRow .avatar video')].some(x => x.getAttribute('src') === src), vid2.url, { timeout: 10000 }).catch(() => {});
   const memberVid = await page.evaluate(src => { const v = [...document.querySelectorAll('.memberRow .avatar video')].find(x => x.getAttribute('src') === src); return v ? { paused: v.paused } : null; }, vid2.url);
   check('the member list has the in-server video', memberVid && memberVid.paused, memberVid);
   await page.locator('.memberRow', { has: page.locator('.avatar video') }).first().screenshot({ path: SHOTS + 'video-avatar-member-row.png' });

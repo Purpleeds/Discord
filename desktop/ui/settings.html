@@ -25,6 +25,9 @@
     <label class="field">Password
       <input id="password" type="password" autocomplete="current-password" required maxlength="200">
     </label>
+    <label class="field" id="codeField" hidden>Two-step login code
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="20" placeholder="From your authenticator app, or a backup code">
+    </label>
     <div class="msg" id="signInMsg" role="alert"></div>
     <button type="submit" class="primary wide" id="signInBtn">Sign in</button>
     <p class="fine">Your password only goes to the chat, to sign in. The notifier keeps the sign-in encrypted by Windows, and it shows in the chat under Settings &gt; Devices.</p>

@@ -43,6 +43,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `batch4_api` / `batch4_ui` / `ssrf` / `previews_ui` | webhooks, commands, reaction roles, link previews and their SSRF guards |
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
+| `two_step` / `two_step_ui` | two-step login (codes, backup codes, tickets, replays, guessing), passkeys (a software authenticator, then Chromium's virtual one), admins needing it, resets; own servers on ports 4103/4104 with `ADMIN_2FA` on |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
 
 `notifier_ui` drives the desktop notifier (desktop/) with Playwright's

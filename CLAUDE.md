@@ -159,6 +159,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   never auto-creates an account; `AUTO_REGISTER_ON_LOGIN` only applies to
   callers that leave it out. Check new names with `usernameTaken()` (it
   ignores capitals).
+- Two-step login / passkeys: `totp_*` columns on users, `backup_codes` (sha256
+  only), `passkeys` (rp_id = the address it was made on, checked on every use).
+  A right password on a 2FA account gives a short in-memory login ticket, never a
+  session; `/login/2fa` (code or backup code), `/login/2fa/passkey`, or `code` sent
+  with `/login`. `/passkeys/login` logs in alone (user verification required).
+  Wrong codes are limited per account even with `RATE_LIMITS=off`.
+  `isAdmin()` = admin POWERS (needs two-step unless `ADMIN_2FA=off`);
+  `isSiteAdmin()` = the role (badge, "admins can't act against each other").
+  Admins without it are never locked out - only their powers pause.
+  `regression/two_step*.test.js`.
 - Unread is server-side: `unreadFor()` counts messages newer than the
   person's read receipt (and their `unread_base_id`). Anything that gives
   someone a room that already has history (joining a server, being added to

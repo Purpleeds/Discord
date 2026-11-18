@@ -18,6 +18,7 @@ const { Pool } = require('pg');
 const { Server } = require('socket.io');
 const webpush = require('web-push');
 const compression = require('compression');
+const QRCode = require('qrcode');
 
 const app = express();
 const server = http.createServer(app);
@@ -814,6 +815,37 @@ async function setupSchema() {
   // Two accounts whose names differ only by capitals ("Purple" / "purple")
   // are an impersonation tool. New names are checked in usernameTaken(); the
   // index backs that up, but can't be built if such a pair already exists.
+  // ---- two-step login (authenticator app + backup codes) and passkeys ----
+  // totp_secret is set while setting up (totp_enabled still 0) and kept once
+  // it's on; totp_last_step stops a code being used twice.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backup_codes (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_backup_codes_user ON backup_codes (username)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS passkeys (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      credential_id TEXT NOT NULL UNIQUE,
+      public_key TEXT NOT NULL,
+      alg INTEGER NOT NULL,
+      sign_count BIGINT DEFAULT 0,
+      rp_id TEXT NOT NULL,
+      name TEXT,
+      transports TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys (username)`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users (LOWER(username))`)
     .catch(err => console.warn('Skipped the case-insensitive username index (existing look-alike names?):', err.message));
 }
@@ -907,7 +939,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, banner_url, banner_pos, read_receipts, avatar_video, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
+  bio, banner_color, banner_url, banner_pos, read_receipts, avatar_video, custom_status, pronouns, presence, avatar_version, created_at, hide_admin, totp_enabled,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -1184,10 +1216,24 @@ function cleanText(value, max = 4000) {
 // made a global admin via the SEED_ACCOUNTS { isAdmin: true } property or
 // by an existing global admin right-clicking a user and choosing
 // "Make Admin" (users.is_admin in the database).
-async function isAdmin(username) {
+//
+// Site admin POWERS also need two-step login (ADMIN_2FA=off turns that off):
+// an admin without it keeps their account and badge, and can turn it on at
+// any time in Settings > My Account, but isAdmin() says no until they do -
+// so nothing can lock them out, and a stolen admin password alone is no
+// longer enough to run the site. isSiteAdmin() is the role itself (who an
+// admin is, for "admins can't act against each other" and the badge).
+const ADMIN_REQUIRES_2FA = process.env.ADMIN_2FA !== 'off';
+async function isSiteAdmin(username) {
   if (username === 'Purple') return true;
   const user = await getUser(username);
   return !!(user && user.is_admin);
+}
+async function isAdmin(username) {
+  if (!(await isSiteAdmin(username))) return false;
+  if (!ADMIN_REQUIRES_2FA) return true;
+  const user = await getUser(username);
+  return !!(user && user.totp_enabled);
 }
 
 // ---- Sessions ----
@@ -1830,8 +1876,8 @@ async function filterChannelViewers(channel, names) {
      UNION SELECT owner FROM servers WHERE id = $1
      UNION SELECT username FROM channel_access WHERE channel_id = $2 AND username IS NOT NULL
      UNION SELECT r.username FROM server_member_roles r JOIN channel_access a ON a.role_id = r.role_id WHERE a.channel_id = $2
-     UNION SELECT username FROM users WHERE is_admin = 1 OR username = 'Purple'`,
-    [channel.server_id, channel.id]
+     UNION SELECT username FROM users WHERE (is_admin = 1 OR username = 'Purple') AND (NOT $3 OR totp_enabled = 1)`,
+    [channel.server_id, channel.id, ADMIN_REQUIRES_2FA]
   );
   const allowed = new Set(rows.map(r => r.username));
   return names.filter(n => allowed.has(n));
@@ -1960,7 +2006,9 @@ async function selfProfile(username) {
   const u = await getUser(username);
   if (!u) return null;
   const realAdmin = u.username === 'Purple' || !!u.is_admin;
-  return { ...profileFromRow(u), isAdmin: realAdmin, adminHidden: realAdmin && !!u.hide_admin, readReceipts: u.read_receipts !== 0, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
+  // isAdmin = admin powers (see isAdmin()); adminNeeds2fa = an admin who has to turn on two-step login first
+  const needs2fa = realAdmin && ADMIN_REQUIRES_2FA && !u.totp_enabled;
+  return { ...profileFromRow(u), isAdmin: realAdmin && !needs2fa, siteAdmin: realAdmin, adminNeeds2fa: needs2fa, twoStep: !!u.totp_enabled, adminHidden: realAdmin && !!u.hide_admin, readReceipts: u.read_receipts !== 0, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
 }
 
 function validHexColor(value) {
@@ -2642,9 +2690,577 @@ app.post('/login', route(async (req, res) => {
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'invalid username or password' });
 
+  // Two-step login: the password was right, but no session yet. Either the
+  // code came with it (scripts, the Chat Notifier), or the app gets a short
+  // ticket and asks for the code (or a passkey) next - see /login/2fa.
+  if (user.totp_enabled) {
+    if (req.body.code !== undefined && req.body.code !== '') {
+      const check = await checkSecondFactor(user.username, req.body.code);
+      if (!check.ok) return res.status(401).json({ error: check.error, code: 'mfa_invalid' });
+    } else {
+      return res.json({ mfaRequired: true, ticket: newLoginTicket(user.username), username: user.username, passkeys: await hasPasskeys(user.username) });
+    }
+  }
+
   const token = await createToken(user.username, req);
   res.json({ message: 'ok', username: user.username, token, profile: await selfProfile(user.username) });
 }));
+
+// ---------------- TWO-STEP LOGIN AND PASSKEYS ----------------
+// Two-step login is an authenticator app (TOTP, RFC 6238: 6 digits, 30
+// seconds, SHA-1 - what every app supports) plus ten single-use backup
+// codes, kept only as hashes. Once it's on, a right password gets a short
+// login ticket instead of a session, and the session comes from
+// /login/2fa with a code, a backup code or a passkey.
+//
+// Passkeys (WebAuthn) are a login on their own: the browser and the
+// person's phone/computer/security key prove who they are (fingerprint,
+// face, PIN), so a passkey login skips the password and the code. Each
+// passkey is tied to the address it was made on (rp_id) - the browser only
+// offers it there, and the server checks it again on every login.
+//
+// Nothing here can lock someone out by itself: turning it on needs a code
+// from the new app first, the backup codes are shown before it counts as
+// on, a site admin can reset it for someone who lost everything (only
+// Purple for another admin), and RESET_2FA_FOR=name,name at boot resets it
+// for accounts nobody else can help (Purple's own).
+const TOTP_STEP = 30;
+const BACKUP_CODE_COUNT = 10;
+const LOGIN_TICKET_MS = 5 * 60 * 1000;
+const LOGIN_TICKET_TRIES = 5;
+const PASSKEY_CHALLENGE_MS = 5 * 60 * 1000;
+const MAX_PASSKEYS = 20;
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buf) {
+  let bits = 0, value = 0, out = '';
+  for (const byte of buf) {
+    value = (value << 8) | byte; bits += 8;
+    while (bits >= 5) { out += BASE32[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += BASE32[(value << (5 - bits)) & 31];
+  return out;
+}
+function base32Decode(text) {
+  let bits = 0, value = 0;
+  const out = [];
+  for (const ch of String(text).toUpperCase().replace(/[^A-Z2-7]/g, '')) {
+    value = (value << 5) | BASE32.indexOf(ch); bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+function totpCode(secret, step) {
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const mac = crypto.createHmac('sha1', base32Decode(secret)).update(counter).digest();
+  const at = mac[mac.length - 1] & 15;
+  return String((mac.readUInt32BE(at) & 0x7fffffff) % 1000000).padStart(6, '0');
+}
+// The time step a code belongs to (this one, or one either side for a phone
+// clock that's a little off), or 0. Steps at or before lastStep were used.
+function totpStepFor(secret, code, lastStep) {
+  const now = Math.floor(Date.now() / 1000 / TOTP_STEP);
+  for (const step of [now - 1, now, now + 1]) {
+    if (step <= Number(lastStep || 0)) continue;
+    if (crypto.timingSafeEqual(Buffer.from(totpCode(secret, step)), Buffer.from(code))) return step;
+  }
+  return 0;
+}
+function cleanCode(code) {
+  return String(code || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+}
+function backupCodeHash(code) {
+  return sha256Hex('backup:' + cleanCode(code));
+}
+// "k7m2q-x9p4r": 10 characters from a 32-letter alphabet without look-alikes
+function newBackupCode() {
+  const letters = 'abcdefghjkmnpqrstuvwxyz23456789'; // no i, l, o, 0, 1
+  let out = '';
+  for (const byte of crypto.randomBytes(10)) out += letters[byte % letters.length];
+  return out.slice(0, 5) + '-' + out.slice(5);
+}
+async function replaceBackupCodes(username) {
+  const codes = Array.from({ length: BACKUP_CODE_COUNT }, newBackupCode);
+  await pool.query(`DELETE FROM backup_codes WHERE username = $1`, [username]);
+  await pool.query(
+    `INSERT INTO backup_codes (username, code_hash) SELECT $1, unnest($2::text[])`,
+    [username, codes.map(backupCodeHash)]
+  );
+  return codes;
+}
+async function backupCodesLeft(username) {
+  const row = await one(`SELECT COUNT(*) AS n FROM backup_codes WHERE username = $1 AND used_at IS NULL`, [username]);
+  return Number(row ? row.n : 0);
+}
+async function hasPasskeys(username) {
+  return !!(await one(`SELECT 1 FROM passkeys WHERE username = $1 LIMIT 1`, [username]));
+}
+
+// Wrong codes are limited per account even when RATE_LIMITS=off (a 6-digit
+// code is only a million guesses): 10 wrong ones in 15 minutes and it waits.
+const mfaFailures = new Map(); // username -> [timestamps]
+function mfaLockedOut(username) {
+  const recent = (mfaFailures.get(username) || []).filter(t => Date.now() - t < 15 * 60 * 1000);
+  mfaFailures.set(username, recent);
+  return recent.length >= 10;
+}
+function noteMfaFailure(username) {
+  const list = mfaFailures.get(username) || [];
+  list.push(Date.now());
+  mfaFailures.set(username, list);
+}
+setInterval(() => { for (const [name] of mfaFailures) if (!mfaLockedOut(name) && !mfaFailures.get(name).length) mfaFailures.delete(name); }, 15 * 60 * 1000).unref();
+
+// A 6-digit app code or a backup code. Each works once.
+async function checkSecondFactor(username, code) {
+  if (mfaLockedOut(username)) return { ok: false, error: 'too many wrong codes - wait 15 minutes and try again' };
+  const clean = cleanCode(code);
+  const row = await one(`SELECT totp_secret, totp_enabled, totp_last_step FROM users WHERE username = $1`, [username]);
+  if (!row || !row.totp_enabled || !row.totp_secret) return { ok: false, error: 'two-step login is not on for this account' };
+  if (/^\d{6}$/.test(clean)) {
+    const step = totpStepFor(row.totp_secret, clean, row.totp_last_step);
+    // the WHERE makes using the same code twice at the same moment fail too
+    if (step && await one(`UPDATE users SET totp_last_step = $2 WHERE username = $1 AND COALESCE(totp_last_step, 0) < $2 RETURNING 1`, [username, step])) {
+      return { ok: true, method: 'app' };
+    }
+  } else if (clean.length === 10) {
+    const used = await one(
+      `UPDATE backup_codes SET used_at = NOW() WHERE id = (SELECT id FROM backup_codes WHERE username = $1 AND code_hash = $2 AND used_at IS NULL LIMIT 1) RETURNING id`,
+      [username, backupCodeHash(clean)]
+    );
+    if (used) return { ok: true, method: 'backup', backupCodesLeft: await backupCodesLeft(username) };
+  }
+  noteMfaFailure(username);
+  return { ok: false, error: 'that code isn\'t right - check your authenticator app and try again' };
+}
+
+// Login tickets: proof that the password was right, good for 5 minutes and
+// 5 tries at the second step. Only their hash is kept, in memory.
+const loginTickets = new Map(); // sha256 -> { username, expires, tries }
+function newLoginTicket(username) {
+  const ticket = crypto.randomBytes(24).toString('hex');
+  loginTickets.set(sha256Hex(ticket), { username, expires: Date.now() + LOGIN_TICKET_MS, tries: 0 });
+  return ticket;
+}
+function ticketEntry(ticket) {
+  const key = sha256Hex(String(ticket || ''));
+  const entry = loginTickets.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires || entry.tries >= LOGIN_TICKET_TRIES) { loginTickets.delete(key); return null; }
+  entry.key = key;
+  return entry;
+}
+setInterval(() => { for (const [key, e] of loginTickets) if (Date.now() > e.expires) loginTickets.delete(key); }, 60 * 1000).unref();
+const TICKET_GONE = { error: 'that login took too long - enter your password again', code: 'ticket_expired' };
+
+async function finishLogin(req, res, username, extra) {
+  const user = await getUser(username);
+  if (!user || user.banned || user.is_bot) return res.status(401).json({ error: 'invalid username or password' });
+  const token = await createToken(username, req);
+  res.json(Object.assign({ message: 'ok', username, token, profile: await selfProfile(username) }, extra || {}));
+}
+
+app.post('/login/2fa', route(async (req, res) => {
+  if (rateLimited('login-ip:' + req.ip, 40, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many login attempts - wait a few minutes and try again' });
+  const entry = ticketEntry(req.body.ticket);
+  if (!entry) return res.status(401).json(TICKET_GONE);
+  entry.tries++;
+  const check = await checkSecondFactor(entry.username, req.body.code);
+  if (!check.ok) return res.status(401).json({ error: check.error, code: 'mfa_invalid' });
+  loginTickets.delete(entry.key);
+  await finishLogin(req, res, entry.username, check.method === 'backup' ? { backupCodesLeft: check.backupCodesLeft } : null);
+}));
+
+// ---- WebAuthn (passkeys) ----
+// Just enough CBOR (RFC 8949) to read what authenticators send.
+function cborDecode(buf, start = 0) {
+  let pos = start;
+  function length(info) {
+    if (info < 24) return info;
+    if (info === 24) return buf.readUInt8(pos++);
+    if (info === 25) { const v = buf.readUInt16BE(pos); pos += 2; return v; }
+    if (info === 26) { const v = buf.readUInt32BE(pos); pos += 4; return v; }
+    if (info === 27) { const v = Number(buf.readBigUInt64BE(pos)); pos += 8; return v; }
+    throw new Error('unsupported CBOR length');
+  }
+  function item(depth) {
+    if (depth > 16) throw new Error('CBOR nested too deeply');
+    if (pos >= buf.length) throw new Error('CBOR ended early');
+    const first = buf.readUInt8(pos++);
+    const major = first >> 5, info = first & 31;
+    if (major === 7) {
+      if (info === 20) return false;
+      if (info === 21) return true;
+      if (info === 22 || info === 23) return null;
+      if (info === 25) { pos += 2; return 0; } // half floats aren't used in keys
+      if (info === 26) { const v = buf.readFloatBE(pos); pos += 4; return v; }
+      if (info === 27) { const v = buf.readDoubleBE(pos); pos += 8; return v; }
+      throw new Error('unsupported CBOR value');
+    }
+    const n = length(info);
+    if (major === 0) return n;
+    if (major === 1) return -1 - n;
+    if (major === 2 || major === 3) {
+      if (pos + n > buf.length) throw new Error('CBOR ended early');
+      const bytes = buf.subarray(pos, pos + n); pos += n;
+      return major === 2 ? Buffer.from(bytes) : bytes.toString('utf8');
+    }
+    if (major === 4) { const list = []; for (let i = 0; i < n; i++) list.push(item(depth + 1)); return list; }
+    if (major === 5) { const map = new Map(); for (let i = 0; i < n; i++) { const k = item(depth + 1); map.set(k, item(depth + 1)); } return map; }
+    if (major === 6) return item(depth + 1); // a tag: just the value
+    throw new Error('bad CBOR');
+  }
+  const value = item(0);
+  return { value, end: pos };
+}
+const b64url = buf => Buffer.from(buf).toString('base64url');
+const fromB64url = text => Buffer.from(String(text || ''), 'base64url');
+// A COSE public key (what the authenticator made) as a Node key, or null.
+// ES256 (-7), EdDSA (-8) and RS256 (-257) - what passkeys use in practice.
+function coseToKey(cose) {
+  const kty = cose.get(1), alg = cose.get(3);
+  let jwk = null;
+  if (kty === 2 && alg === -7 && cose.get(-1) === 1) jwk = { kty: 'EC', crv: 'P-256', x: b64url(cose.get(-2)), y: b64url(cose.get(-3)) };
+  else if (kty === 1 && alg === -8 && cose.get(-1) === 6) jwk = { kty: 'OKP', crv: 'Ed25519', x: b64url(cose.get(-2)) };
+  else if (kty === 3 && alg === -257) jwk = { kty: 'RSA', n: b64url(cose.get(-1)), e: b64url(cose.get(-2)) };
+  if (!jwk) return null;
+  return { alg, key: crypto.createPublicKey({ key: jwk, format: 'jwk' }) };
+}
+function parseAuthData(data) {
+  if (data.length < 37) throw new Error('authenticator data is too short');
+  const out = { rpIdHash: data.subarray(0, 32), flags: data[32], signCount: data.readUInt32BE(33) };
+  out.userPresent = !!(out.flags & 0x01);
+  out.userVerified = !!(out.flags & 0x04);
+  if (out.flags & 0x40) {
+    const idLength = data.readUInt16BE(53);
+    out.credentialId = data.subarray(55, 55 + idLength);
+    out.coseKey = cborDecode(data, 55 + idLength).value;
+  }
+  return out;
+}
+
+// Where this request comes from, as WebAuthn sees it. PASSKEY_ORIGINS
+// (comma-separated, e.g. https://discords-zf2n.onrender.com) fixes the list;
+// otherwise the page's origin must be the address the request arrived on -
+// directly, or through relay.js (which passes it on as X-Relay-Host).
+function passkeySite(req) {
+  let origin;
+  try { origin = new URL(String(req.headers.origin || '')); } catch (_) { return null; }
+  if (origin.protocol !== 'https:' && origin.hostname !== 'localhost' && origin.hostname !== '127.0.0.1') return null;
+  const list = String(process.env.PASSKEY_ORIGINS || '').split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+  if (list.length) {
+    if (!list.includes(origin.origin)) return null;
+  } else {
+    const hosts = [req.headers.host, req.headers['x-forwarded-host'], req.headers['x-relay-host']]
+      .flatMap(h => String(h || '').split(',')).map(h => h.trim().toLowerCase()).filter(Boolean);
+    if (!hosts.includes(origin.host.toLowerCase())) return null;
+  }
+  return { origin: origin.origin, rpId: origin.hostname };
+}
+const PASSKEY_WRONG_SITE = { error: 'passkeys only work on the chat\'s own address - open it there and try again' };
+
+const passkeyChallenges = new Map(); // id -> { challenge, purpose, username, origin, rpId, expires }
+function newPasskeyChallenge(fields) {
+  const id = crypto.randomBytes(16).toString('hex');
+  const challenge = b64url(crypto.randomBytes(32));
+  // anyone can ask for a login challenge, so the map can't grow without end
+  if (passkeyChallenges.size >= 5000) passkeyChallenges.delete(passkeyChallenges.keys().next().value);
+  passkeyChallenges.set(id, Object.assign({ challenge, expires: Date.now() + PASSKEY_CHALLENGE_MS }, fields));
+  return { id, challenge };
+}
+// Each challenge works once, for what it was made for.
+function takePasskeyChallenge(id, purpose) {
+  const entry = passkeyChallenges.get(String(id || ''));
+  passkeyChallenges.delete(String(id || ''));
+  if (!entry || entry.purpose !== purpose || Date.now() > entry.expires) return null;
+  return entry;
+}
+setInterval(() => { for (const [id, c] of passkeyChallenges) if (Date.now() > c.expires) passkeyChallenges.delete(id); }, 60 * 1000).unref();
+
+function checkClientData(raw, type, challenge, origin) {
+  let data;
+  try { data = JSON.parse(fromB64url(raw).toString('utf8')); } catch (_) { throw new Error('the passkey answer was unreadable'); }
+  if (data.type !== type) throw new Error('the passkey answer was for something else');
+  const sent = fromB64url(data.challenge), wanted = fromB64url(challenge);
+  if (sent.length !== wanted.length || !crypto.timingSafeEqual(sent, wanted)) throw new Error('that passkey request ran out - try again');
+  if (data.origin !== origin) throw new Error(PASSKEY_WRONG_SITE.error);
+}
+
+// Registration: checks the browser's answer and returns what to store.
+// Attestation (who made the authenticator) isn't asked for or checked - a
+// passkey is trusted because the signed-in person added it with their password.
+function verifyPasskeyRegistration(credential, challenge, site) {
+  const response = (credential && credential.response) || {};
+  checkClientData(response.clientDataJSON, 'webauthn.create', challenge.challenge, site.origin);
+  const attestation = cborDecode(fromB64url(response.attestationObject)).value;
+  if (!(attestation instanceof Map) || !Buffer.isBuffer(attestation.get('authData'))) throw new Error('the passkey answer was unreadable');
+  const auth = parseAuthData(attestation.get('authData'));
+  if (!auth.rpIdHash.equals(crypto.createHash('sha256').update(site.rpId).digest())) throw new Error(PASSKEY_WRONG_SITE.error);
+  if (!auth.userPresent) throw new Error('the passkey wasn\'t confirmed');
+  if (!auth.credentialId || !(auth.coseKey instanceof Map)) throw new Error('the passkey answer had no key in it');
+  if (b64url(auth.credentialId) !== String(credential.rawId || credential.id || '')) throw new Error('the passkey answer didn\'t match');
+  const made = coseToKey(auth.coseKey);
+  if (!made) throw new Error('this kind of passkey isn\'t supported - try another device or password manager');
+  return {
+    credentialId: b64url(auth.credentialId),
+    publicKey: made.key.export({ type: 'spki', format: 'der' }).toString('base64'),
+    alg: made.alg,
+    signCount: auth.signCount
+  };
+}
+
+// Login: checks a signed answer against a stored passkey row.
+function verifyPasskeyAssertion(credential, row, challenge, site, needVerified) {
+  const response = (credential && credential.response) || {};
+  checkClientData(response.clientDataJSON, 'webauthn.get', challenge.challenge, site.origin);
+  if (site.rpId !== row.rp_id && !site.rpId.endsWith('.' + row.rp_id)) throw new Error(PASSKEY_WRONG_SITE.error);
+  const authData = fromB64url(response.authenticatorData);
+  const auth = parseAuthData(authData);
+  if (!auth.rpIdHash.equals(crypto.createHash('sha256').update(row.rp_id).digest())) throw new Error(PASSKEY_WRONG_SITE.error);
+  if (!auth.userPresent) throw new Error('the passkey wasn\'t confirmed');
+  if (needVerified && !auth.userVerified) throw new Error('your device didn\'t check it was you (fingerprint, face or PIN) - try again');
+  const signed = Buffer.concat([authData, crypto.createHash('sha256').update(fromB64url(response.clientDataJSON)).digest()]);
+  const key = crypto.createPublicKey({ key: Buffer.from(row.public_key, 'base64'), format: 'der', type: 'spki' });
+  const signature = fromB64url(response.signature);
+  const alg = Number(row.alg);
+  const ok = alg === -8 ? crypto.verify(null, signed, key, signature)
+    : crypto.verify('sha256', signed, alg === -7 ? { key, dsaEncoding: 'der' } : key, signature);
+  if (!ok) throw new Error('that passkey didn\'t check out');
+  // a counter that goes backwards means a copied security key; synced passkeys always say 0
+  if (auth.signCount && Number(row.sign_count) && auth.signCount <= Number(row.sign_count)) throw new Error('that passkey looks copied - remove it and add it again');
+  return auth.signCount;
+}
+async function passkeyRowFor(credential) {
+  const id = String((credential && (credential.rawId || credential.id)) || '');
+  if (!id || id.length > 1400) return null;
+  return one(`SELECT id, username, credential_id, public_key, alg, sign_count, rp_id FROM passkeys WHERE credential_id = $1`, [id]);
+}
+async function notePasskeyUsed(row, signCount) {
+  await pool.query(`UPDATE passkeys SET sign_count = $2, last_used_at = NOW() WHERE id = $1`, [row.id, signCount]);
+}
+
+// Passkey login, no username or password: the browser lists this site's passkeys.
+app.post('/passkeys/login/options', route(async (req, res) => {
+  if (rateLimited('login-ip:' + req.ip, 40, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many login attempts - wait a few minutes and try again' });
+  const site = passkeySite(req);
+  if (!site) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const challenge = newPasskeyChallenge({ purpose: 'login', origin: site.origin, rpId: site.rpId });
+  res.json({ challengeId: challenge.id, publicKey: { challenge: challenge.challenge, rpId: site.rpId, timeout: PASSKEY_CHALLENGE_MS, userVerification: 'required' } });
+}));
+app.post('/passkeys/login', route(async (req, res) => {
+  const challenge = takePasskeyChallenge(req.body.challengeId, 'login');
+  if (!challenge) return res.status(400).json({ error: 'that passkey request ran out - try again' });
+  const site = passkeySite(req);
+  if (!site || site.origin !== challenge.origin) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const row = await passkeyRowFor(req.body.credential);
+  if (!row) return res.status(401).json({ error: 'this chat doesn\'t know that passkey - it may have been removed. Log in with your password.', code: 'passkey_unknown' });
+  let count;
+  try { count = verifyPasskeyAssertion(req.body.credential, row, challenge, site, true); } catch (err) { return res.status(401).json({ error: err.message }); }
+  await notePasskeyUsed(row, count);
+  await finishLogin(req, res, row.username);
+}));
+// A passkey as the second step after a password.
+app.post('/login/2fa/passkey/options', route(async (req, res) => {
+  const entry = ticketEntry(req.body.ticket);
+  if (!entry) return res.status(401).json(TICKET_GONE);
+  const site = passkeySite(req);
+  if (!site) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const rows = await q(`SELECT credential_id, transports FROM passkeys WHERE username = $1 AND ($2 = rp_id OR $2 LIKE '%.' || rp_id)`, [entry.username, site.rpId]);
+  if (!rows.length) return res.status(400).json({ error: 'you have no passkeys for this address - use your authenticator app or a backup code' });
+  const challenge = newPasskeyChallenge({ purpose: 'second', username: entry.username, ticketKey: entry.key, origin: site.origin, rpId: site.rpId });
+  res.json({
+    challengeId: challenge.id,
+    publicKey: {
+      challenge: challenge.challenge, rpId: site.rpId, timeout: PASSKEY_CHALLENGE_MS, userVerification: 'preferred',
+      allowCredentials: rows.map(r => ({ type: 'public-key', id: r.credential_id, transports: r.transports ? r.transports.split(',') : undefined }))
+    }
+  });
+}));
+app.post('/login/2fa/passkey', route(async (req, res) => {
+  const entry = ticketEntry(req.body.ticket);
+  if (!entry) return res.status(401).json(TICKET_GONE);
+  entry.tries++;
+  const challenge = takePasskeyChallenge(req.body.challengeId, 'second');
+  if (!challenge || challenge.ticketKey !== entry.key) return res.status(400).json({ error: 'that passkey request ran out - try again' });
+  const site = passkeySite(req);
+  if (!site || site.origin !== challenge.origin) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const row = await passkeyRowFor(req.body.credential);
+  if (!row || row.username !== entry.username) return res.status(401).json({ error: 'that passkey isn\'t one of this account\'s' });
+  let count;
+  try { count = verifyPasskeyAssertion(req.body.credential, row, challenge, site, false); } catch (err) { return res.status(401).json({ error: err.message }); }
+  await notePasskeyUsed(row, count);
+  loginTickets.delete(entry.key);
+  await finishLogin(req, res, entry.username);
+}));
+
+// ---- Settings > My Account > Two-step login and Passkeys ----
+async function passwordMatches(username, password) {
+  const user = await getUser(username);
+  return !!(user && password && String(password).length <= 200 && await bcrypt.compare(String(password), user.password_hash));
+}
+async function twoStepStatus(username) {
+  const user = await getUser(username);
+  const keys = await q(`SELECT id, name, rp_id, created_at, last_used_at FROM passkeys WHERE username = $1 ORDER BY id`, [username]);
+  return {
+    enabled: !!(user && user.totp_enabled),
+    backupCodesLeft: user && user.totp_enabled ? await backupCodesLeft(username) : 0,
+    adminRequires: ADMIN_REQUIRES_2FA && await isSiteAdmin(username),
+    passkeys: keys.map(k => ({ id: k.id, name: k.name || 'Passkey', site: k.rp_id, createdAt: k.created_at, lastUsedAt: k.last_used_at }))
+  };
+}
+// Two-step login can change what a site admin may do, so everything that
+// depends on admin powers is refreshed.
+async function twoStepChanged(username) {
+  invalidateUser(username);
+  sendToUser(username, 'profilesChanged', { username, profile: await profileFor(username) });
+  if (await isSiteAdmin(username)) { siteAdminListChanged(); await resyncRooms([username]); }
+}
+
+app.get('/settings/2fa', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  res.json(await twoStepStatus(req.username));
+}));
+// Step 1: a new secret (not on yet). Needs the password, like any change to how you log in.
+app.post('/settings/2fa/setup', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  const user = await getUser(req.username);
+  if (user.totp_enabled) return res.status(400).json({ error: 'two-step login is already on' });
+  const secret = base32Encode(crypto.randomBytes(20));
+  await pool.query(`UPDATE users SET totp_secret = $1, totp_last_step = 0 WHERE username = $2 AND COALESCE(totp_enabled, 0) = 0`, [secret, req.username]);
+  invalidateUser(req.username);
+  const issuer = process.env.TOTP_ISSUER || 'Chat';
+  const label = encodeURIComponent(issuer) + ':' + encodeURIComponent(req.username);
+  const uri = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${TOTP_STEP}`;
+  const qrSvg = await QRCode.toString(uri, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  res.json({ secret: secret.match(/.{1,4}/g).join(' '), uri, qrSvg });
+}));
+// Step 2: a code from the app proves it's set up right; only then is it on.
+app.post('/settings/2fa/enable', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  const row = await one(`SELECT totp_secret, totp_enabled FROM users WHERE username = $1`, [req.username]);
+  if (!row || row.totp_enabled) return res.status(400).json({ error: 'two-step login is already on' });
+  if (!row.totp_secret) return res.status(400).json({ error: 'start the setup first' });
+  if (mfaLockedOut(req.username)) return res.status(429).json({ error: 'too many wrong codes - wait 15 minutes and try again' });
+  const code = cleanCode(req.body.code);
+  const step = /^\d{6}$/.test(code) ? totpStepFor(row.totp_secret, code, 0) : 0;
+  if (!step) { noteMfaFailure(req.username); return res.status(400).json({ error: 'that code isn\'t right - check the app shows this account, and that your phone\'s clock is set automatically' }); }
+  const on = await one(
+    `UPDATE users SET totp_enabled = 1, totp_enabled_at = NOW(), totp_last_step = $2 WHERE username = $1 AND COALESCE(totp_enabled, 0) = 0 AND totp_secret = $3 RETURNING 1`,
+    [req.username, step, row.totp_secret]
+  );
+  if (!on) return res.status(409).json({ error: 'the setup changed on another device - start again' });
+  const backupCodes = await replaceBackupCodes(req.username);
+  await twoStepChanged(req.username);
+  console.log(`two-step login turned on for ${req.username}`);
+  res.json({ message: 'ok', backupCodes, profile: await selfProfile(req.username), status: await twoStepStatus(req.username) });
+}));
+// Turning it off needs the password and a code (app or backup).
+app.post('/settings/2fa/disable', requireAuth, route(async (req, res) => {
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  const check = await checkSecondFactor(req.username, req.body.code);
+  if (!check.ok) return res.status(400).json({ error: check.error });
+  await turnOffTwoStep(req.username);
+  console.log(`two-step login turned off by ${req.username}`);
+  res.json({ message: 'ok', profile: await selfProfile(req.username), status: await twoStepStatus(req.username) });
+}));
+async function turnOffTwoStep(username) {
+  await pool.query(`UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = 0 WHERE username = $1`, [username]);
+  await pool.query(`DELETE FROM backup_codes WHERE username = $1`, [username]);
+  await twoStepChanged(username);
+}
+app.post('/settings/2fa/backup-codes', requireAuth, route(async (req, res) => {
+  const user = await getUser(req.username);
+  if (!user || !user.totp_enabled) return res.status(400).json({ error: 'two-step login is not on' });
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  res.json({ message: 'ok', backupCodes: await replaceBackupCodes(req.username), status: await twoStepStatus(req.username) });
+}));
+
+// Adding a passkey: the password again, then the browser makes one.
+app.post('/settings/passkeys/options', requireAuth, route(async (req, res) => {
+  const user = await getUser(req.username);
+  if (!user || user.is_bot) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  const site = passkeySite(req);
+  if (!site) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const existing = await q(`SELECT credential_id, transports FROM passkeys WHERE username = $1`, [req.username]);
+  if (existing.length >= MAX_PASSKEYS) return res.status(400).json({ error: `you already have ${MAX_PASSKEYS} passkeys - remove one first` });
+  const challenge = newPasskeyChallenge({ purpose: 'register', username: req.username, origin: site.origin, rpId: site.rpId });
+  res.json({
+    challengeId: challenge.id,
+    publicKey: {
+      challenge: challenge.challenge,
+      rp: { id: site.rpId, name: process.env.TOTP_ISSUER || 'Chat' },
+      user: { id: b64url(Buffer.from('user:' + user.id)), name: user.username, displayName: user.display_name || user.username },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
+      timeout: PASSKEY_CHALLENGE_MS,
+      attestation: 'none',
+      authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'preferred' },
+      excludeCredentials: existing.map(r => ({ type: 'public-key', id: r.credential_id, transports: r.transports ? r.transports.split(',') : undefined }))
+    }
+  });
+}));
+app.post('/settings/passkeys', requireAuth, route(async (req, res) => {
+  const challenge = takePasskeyChallenge(req.body.challengeId, 'register');
+  if (!challenge || challenge.username !== req.username) return res.status(400).json({ error: 'that passkey request ran out - try again' });
+  const site = passkeySite(req);
+  if (!site || site.origin !== challenge.origin) return res.status(400).json(PASSKEY_WRONG_SITE);
+  let made;
+  try { made = verifyPasskeyRegistration(req.body.credential, challenge, site); } catch (err) { return res.status(400).json({ error: err.message }); }
+  const transports = (Array.isArray(req.body.transports) ? req.body.transports : [])
+    .map(String).filter(t => /^[a-z-]{2,20}$/.test(t)).slice(0, 6).join(',');
+  const name = cleanText(req.body.name || '', 40) || deviceLabel(req.headers['user-agent']);
+  const added = await one(
+    `INSERT INTO passkeys (username, credential_id, public_key, alg, sign_count, rp_id, name, transports)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (credential_id) DO NOTHING RETURNING id`,
+    [req.username, made.credentialId, made.publicKey, made.alg, made.signCount, site.rpId, name, transports]
+  );
+  if (!added) return res.status(409).json({ error: 'that passkey is already added' });
+  console.log(`passkey added for ${req.username}`);
+  res.json({ message: 'ok', status: await twoStepStatus(req.username) });
+}));
+app.post('/settings/passkeys/:id/rename', requireAuth, route(async (req, res) => {
+  const name = cleanText(req.body.name || '', 40);
+  if (!name) return res.status(400).json({ error: 'give it a name' });
+  await pool.query(`UPDATE passkeys SET name = $1 WHERE id = $2 AND username = $3`, [name, Number(req.params.id) || 0, req.username]);
+  res.json({ message: 'ok', status: await twoStepStatus(req.username) });
+}));
+app.post('/settings/passkeys/:id/delete', requireAuth, route(async (req, res) => {
+  await pool.query(`DELETE FROM passkeys WHERE id = $1 AND username = $2`, [Number(req.params.id) || 0, req.username]);
+  res.json({ message: 'ok', status: await twoStepStatus(req.username) });
+}));
+
+// Someone who lost their phone AND their backup codes: a site admin can turn
+// their two-step login off (and remove their passkeys) so the password works
+// alone again. Only Purple can do that for another site admin.
+app.post('/admin/users/:username/reset-2fa', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const target = await getUser(cleanUsername(req.params.username));
+  if (!target || target.is_bot) return res.status(404).json({ error: 'user not found' });
+  if (target.username === req.username) return res.status(400).json({ error: 'turn your own off in Settings > My Account' });
+  if (req.username !== 'Purple' && (await isSiteAdmin(target.username))) return res.status(403).json({ error: 'only Purple can do that to another site admin' });
+  await pool.query(`DELETE FROM passkeys WHERE username = $1`, [target.username]);
+  await turnOffTwoStep(target.username);
+  sendToUser(target.username, 'adminNotice', { message: 'A site admin turned off your two-step login and removed your passkeys. Turn it back on in Settings > My Account.' });
+  console.log(`two-step login reset for ${target.username} by ${req.username}`);
+  res.json({ message: 'ok' });
+}));
+
+// RESET_2FA_FOR=Purple (comma-separated) at boot: the way back in for an
+// account nobody above can reset. Remove it from the settings afterwards.
+async function resetTwoStepFromEnv() {
+  const names = String(process.env.RESET_2FA_FOR || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const name of names) {
+    const user = await getUser(name);
+    if (!user) { console.warn(`RESET_2FA_FOR: no account called ${name}`); continue; }
+    await pool.query(`UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = 0 WHERE username = $1`, [user.username]);
+    await pool.query(`DELETE FROM backup_codes WHERE username = $1`, [user.username]);
+    await pool.query(`DELETE FROM passkeys WHERE username = $1`, [user.username]);
+    invalidateUser(user.username);
+    console.warn(`RESET_2FA_FOR: two-step login and passkeys reset for ${user.username} - remove RESET_2FA_FOR now`);
+  }
+}
 
 app.post('/logout', requireAuth, route(async (req, res) => {
   if (req.sessionKey) await endSessions(req.username, [req.sessionKey], 'You logged out.');
@@ -2726,7 +3342,7 @@ app.post('/profile', requireAuth, route(async (req, res) => {
   if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
   if ('readReceipts' in body) set('read_receipts', body.readReceipts ? 1 : 0);
   if ('hideAdminBadge' in body) {
-    if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'only site admins have that badge' });
+    if (!(await isSiteAdmin(req.username))) return res.status(403).json({ error: 'only site admins have that badge' });
     set('hide_admin', body.hideAdminBadge ? 1 : 0);
   }
   if ('pronouns' in body) set('pronouns', cleanText(body.pronouns || '', 40));
@@ -4455,13 +5071,14 @@ async function getGlobalCensor() {
 // badge - admins may know each other), and who is banned or muted.
 app.get('/admin/overview', requireAuth, route(async (req, res) => {
   if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
-  const admins = await q(`SELECT username, display_name, hide_admin FROM users WHERE (is_admin = 1 OR username = 'Purple') AND COALESCE(is_bot, 0) = 0 ORDER BY LOWER(username)`);
+  const admins = await q(`SELECT username, display_name, hide_admin, totp_enabled FROM users WHERE (is_admin = 1 OR username = 'Purple') AND COALESCE(is_bot, 0) = 0 ORDER BY LOWER(username)`);
   const banned = await q(`SELECT username, display_name FROM users WHERE banned = 1 ORDER BY LOWER(username)`);
   const muted = await q(`SELECT username, muted_until, muted_by FROM mutes WHERE muted_until > NOW() ORDER BY muted_until`);
   res.json({
     me: req.username,
     canManageAdmins: req.username === 'Purple',
-    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple' })),
+    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple', twoStep: !!a.totp_enabled })),
+    adminRequires2fa: ADMIN_REQUIRES_2FA,
     banned: banned.map(b => ({ username: b.username, displayName: b.display_name || b.username })),
     muted: muted.map(m => ({ username: m.username, until: m.muted_until, by: m.muted_by })),
     globalCensor: await getGlobalCensor()
@@ -6590,7 +7207,7 @@ io.on('connection', (socket) => {
       if (['mute', 'kick', 'ban', 'setAdmin'].includes(action) && socket.username !== 'Purple') {
         const target = cleanUsername(data.username);
         const removing = action !== 'setAdmin' || !data.isAdmin;
-        if (removing && (await isAdmin(target))) throw new Error('only Purple can do that to another site admin');
+        if (removing && (await isSiteAdmin(target))) throw new Error('only Purple can do that to another site admin');
       }
       if (action === 'createChannel') {
         const name = cleanUsername(data.name).replace(/^#/, '');
@@ -6825,6 +7442,7 @@ async function main() {
     await pool.query(`INSERT INTO channels (name, created_by) VALUES ($1, 'system') ON CONFLICT (name) DO NOTHING`, [name]);
   }
   await applySeedAccounts();
+  await resetTwoStepFromEnv();
   await addDefaultVoiceChannelOnce().catch(err => console.error('default voice channel failed:', err.message));
   // calls are kept in memory, so none survive a restart - close their logs
   await pool.query(`UPDATE messages SET text = 'ended' WHERE kind = 'call' AND text = 'ongoing'`);

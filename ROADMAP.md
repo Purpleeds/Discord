@@ -197,6 +197,13 @@ large, new system - also split it over several sessions).
   [Sticker] tags, a big picture preview where supported, and clicking opens
   that exact message.
 
+- [x] **Two-step login and passkeys** (Nov 2026) - authenticator-app codes
+  with 10 backup codes, passkey login (WebAuthn, no library: a small CBOR
+  reader + Node crypto), passkeys as the second step too; site admins need
+  it for their powers (paused, never locked out); admin reset and
+  `RESET_2FA_FOR` for lost phones; the Chat Notifier asks for the code.
+  `regression/two_step*.test.js`.
+
 ## Next: desktop app (.exe)
 
 - [x] **Windows notifier** (Option A) - *done Nov 2026*: `desktop/`, a tray

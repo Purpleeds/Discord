@@ -46,6 +46,10 @@ tables itself on startup, so an empty database is all it needs.
 | `LINK_PREVIEW_TEST_HOSTS` | no | Tests only (ignored unless `RATE_LIMITS=off`): exact `host:port` pairs link previews may fetch even though they're private. |
 | `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
 | `TURN_USERNAME` / `TURN_CREDENTIAL` | no | Login for that TURN relay. |
+| `ADMIN_2FA` | no | Site admins need two-step login for their admin powers (default on; `off` turns that off - the regression runner does, for its other suites). |
+| `PASSKEY_ORIGINS` | no | Comma-separated addresses passkeys may be made and used on, e.g. `https://discords-zf2n.onrender.com`. Without it, the page's own address is used (through `relay.js` too). |
+| `RESET_2FA_FOR` | no | Comma-separated usernames whose two-step login and passkeys are turned off at start-up - the way back in for an account nobody else can reset (`Purple`). Remove it again afterwards. |
+| `TOTP_ISSUER` | no | The name authenticator apps show for this chat (default `Chat`). |
 
 ### Calls and TURN
 
@@ -155,6 +159,21 @@ TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/chat_test PGSSL=false np
 The account named `Purple` is always a site-wide admin. Other accounts can
 be created or made admins at startup via `SEED_ACCOUNTS` near the top of
 `server.js`.
+
+### Two-step login and passkeys
+
+Settings > My Account has **Two-step login** (an authenticator app code at
+login, plus 10 single-use backup codes) and **Passkeys** (log in with a
+fingerprint, face or screen lock, no password). Site admins need two-step
+login for their admin powers: until they turn it on they keep their account
+but the Site Admin page and admin actions are paused (`ADMIN_2FA=off` turns
+the requirement off).
+
+If someone loses their phone and their backup codes, a site admin can turn
+their two-step login off from Settings > Site Admin (only Purple can for
+another admin). For Purple, set `RESET_2FA_FOR=Purple` and restart, then
+remove it. Scripts and the Chat Notifier send the code with the password
+(`POST /login` with `code`).
 
 `regression/` holds the larger suites, including the browser ones that
 click through the real page (see [regression/README.md](regression/README.md)).

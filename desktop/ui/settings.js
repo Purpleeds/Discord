@@ -229,10 +229,13 @@ $('signIn').addEventListener('submit', async e => {
   e.preventDefault();
   $('signInBtn').disabled = true;
   showMsg('Signing in…', true);
-  const result = await notifier.signIn({ server: $('server').value, username: $('username').value, password: $('password').value });
+  const result = await notifier.signIn({ server: $('server').value, username: $('username').value, password: $('password').value, code: $('codeField').hidden ? '' : $('code').value });
   $('signInBtn').disabled = false;
+  // two-step login: the chat wants a code too - ask, then sign in again with it
+  if (result && result.needCode) { $('codeField').hidden = false; $('code').value = ''; $('code').focus(); }
   if (result && result.error) { showMsg(result.error, false); return; }
   $('password').value = '';
+  $('code').value = ''; $('codeField').hidden = true;
   showMsg('', true);
 });
 

@@ -788,6 +788,54 @@ async function setupSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_server ON audit_log (server_id, id DESC)`);
+  // ---- AutoMod (see "AutoMod" further down) ----
+  // One row per server and rule kind; config is JSON (words, limits, allowed sites).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automod_rules (
+      server_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      action TEXT NOT NULL DEFAULT 'block',
+      timeout_minutes INTEGER NOT NULL DEFAULT 0,
+      config TEXT NOT NULL DEFAULT '{}',
+      exempt_roles TEXT NOT NULL DEFAULT '',
+      exempt_channels TEXT NOT NULL DEFAULT '',
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (server_id, kind)
+    )`);
+  // The moderators' review queue: blocked and flagged messages, raid alerts.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automod_queue (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      username TEXT,
+      room TEXT,
+      message_id INTEGER,
+      content TEXT,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      handled_by TEXT,
+      handled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_automod_queue_server ON automod_queue (server_id, status, id DESC)`);
+  // Raid protection: who may post yet, join surges, lockdown.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS raid_settings (
+      server_id INTEGER PRIMARY KEY,
+      min_account_minutes INTEGER NOT NULL DEFAULT 0,
+      min_member_minutes INTEGER NOT NULL DEFAULT 0,
+      join_limit INTEGER NOT NULL DEFAULT 0,
+      join_window_seconds INTEGER NOT NULL DEFAULT 60,
+      lockdown_minutes INTEGER NOT NULL DEFAULT 30,
+      lockdown_until TIMESTAMPTZ,
+      lockdown_reason TEXT,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
   // ---- stickers ----
   await pool.query(`
     CREATE TABLE IF NOT EXISTS server_stickers (
@@ -1568,6 +1616,331 @@ async function moderationProblem(actor, target, serverId) {
   return null;
 }
 
+// ---- AutoMod ----
+// Per-server rules that check what people post in the server's channels
+// (and threads). Each rule either blocks the message (the sender gets an
+// error and the text stays in their message box) or flags it (it's posted,
+// and it goes to the moderators' review queue). A rule can also time the
+// sender out. Blocked messages go to the queue too, so moderators see the
+// attempts. Owner, admins and anyone with Manage messages or Manage server
+// are never checked; rules can also skip some roles and channels. DMs and
+// group chats aren't servers, so AutoMod doesn't look at them.
+const AUTOMOD_KINDS = ['words', 'spam', 'mentions', 'links', 'invites'];
+const AUTOMOD_TIMEOUTS = [0, 5, 10, 60, 360, 1440]; // minutes
+const AUTOMOD_ACTOR = 'AutoMod'; // audit log / timeouts "set by"
+const MAX_AUTOMOD_WORDS = 300;
+function automodDefaults(kind) {
+  return {
+    words: { words: [] },
+    spam: { maxMessages: 6, perSeconds: 5, maxDuplicates: 3 },
+    mentions: { maxMentions: 5 },
+    links: { allowed: [] },
+    invites: {}
+  }[kind];
+}
+const clampInt = (value, min, max, fallback) => {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+};
+const toList = value => (Array.isArray(value) ? value : String(value || '').split(/[\n,]/)).map(v => String(v).trim()).filter(Boolean);
+// A banned word: letters/numbers/spaces/' and -, with an optional * at the
+// start and/or end (matches longer words). No regexes - nothing can be slow.
+function cleanAutomodWord(word) {
+  const w = String(word).toLowerCase().normalize('NFKC').replace(/\s+/g, ' ').trim();
+  if (!w || w.length > 60) return '';
+  const core = w.replace(/^\*/, '').replace(/\*$/, '');
+  if (!core || /\*/.test(core) || !/^[\p{L}\p{N}' .$@!_-]+$/u.test(core)) return '';
+  return w;
+}
+function cleanDomain(value) {
+  let d = String(value).toLowerCase().trim().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0];
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && d.length <= 120 ? d : '';
+}
+function cleanAutomodConfig(kind, raw) {
+  raw = raw && typeof raw === 'object' ? raw : {};
+  const d = automodDefaults(kind);
+  if (kind === 'words') return { words: [...new Set(toList(raw.words).map(cleanAutomodWord).filter(Boolean))].slice(0, MAX_AUTOMOD_WORDS) };
+  if (kind === 'spam') return {
+    maxMessages: clampInt(raw.maxMessages, 2, 50, d.maxMessages),
+    perSeconds: clampInt(raw.perSeconds, 2, 120, d.perSeconds),
+    maxDuplicates: clampInt(raw.maxDuplicates, 0, 20, d.maxDuplicates) // 0 = don't check repeats
+  };
+  if (kind === 'mentions') return { maxMentions: clampInt(raw.maxMentions, 1, 50, d.maxMentions) };
+  if (kind === 'links') return { allowed: [...new Set(toList(raw.allowed).map(cleanDomain).filter(Boolean))].slice(0, 100) };
+  return {};
+}
+const idList = text => String(text || '').split(',').map(Number).filter(n => n > 0);
+function automodRuleFromRow(kind, row) {
+  let config = {};
+  try { config = row ? JSON.parse(row.config || '{}') : {}; } catch (e) {}
+  return {
+    kind,
+    enabled: !!(row && row.enabled),
+    action: row && row.action === 'flag' ? 'flag' : 'block',
+    timeoutMinutes: row && AUTOMOD_TIMEOUTS.includes(row.timeout_minutes) ? row.timeout_minutes : 0,
+    config: cleanAutomodConfig(kind, row ? config : automodDefaults(kind)),
+    exemptRoles: row ? idList(row.exempt_roles) : [],
+    exemptChannels: row ? idList(row.exempt_channels) : []
+  };
+}
+function raidFromRow(row) {
+  const r = row || {};
+  const until = r.lockdown_until && new Date(r.lockdown_until) > new Date() ? r.lockdown_until : null;
+  return {
+    minAccountMinutes: r.min_account_minutes || 0,
+    minMemberMinutes: r.min_member_minutes || 0,
+    joinLimit: r.join_limit || 0,
+    joinWindowSeconds: r.join_window_seconds || 60,
+    lockdownMinutes: r.lockdown_minutes || 30,
+    lockdownUntil: until,
+    lockdownReason: until ? (r.lockdown_reason || '') : ''
+  };
+}
+// Rules and raid settings are read on every message, so they're cached per
+// server (dropped whenever they're saved).
+const automodCache = new Map(); // serverId -> { at, rules, raid, wordRe }
+function forgetAutomod(serverId) { automodCache.delete(Number(serverId)); }
+async function automodFor(serverId) {
+  const hit = automodCache.get(serverId);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit;
+  const rows = await q(`SELECT * FROM automod_rules WHERE server_id = $1`, [serverId]);
+  const rules = AUTOMOD_KINDS.map(kind => automodRuleFromRow(kind, rows.find(r => r.kind === kind)));
+  const raid = raidFromRow(await one(`SELECT * FROM raid_settings WHERE server_id = $1`, [serverId]));
+  const words = rules.find(r => r.kind === 'words').config.words;
+  const entry = { at: Date.now(), rules, raid, wordRe: wordsRegex(words) };
+  automodCache.set(serverId, entry);
+  if (automodCache.size > 2000) automodCache.delete(automodCache.keys().next().value);
+  return entry;
+}
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function wordsRegex(words) {
+  if (!words.length) return null;
+  const parts = words.map(w => {
+    const pre = w.startsWith('*'), post = w.length > 1 && w.endsWith('*');
+    const core = escapeRe(w.replace(/^\*/, '').replace(/\*$/, '')).replace(/ /g, '\\s+');
+    return (pre ? '[\\p{L}\\p{N}]*' : '') + core + (post ? '[\\p{L}\\p{N}]*' : '');
+  });
+  return new RegExp('(?<![\\p{L}\\p{N}])(?:' + parts.join('|') + ')(?![\\p{L}\\p{N}])', 'iu');
+}
+// Lower case, accents and invisible characters removed, so "Bá​d" is "bad".
+function automodText(text) {
+  return String(text || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[­​-‏⁠﻿]/g, '').toLowerCase();
+}
+const URL_RE = /\bhttps?:\/\/[^\s<>()]+|\bwww\.[^\s<>()]+/gi;
+const INVITE_RE = /(?:^|[^\w.])(?:discord(?:app)?\.com\/invite\/|discord\.gg\/|dsc\.gg\/|discord\.me\/|t\.me\/(?:joinchat\/|\+)|chat\.whatsapp\.com\/|guilded\.gg\/i\/)[\w-]+/i;
+function linkHosts(text) {
+  const hosts = [];
+  for (const m of String(text).matchAll(URL_RE)) {
+    try { hosts.push(new URL(/^www\./i.test(m[0]) ? 'http://' + m[0] : m[0]).hostname.toLowerCase().replace(/^www\./, '')); } catch (e) {}
+  }
+  return hosts;
+}
+function mentionCount(text) {
+  const names = new Set();
+  for (const m of String(text).matchAll(/(?:^|[^\w@.])@([a-zA-Z0-9_.-]{2,30})/g)) names.add(m[1].toLowerCase());
+  const roles = new Set([...String(text).matchAll(/<@&(\d+)>/g)].map(m => m[1]));
+  return names.size + roles.size;
+}
+// Recent posts per server+person, for the spam rule (memory only).
+const automodRecent = new Map(); // serverId\nusername -> [{ t, text }]
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, list] of automodRecent) if (!list.length || now - list[list.length - 1].t > 2 * 60 * 1000) automodRecent.delete(key);
+}, 60 * 1000).unref();
+
+const AUTOMOD_SENDER_TEXT = {
+  words: 'it has a word this server doesn\'t allow',
+  spam: 'you\'re sending messages too quickly',
+  repeat: 'you\'ve sent the same message too many times',
+  mentions: 'it mentions too many people',
+  links: 'links to that site aren\'t allowed here',
+  invites: 'invite links to other servers aren\'t allowed here'
+};
+// Checks a message about to be posted (or an edit) in a server channel.
+// Returns null when nothing applies, else { serverId, blocked, flags, timeouts }
+// where blocked/flags are { kind, reason (for moderators), says (for the sender) }.
+async function automodCheck(username, room, text, opts = {}) {
+  const channel = await channelForRoom(room);
+  if (!channel) return null;
+  const serverId = channel.server_id;
+  const am = await automodFor(serverId);
+  const active = am.rules.filter(r => r.enabled && !r.exemptChannels.includes(channel.id) && (!opts.edit || r.kind !== 'spam'));
+  if (!active.length) return null;
+  const mine = await serverPermissions(username, serverId);
+  if (mine.has('manage_messages') || mine.has('manage_server')) return null;
+  const needRoles = active.some(r => r.exemptRoles.length);
+  const myRoles = needRoles ? new Set((await q(`SELECT role_id FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, username])).map(r => r.role_id)) : new Set();
+  const plain = automodText(text);
+  const hits = [];
+  for (const rule of active) {
+    if (rule.exemptRoles.some(id => myRoles.has(id))) continue;
+    let hit = null;
+    if (rule.kind === 'words' && am.wordRe) {
+      const m = plain.match(am.wordRe);
+      if (m) hit = { reason: `Banned word: "${m[0].slice(0, 60)}"`, says: AUTOMOD_SENDER_TEXT.words };
+    } else if (rule.kind === 'mentions') {
+      const n = mentionCount(text) + (EVERYONE_RE.test(text) ? 1 : 0);
+      if (n > rule.config.maxMentions) hit = { reason: `${n} mentions (the limit is ${rule.config.maxMentions})`, says: AUTOMOD_SENDER_TEXT.mentions + ` (up to ${rule.config.maxMentions} here)` };
+    } else if (rule.kind === 'links') {
+      const allowed = rule.config.allowed;
+      const bad = linkHosts(text).find(h => !allowed.some(a => h === a || h.endsWith('.' + a)));
+      if (bad) hit = { reason: `Link to ${bad.slice(0, 120)}`, says: AUTOMOD_SENDER_TEXT.links };
+    } else if (rule.kind === 'invites') {
+      const m = text.match(INVITE_RE);
+      if (m) hit = { reason: `Invite link: ${m[0].trim().slice(0, 120)}`, says: AUTOMOD_SENDER_TEXT.invites };
+    } else if (rule.kind === 'spam') {
+      const key = serverId + '\n' + username;
+      const now = Date.now();
+      const list = (automodRecent.get(key) || []).filter(e => now - e.t < 60 * 1000);
+      const recent = list.filter(e => now - e.t < rule.config.perSeconds * 1000).length;
+      const same = plain.trim() ? list.filter(e => e.text === plain.trim()).length : 0;
+      if (recent >= rule.config.maxMessages) hit = { reason: `More than ${rule.config.maxMessages} messages in ${rule.config.perSeconds} seconds`, says: AUTOMOD_SENDER_TEXT.spam };
+      else if (rule.config.maxDuplicates && same >= rule.config.maxDuplicates) hit = { reason: `The same message more than ${rule.config.maxDuplicates} times in a minute`, says: AUTOMOD_SENDER_TEXT.repeat };
+      if (!hit || rule.action === 'flag') { list.push({ t: now, text: plain.trim() }); automodRecent.set(key, list.slice(-60)); }
+      else automodRecent.set(key, list);
+    }
+    if (hit) hits.push({ kind: rule.kind, action: rule.action, timeoutMinutes: rule.timeoutMinutes, ...hit });
+  }
+  if (!hits.length) return null;
+  return {
+    serverId,
+    blocked: hits.find(h => h.action === 'block') || null,
+    flags: hits.filter(h => h.action === 'flag'),
+    timeout: Math.max(0, ...hits.map(h => h.timeoutMinutes))
+  };
+}
+// The sender's error for a blocked message.
+function automodError(result) {
+  return `AutoMod blocked this message: ${result.blocked.says}.`;
+}
+// Writes what a check found to the review queue (and audit log), applies a
+// rule's timeout and tells the moderators. Never throws - posting goes on.
+async function automodRecord(result, username, room, text, messageId) {
+  if (!result) return;
+  try {
+    const items = result.blocked ? [{ ...result.blocked, outcome: 'blocked' }] : result.flags.map(f => ({ ...f, outcome: 'flagged' }));
+    for (const item of items) {
+      await pool.query(
+        `INSERT INTO automod_queue (server_id, kind, outcome, username, room, message_id, content, reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [result.serverId, item.kind, item.outcome, username, room, result.blocked ? null : (messageId || null), String(text || '').slice(0, 4000), item.reason.slice(0, 300)]
+      );
+      auditLog(result.serverId, AUTOMOD_ACTOR, item.outcome === 'blocked' ? 'automod_block' : 'automod_flag', username, item.reason);
+    }
+    if (result.timeout && !(await activeTimeout(username, result.serverId)) && !(await isServerOwnerLevel(username, result.serverId))) {
+      const srv = await getServerById(result.serverId);
+      if (srv && !srv.is_default) {
+        await applyTimeout(srv, username, result.timeout, 'AutoMod: ' + items[0].reason.slice(0, 150), AUTOMOD_ACTOR);
+        await notifyServerMembers(srv.id, 'serverMembersChanged', { serverId: srv.id });
+      }
+    }
+    if (Math.random() < 0.02) pool.query(`DELETE FROM automod_queue WHERE created_at < NOW() - INTERVAL '30 days'`).catch(() => {});
+    await notifyReviewers(result.serverId, { kind: items[0].kind, outcome: items[0].outcome, username, room });
+  } catch (err) {
+    console.error('automod record failed:', err.message);
+  }
+}
+// Everyone who reviews the queue here: owner, server admins and members of a
+// role with Manage messages (site admins only in the open default server).
+async function automodReviewers(serverId) {
+  const srv = await getServerById(serverId);
+  if (!srv) return [];
+  if (srv.is_default) {
+    const rows = await q(`SELECT username FROM users WHERE is_admin = 1 AND banned = 0`);
+    return [...new Set(['Purple', ...rows.map(r => r.username)])];
+  }
+  const rows = await q(
+    `SELECT m.username FROM server_members m JOIN users u ON u.username = m.username
+     WHERE m.server_id = $1 AND COALESCE(u.is_bot, 0) = 0 AND (m.role = 'admin' OR m.username = $2 OR EXISTS (
+       SELECT 1 FROM server_member_roles mr JOIN server_roles r ON r.id = mr.role_id
+       WHERE mr.server_id = m.server_id AND mr.username = m.username AND (',' || COALESCE(r.permissions, '') || ',') LIKE '%,manage_messages,%'))`,
+    [serverId, srv.owner]
+  );
+  return rows.map(r => r.username);
+}
+// Open items a reviewer may see: only rooms they can read (raid alerts have no room).
+async function automodOpenCount(username, serverId) {
+  const rooms = await readableChannelRooms(username);
+  const row = await one(
+    `SELECT COUNT(*)::int AS n FROM automod_queue q WHERE q.server_id = $1 AND q.status = 'open'
+       AND (q.room IS NULL OR q.room = ANY($2) OR q.room IN (SELECT 'thread:' || t.id FROM threads t WHERE t.parent_room = ANY($2)))`,
+    [serverId, rooms]
+  );
+  return row ? row.n : 0;
+}
+async function notifyReviewers(serverId, item) {
+  for (const reviewer of await automodReviewers(serverId)) {
+    if (!(await hasServerPerm(reviewer, serverId, 'manage_messages'))) continue;
+    if (item && item.room && !(await isAllowedRoom(reviewer, item.room))) { sendToUser(reviewer, 'automodQueue', { serverId, open: await automodOpenCount(reviewer, serverId) }); continue; }
+    sendToUser(reviewer, 'automodQueue', { serverId, open: await automodOpenCount(reviewer, serverId), item: item || null });
+  }
+}
+
+// ---- Raid protection ----
+// New accounts / new members can't post until they're old enough, and a
+// burst of joins locks the server (no new members) for a while.
+async function raidPostBlock(username, channel) {
+  const am = await automodFor(channel.server_id);
+  const { minAccountMinutes, minMemberMinutes } = am.raid;
+  if (!minAccountMinutes && !minMemberMinutes) return null;
+  if (await isBotUser(username)) return null; // bots are added on purpose by their owner
+  const mine = await serverPermissions(username, channel.server_id);
+  if (mine.has('manage_messages') || mine.has('manage_server')) return null;
+  const waitText = ms => { const m = Math.ceil(ms / 60000); return m >= 1440 ? Math.ceil(m / 1440) + ' day(s)' : m >= 60 ? Math.ceil(m / 60) + ' hour(s)' : m + ' minute(s)'; };
+  if (minAccountMinutes) {
+    const u = await one(`SELECT created_at FROM users WHERE username = $1`, [username]);
+    const left = u && u.created_at ? new Date(u.created_at).getTime() + minAccountMinutes * 60000 - Date.now() : 0;
+    if (left > 0) return `This server only lets accounts that are a little older post. You can post here in ${waitText(left)}.`;
+  }
+  if (minMemberMinutes) {
+    const srv = await getServerById(channel.server_id);
+    const m = srv && !srv.is_default ? await one(`SELECT joined_at FROM server_members WHERE server_id = $1 AND username = $2`, [channel.server_id, username]) : null;
+    const left = m && m.joined_at ? new Date(m.joined_at).getTime() + minMemberMinutes * 60000 - Date.now() : 0;
+    if (left > 0) return `New members wait a little before posting in this server. You can post here in ${waitText(left)}.`;
+  }
+  return null;
+}
+const recentJoins = new Map(); // serverId -> [{ t, username }]
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, list] of recentJoins) if (!list.length || now - list[list.length - 1].t > 15 * 60 * 1000) recentJoins.delete(key);
+}, 5 * 60 * 1000).unref();
+// Is the server locked down? Returns the raid settings while it is.
+async function serverLockdown(serverId) {
+  const am = await automodFor(serverId);
+  if (!am.raid.lockdownUntil) return null;
+  if (new Date(am.raid.lockdownUntil) <= new Date()) { forgetAutomod(serverId); return null; }
+  return am.raid;
+}
+async function setLockdown(srv, minutes, reason, actor) {
+  await pool.query(
+    `INSERT INTO raid_settings (server_id, lockdown_until, lockdown_reason, updated_by) VALUES ($1, CASE WHEN $2::int > 0 THEN NOW() + make_interval(mins => $2::int) END, $3, $4)
+     ON CONFLICT (server_id) DO UPDATE SET lockdown_until = EXCLUDED.lockdown_until, lockdown_reason = EXCLUDED.lockdown_reason, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [srv.id, minutes, minutes > 0 ? String(reason || '').slice(0, 200) : null, actor]
+  );
+  forgetAutomod(srv.id);
+  auditLog(srv.id, actor, minutes > 0 ? 'lockdown_start' : 'lockdown_end', null, minutes > 0 ? minutes + ' min' + (reason ? ' - ' + reason : '') : '');
+}
+// After someone joins with an invite: counts joins, and starts a lockdown
+// (plus a review queue alert listing who joined) when there are too many.
+async function noteServerJoin(srv, username) {
+  const am = await automodFor(srv.id);
+  const { joinLimit, joinWindowSeconds, lockdownMinutes } = am.raid;
+  if (!joinLimit) return;
+  const now = Date.now();
+  const list = (recentJoins.get(srv.id) || []).filter(j => now - j.t < joinWindowSeconds * 1000);
+  list.push({ t: now, username });
+  recentJoins.set(srv.id, list);
+  if (list.length <= joinLimit || am.raid.lockdownUntil) return;
+  const reason = `${list.length} people joined in ${joinWindowSeconds} seconds`;
+  await setLockdown(srv, lockdownMinutes, 'Raid protection: ' + reason, AUTOMOD_ACTOR);
+  await pool.query(
+    `INSERT INTO automod_queue (server_id, kind, outcome, content, reason) VALUES ($1, 'raid', 'lockdown', $2, $3)`,
+    [srv.id, list.map(j => j.username).join('\n'), reason + ` - new members are paused for ${lockdownMinutes} minutes`]
+  );
+  recentJoins.delete(srv.id);
+  await notifyReviewers(srv.id, { kind: 'raid', outcome: 'lockdown', username: null, room: null });
+}
+
 // ---- Per-server profiles ----
 // Inside one server someone can have their own nickname, picture, banner and
 // bio. The owner, admins and members of a role with "can hide their roles"
@@ -1904,6 +2277,8 @@ async function channelPostBlock(username, room) {
   if (channel) {
     const timeout = await activeTimeout(username, channel.server_id);
     if (timeout) return `You're timed out in this server until ${new Date(timeout.until).toUTCString()}${timeout.reason ? ' (' + timeout.reason + ')' : ''}.`;
+    const raid = await raidPostBlock(username, channel);
+    if (raid) return raid;
   }
   if (!channel || (!channel.admins_only && !channel.slowmode_seconds)) return null;
   if (await hasServerPerm(username, channel.server_id, 'manage_messages')) return null;
@@ -4245,6 +4620,17 @@ app.post('/threads', requireAuth, route(async (req, res) => {
     firstText = cleanText(req.body.text, 4000);
     if (!firstText) return res.status(400).json({ error: 'write something for your post' });
   }
+  const parentChannel = await getChannelByRoom(parentRoom);
+  if (parentChannel) { // timeouts and raid protection apply to new threads and posts too
+    if (await activeTimeout(req.username, parentChannel.server_id)) return res.status(403).json({ error: 'You\'re timed out in this server.' });
+    const raid = await raidPostBlock(req.username, parentChannel);
+    if (raid) return res.status(403).json({ error: raid });
+  }
+  const automod = await automodCheck(req.username, parentRoom, firstText ? name + '\n' + firstText : name, { edit: !firstText });
+  if (automod && automod.blocked) {
+    await automodRecord(automod, req.username, parentRoom, firstText ? name + '\n' + firstText : name, null);
+    return res.status(403).json({ error: automodError(automod) });
+  }
   const thread = await one(
     `INSERT INTO threads (parent_room, starter_message_id, name, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
     [parentRoom, starter ? starter.id : null, name, req.username]
@@ -4254,6 +4640,7 @@ app.post('/threads', requireAuth, route(async (req, res) => {
   if (firstText) {
     const mentions = await mentionFlags(req.username, room, firstText);
     const created = await insertMessage(room, req.username, firstText, null, 0, null, mentions);
+    if (automod) automodRecord(automod, req.username, room, name + '\n' + firstText, created.id);
     await touchThread(room);
     pushMentions(room, firstText, req.username, mentions, created).catch(err => console.error('pushMentions failed:', err.message));
     io.to(room).emit('message', await normaliseMessage(created));
@@ -4339,6 +4726,12 @@ app.post('/polls', requireAuth, route(async (req, res) => {
     const blocked = await channelPostBlock(req.username, room);
     if (blocked) return res.status(403).json({ error: blocked });
   }
+  const pollText = [question, ...options].join('\n');
+  const automod = toUser ? null : await automodCheck(req.username, room, pollText);
+  if (automod && automod.blocked) {
+    await automodRecord(automod, req.username, room, pollText, null);
+    return res.status(403).json({ error: automodError(automod) });
+  }
 
   const created = await one(
     `INSERT INTO messages (room, "user", text, to_user, is_group, kind) VALUES ($1, $2, $3, $4, $5, 'poll') RETURNING *`,
@@ -4353,6 +4746,7 @@ app.post('/polls', requireAuth, route(async (req, res) => {
     `INSERT INTO poll_options (poll_id, position, text) SELECT $1, o.pos - 1, o.text FROM unnest($2::text[]) WITH ORDINALITY AS o(text, pos)`,
     [poll.id, options]
   );
+  if (automod) automodRecord(automod, req.username, room, pollText, created.id);
   const msg = await normaliseMessage(created);
   if (toUser) {
     sendToUser(req.username, 'dmMessage', msg);
@@ -4872,7 +5266,10 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
   const srv = await getServerByCode(code);
   if (!srv) return res.status(404).json({ error: 'invite code not found' });
   if (await isServerBanned(req.username, srv.id)) return res.status(403).json({ error: 'You are banned from this server.' });
-  await addServerMember(srv, req.username);
+  if (!srv.is_default && !(await isServerMember(req.username, srv.id)) && (await serverLockdown(srv.id))) {
+    return res.status(403).json({ error: `${srv.name} isn't letting new members in right now (raid protection). Try again later.` });
+  }
+  if ((await addServerMember(srv, req.username)) && !srv.is_default) await noteServerJoin(srv, req.username).catch(err => console.error('raid check failed:', err.message));
   res.json({ id: srv.id, name: srv.name });
 }));
 
@@ -5009,6 +5406,8 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   await pool.query(`DELETE FROM webhooks WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_commands WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM reaction_roles WHERE server_id = $1`, [serverId]);
+  for (const table of ['automod_rules', 'automod_queue', 'raid_settings']) await pool.query(`DELETE FROM ${table} WHERE server_id = $1`, [serverId]);
+  forgetAutomod(serverId);
   await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
   await resyncRooms(members);
   for (const member of members) sendToUser(member, 'serversChanged', {});
@@ -5161,15 +5560,19 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
   if ([...(await serverPermissions(target, serverId))].some(p => !mine.has(p))) {
     return res.status(403).json({ error: 'you can only kick members whose permissions you have yourself' });
   }
-  await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, target]);
-  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await kickMember(srv, target, req.username);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+// Removes `target` from the server (the caller has done the checks).
+async function kickMember(srv, target, actor) {
+  await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [srv.id, target]);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [srv.id, target]);
   await resyncRooms([target]);
   sendToUser(target, 'adminNotice', { message: `You were removed from ${srv.name}.` });
   sendToUser(target, 'serversChanged', {});
-  await notifyServerMembers(serverId, 'serversChanged', {});
-  auditLog(serverId, req.username, 'kick', target);
-  res.json({ message: 'ok' });
-}));
+  auditLog(srv.id, actor, 'kick', target);
+}
 
 // ---------------- CUSTOM EMOJI ----------------
 // A server's own emoji: a picture or GIF from /assets with a short name.
@@ -5296,6 +5699,23 @@ app.get('/servers/:id/bans', requireAuth, route(async (req, res) => {
   const rows = await q(`SELECT username, reason, banned_by, created_at FROM server_bans WHERE server_id = $1 ORDER BY created_at DESC LIMIT 500`, [serverId]);
   res.json(rows.map(r => ({ username: r.username, reason: r.reason || '', bannedBy: r.banned_by || '', createdAt: r.created_at })));
 }));
+// Times `target` out for `minutes` (also used by AutoMod, actor 'AutoMod').
+async function applyTimeout(srv, target, minutes, reason, actor) {
+  const serverId = srv.id;
+  await pool.query(
+    `INSERT INTO server_timeouts (server_id, username, until, reason, set_by) VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4, $5)
+     ON CONFLICT (server_id, username) DO UPDATE SET until = EXCLUDED.until, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by`,
+    [serverId, target, String(minutes), reason || null, actor]
+  );
+  await enforceCallAccess([target]).catch(() => {});
+  const call = callOf(target);
+  if (call && call.kind === 'voice') {
+    const channel = await getChannelByRoom(call.room);
+    if (channel && channel.server_id === serverId) await leaveCall(call.key, target, `You were timed out in ${srv.name}.`);
+  }
+  sendToUser(target, 'adminNotice', { message: `You were timed out in ${srv.name} for ${minutes >= 1440 ? Math.round(minutes / 1440) + ' day(s)' : minutes >= 60 ? Math.round(minutes / 60) + ' hour(s)' : minutes + ' minutes'}.` + (reason ? ' Reason: ' + reason : '') });
+  auditLog(serverId, actor, 'timeout', target, minutes + ' min' + (reason ? ' - ' + reason : ''));
+}
 const TIMEOUT_CHOICES = [0, 5, 10, 60, 360, 1440, 10080]; // minutes; 0 = lift it
 app.post('/servers/:id/members/:username/timeout', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
@@ -5313,19 +5733,7 @@ app.post('/servers/:id/members/:username/timeout', requireAuth, route(async (req
     sendToUser(target, 'adminNotice', { message: `Your timeout in ${srv.name} was lifted.` });
     auditLog(serverId, req.username, 'timeout_lifted', target);
   } else {
-    await pool.query(
-      `INSERT INTO server_timeouts (server_id, username, until, reason, set_by) VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4, $5)
-       ON CONFLICT (server_id, username) DO UPDATE SET until = EXCLUDED.until, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by`,
-      [serverId, target, String(minutes), reason || null, req.username]
-    );
-    await enforceCallAccess([target]).catch(() => {});
-    const call = callOf(target);
-    if (call && call.kind === 'voice') {
-      const channel = await getChannelByRoom(call.room);
-      if (channel && channel.server_id === serverId) await leaveCall(call.key, target, `You were timed out in ${srv.name}.`);
-    }
-    sendToUser(target, 'adminNotice', { message: `You were timed out in ${srv.name} for ${minutes >= 1440 ? Math.round(minutes / 1440) + ' day(s)' : minutes >= 60 ? Math.round(minutes / 60) + ' hour(s)' : minutes + ' minutes'}.` + (reason ? ' Reason: ' + reason : '') });
-    auditLog(serverId, req.username, 'timeout', target, minutes + ' min' + (reason ? ' - ' + reason : ''));
+    await applyTimeout(srv, target, minutes, reason, req.username);
   }
   await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
   res.json({ message: 'ok' });
@@ -5336,6 +5744,185 @@ app.get('/servers/:id/timeouts', requireAuth, route(async (req, res) => {
   const rows = await q(`SELECT username, until, reason, set_by FROM server_timeouts WHERE server_id = $1 AND until > NOW() ORDER BY until ASC`, [serverId]);
   res.json(rows.map(r => ({ username: r.username, until: r.until, reason: r.reason || '', setBy: r.set_by || '' })));
 }));
+// ---------------- AUTOMOD, REVIEW QUEUE, RAID PROTECTION ----------------
+// Settings: anyone with Manage server changes them; Manage messages can look.
+async function canSeeAutomod(username, serverId) {
+  const mine = await serverPermissions(username, serverId);
+  return mine.has('manage_server') || mine.has('manage_messages');
+}
+app.get('/servers/:id/automod', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await getServerById(serverId))) return res.status(404).json({ error: 'server not found' });
+  if (!(await canSeeAutomod(req.username, serverId))) return res.status(403).json({ error: 'you need "Manage server" or "Manage messages" to see AutoMod' });
+  forgetAutomod(serverId);
+  const am = await automodFor(serverId);
+  res.json({
+    rules: am.rules,
+    raid: am.raid,
+    canEdit: await hasServerPerm(req.username, serverId, 'manage_server'),
+    canLockdown: (await hasServerPerm(req.username, serverId, 'manage_server')) || (await hasServerPerm(req.username, serverId, 'ban_members')),
+    open: (await hasServerPerm(req.username, serverId, 'manage_messages')) ? await automodOpenCount(req.username, serverId) : 0,
+    timeoutChoices: AUTOMOD_TIMEOUTS
+  });
+}));
+app.post('/servers/:id/automod/rules/:kind', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const kind = String(req.params.kind);
+  if (!AUTOMOD_KINDS.includes(kind)) return res.status(404).json({ error: 'unknown rule' });
+  if (!(await getServerById(serverId))) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change AutoMod'))) return;
+  const b = req.body || {};
+  const action = b.action === 'flag' ? 'flag' : 'block';
+  const timeoutMinutes = Number(b.timeoutMinutes) || 0;
+  if (!AUTOMOD_TIMEOUTS.includes(timeoutMinutes)) return res.status(400).json({ error: 'pick one of the timeout lengths' });
+  const config = cleanAutomodConfig(kind, b.config);
+  if (kind === 'words' && b.enabled && !config.words.length) return res.status(400).json({ error: 'add at least one word first' });
+  const wantRoles = (Array.isArray(b.exemptRoles) ? b.exemptRoles : []).map(Number).filter(n => n > 0).slice(0, 50);
+  const wantChannels = (Array.isArray(b.exemptChannels) ? b.exemptChannels : []).map(Number).filter(n => n > 0).slice(0, 100);
+  const roles = wantRoles.length ? (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND id = ANY($2)`, [serverId, wantRoles])).map(r => r.id) : [];
+  const channels = wantChannels.length ? (await q(`SELECT id FROM server_channels WHERE server_id = $1 AND id = ANY($2)`, [serverId, wantChannels])).map(r => r.id) : [];
+  await pool.query(
+    `INSERT INTO automod_rules (server_id, kind, enabled, action, timeout_minutes, config, exempt_roles, exempt_channels, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (server_id, kind) DO UPDATE SET enabled = EXCLUDED.enabled, action = EXCLUDED.action, timeout_minutes = EXCLUDED.timeout_minutes,
+       config = EXCLUDED.config, exempt_roles = EXCLUDED.exempt_roles, exempt_channels = EXCLUDED.exempt_channels, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [serverId, kind, b.enabled ? 1 : 0, action, timeoutMinutes, JSON.stringify(config), roles.join(','), channels.join(','), req.username]
+  );
+  forgetAutomod(serverId);
+  auditLog(serverId, req.username, 'automod_update', null, `${kind}: ${b.enabled ? (action === 'flag' ? 'flag' : 'block') : 'off'}`);
+  const am = await automodFor(serverId);
+  res.json(am.rules.find(r => r.kind === kind));
+}));
+app.post('/servers/:id/raid', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change raid protection'))) return;
+  const b = req.body || {};
+  const v = {
+    account: clampInt(b.minAccountMinutes, 0, 60 * 24 * 30, 0),
+    member: clampInt(b.minMemberMinutes, 0, 60 * 24 * 7, 0),
+    joins: clampInt(b.joinLimit, 0, 500, 0),
+    windowS: clampInt(b.joinWindowSeconds, 10, 3600, 60),
+    lockdown: clampInt(b.lockdownMinutes, 5, 60 * 24, 30)
+  };
+  await pool.query(
+    `INSERT INTO raid_settings (server_id, min_account_minutes, min_member_minutes, join_limit, join_window_seconds, lockdown_minutes, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (server_id) DO UPDATE SET min_account_minutes = EXCLUDED.min_account_minutes, min_member_minutes = EXCLUDED.min_member_minutes,
+       join_limit = EXCLUDED.join_limit, join_window_seconds = EXCLUDED.join_window_seconds, lockdown_minutes = EXCLUDED.lockdown_minutes,
+       updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [serverId, v.account, v.member, srv.is_default ? 0 : v.joins, v.windowS, v.lockdown, req.username]
+  );
+  forgetAutomod(serverId);
+  auditLog(serverId, req.username, 'raid_update', null, `account ${v.account} min, member ${v.member} min, joins ${v.joins}/${v.windowS}s`);
+  res.json((await automodFor(serverId)).raid);
+}));
+// Start (minutes > 0) or end (0) a lockdown by hand: no new members meanwhile.
+app.post('/servers/:id/lockdown', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'everyone is in the general server, so it can\'t be locked' });
+  const mine = await serverPermissions(req.username, serverId);
+  if (!mine.has('manage_server') && !mine.has('ban_members')) return res.status(403).json({ error: 'you need "Manage server" or "Ban & time out members" to lock the server' });
+  const minutes = clampInt(req.body.minutes, 0, 60 * 24, 0);
+  await setLockdown(srv, minutes, cleanText(req.body.reason || '', 200), req.username);
+  res.json((await automodFor(serverId)).raid);
+}));
+
+// Where a queued item was posted, as the reviewer sees it ("#general", "#general > Thread").
+async function automodWhere(room, cache) {
+  if (!room) return '';
+  if (cache.has(room)) return cache.get(room);
+  const channel = await channelForRoom(room);
+  let where = channel ? '#' + channel.name : '';
+  const threadId = threadIdFromRoom(room);
+  if (channel && threadId) { const t = await getThread(threadId); if (t) where += ' > ' + t.name; }
+  cache.set(room, where);
+  return where;
+}
+app.get('/servers/:id/automod/queue', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await getServerById(serverId))) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_messages', 'review AutoMod'))) return;
+  const open = req.query.status !== 'closed';
+  const rooms = await readableChannelRooms(req.username);
+  const rows = await q(
+    `SELECT q.*, m.deleted_at AS message_deleted, (m.id IS NULL) AS message_missing FROM automod_queue q
+     LEFT JOIN messages m ON m.id = q.message_id
+     WHERE q.server_id = $1 AND ${open ? `q.status = 'open'` : `q.status <> 'open'`}
+       AND (q.room IS NULL OR q.room = ANY($2) OR q.room IN (SELECT 'thread:' || t.id FROM threads t WHERE t.parent_room = ANY($2)))
+     ORDER BY q.id DESC LIMIT 100`,
+    [serverId, rooms]
+  );
+  const cache = new Map();
+  const items = [];
+  for (const r of rows) {
+    items.push({
+      id: r.id, kind: r.kind, outcome: r.outcome, username: r.username || '', room: r.room || '', where: await automodWhere(r.room, cache),
+      messageId: r.message_id || null, messageGone: !!r.message_id && (!!r.message_deleted || r.message_missing),
+      content: r.content || '', reason: r.reason || '', status: r.status, handledBy: r.handled_by || '', handledAt: r.handled_at, createdAt: r.created_at
+    });
+  }
+  res.json({ items, open: await automodOpenCount(req.username, serverId) });
+}));
+// Handle a queued item: keep/dismiss it, delete the flagged message, time
+// the sender out, or kick them (for a raid alert: everyone it lists).
+app.post('/servers/:id/automod/queue/:itemId', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_messages', 'review AutoMod'))) return;
+  const item = await one(`SELECT * FROM automod_queue WHERE id = $1 AND server_id = $2`, [Number(req.params.itemId), serverId]);
+  if (!item || (item.room && !(await isAllowedRoom(req.username, item.room)))) return res.status(404).json({ error: 'not in the queue' });
+  const action = String(req.body.action || '');
+  let status = 'dismissed', note = '';
+  if (action === 'dismiss') {
+    status = 'dismissed';
+  } else if (action === 'delete') {
+    const row = item.message_id ? await getMessageById(item.message_id) : null;
+    if (!row || row.deleted_at) return res.status(400).json({ error: 'that message is already gone' });
+    await pool.query(`UPDATE messages SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2`, [req.username, row.id]);
+    const files = await q(`SELECT id, room, to_user, file_url, storage, message_id FROM files WHERE message_id = $1`, [row.id]);
+    if (files.length) await deleteFiles(files.map(f => ({ ...f, message_id: null })));
+    const msg = await normaliseMessage(await getMessageById(row.id));
+    emitRoomOrDM(msg.room, msg.to, 'messageDeleted', msg);
+    auditLog(serverId, req.username, 'message_delete', row.user, String(row.text || '').slice(0, 120));
+    status = 'removed';
+  } else if (action === 'timeout') {
+    if (!(await requirePerm(req, res, serverId, 'ban_members', 'time members out'))) return;
+    const minutes = Number(req.body.minutes);
+    if (!TIMEOUT_CHOICES.includes(minutes) || !minutes) return res.status(400).json({ error: 'pick one of the timeout lengths' });
+    if (!item.username || !(await isServerMember(item.username, serverId))) return res.status(400).json({ error: 'they aren\'t in the server any more' });
+    const problem = await moderationProblem(req.username, item.username, serverId);
+    if (problem) return res.status(403).json({ error: problem });
+    await applyTimeout(srv, item.username, minutes, 'AutoMod review: ' + (item.reason || '').slice(0, 150), req.username);
+    await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+    status = 'actioned';
+    note = 'timed out ' + minutes + ' min';
+  } else if (action === 'kick') {
+    if (srv.is_default) return res.status(400).json({ error: 'everyone is in the general server - use a site-wide action instead' });
+    if (!(await requirePerm(req, res, serverId, 'kick_members', 'kick members'))) return;
+    const targets = item.kind === 'raid' ? String(item.content || '').split('\n').map(cleanUsername).filter(Boolean) : [item.username].filter(Boolean);
+    let kicked = 0, skipped = 0;
+    for (const target of targets) {
+      if (!(await isServerMember(target, serverId)) || (await moderationProblem(req.username, target, serverId))) { skipped++; continue; }
+      await kickMember(srv, target, req.username);
+      kicked++;
+    }
+    if (targets.length === 1 && !kicked) return res.status(400).json({ error: 'they can\'t be kicked (already gone, or they have powers you don\'t)' });
+    if (kicked) await notifyServerMembers(serverId, 'serversChanged', {});
+    status = 'actioned';
+    note = `kicked ${kicked}` + (skipped ? `, skipped ${skipped}` : '');
+  } else {
+    return res.status(400).json({ error: 'unknown action' });
+  }
+  await pool.query(`UPDATE automod_queue SET status = $1, handled_by = $2, handled_at = NOW() WHERE id = $3`, [status, req.username, item.id]);
+  await notifyReviewers(serverId, null);
+  res.json({ message: 'ok', status, note });
+}));
+
 app.get('/servers/:id/audit', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   if (!(await canSeeAuditLog(req.username, serverId))) return res.status(403).json({ error: 'only moderators and admins can see the audit log' });
@@ -6276,9 +6863,16 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: blocked });
       return;
     }
+    const automod = text ? await automodCheck(socket.username, room, text) : null;
+    if (automod && automod.blocked) {
+      await automodRecord(automod, socket.username, room, text, null);
+      if (typeof ack === 'function') ack({ error: automodError(automod), automod: true });
+      return;
+    }
     const mentions = await mentionFlags(socket.username, room, text);
     let created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
     await claimAttachments(created.id, attached.ids);
+    if (automod) automodRecord(automod, socket.username, room, text, created.id);
     if (sticker) created = await one(`UPDATE messages SET sticker_id = $1 WHERE id = $2 RETURNING *`, [sticker.id, created.id]);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
@@ -6454,6 +7048,13 @@ io.on('connection', (socket) => {
       return;
     }
     if (!text) return;
+    const automod = getDMUsers(row.room) ? null : await automodCheck(socket.username, row.room, text, { edit: true });
+    if (automod && automod.blocked) {
+      await automodRecord(automod, socket.username, row.room, text, null);
+      if (typeof ack === 'function') ack({ error: automodError(automod), automod: true });
+      return;
+    }
+    if (automod) automodRecord(automod, socket.username, row.room, text, id);
     // re-check mentions so highlights match the new text (edits never re-ping)
     const mentions = getDMUsers(row.room) ? { everyone: 0, roles: '' } : await mentionFlags(socket.username, row.room, text);
     await pool.query(

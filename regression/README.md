@@ -43,6 +43,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `batch4_api` / `batch4_ui` / `ssrf` / `previews_ui` | webhooks, commands, reaction roles, link previews and their SSRF guards |
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
+| `automod` / `automod_ui` | AutoMod rules (block/flag, timeouts, exemptions), the review queue, raid protection and lockdown |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
 
 `notifier_ui` drives the desktop notifier (desktop/) with Playwright's

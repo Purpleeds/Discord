@@ -193,6 +193,17 @@ large, new system - also split it over several sessions).
   or [Image]/[GIF]/[Sticker]) in the corner, top on phones; click to open.
   Settings > Notifications > Pop-ups. OS notifications now show the sender's picture.
 
+- [x] **AutoMod and safety tools** (Nov 2026) - per-server rules in Server
+  Settings > AutoMod: banned words (with * wildcards; accents and hidden
+  characters don't get around them), spam/flooding and repeats, mention spam,
+  links (with allowed sites) and invite links. Each rule blocks (the send fails
+  with AutoMod's reason) or flags (posted + queued), can time the sender out,
+  and can skip roles/channels. Server Settings > Review queue (Manage messages)
+  shows blocked/flagged items for channels you can see: keep, delete, time out,
+  kick. Raid protection: minimum account age / time in server before posting,
+  and a join surge pauses new joins (lockdown, also by hand) and lists the
+  joiners for a one-click kick. `regression/automod*.test.js`.
+
 - [x] **Richer push notifications** - the sender's picture, [Image]/[GIF]/
   [Sticker] tags, a big picture preview where supported, and clicking opens
   that exact message.

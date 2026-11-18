@@ -82,8 +82,22 @@ large, new system - also split it over several sessions).
   school/office networks need a TURN relay (`TURN_URLS`, see README); told
   William. Found + fixed on the way: people removed from (or leaving) a
   group chat kept getting its live messages until they reloaded.*
-  Next ideas (not planned yet): soundboard, Stage channels, Watch Together,
-  an SFU server if calls ever need more than 8 people.
+  Next ideas (not planned yet): soundboard, Stage channels, Watch Together.
+- [x] **11f. Bigger calls with a media server (SFU)** - *done Nov 2026*
+  *With `LIVEKIT_URL` + a key, group calls and voice channels go through
+  LiveKit (up to 25 people, `SFU_MAX_CALL_SIZE`); DMs stay direct, and new
+  calls fall back to mesh while LiveKit is down (`sfuUp`, checked by
+  `sweepSfuRooms()`). The chat still owns who's in a call; LiveKit gets a
+  10-minute HS256 token for one room (`sfuJoinToken()`, room = hash of the
+  call key), `leaveCall()` removes people there too, and the sweep drops
+  anyone LiveKit has who isn't in the call. Browsers reach it through
+  `/livekit/rtc` on the chat (only those paths). Client: `startSfu()` fills
+  `voice.peers` entries with no `pc`, streams keyed 'cam'/'screen', so the
+  call UI is unchanged. NAS: `chat-livekit` shares coturn's network, so the
+  existing relay on 8443 carries media (coturn may only relay to itself).
+  Stage channels later: hand listeners `canPublish: false` tokens.
+  `regression/sfu_calls.test.js` (needs `LIVEKIT_BIN`; `SFU_VIA_TURN=1`
+  forces relay-only like the NAS).*
 
 ## Batch 4 - automation (done)
 
@@ -193,9 +207,55 @@ large, new system - also split it over several sessions).
   or [Image]/[GIF]/[Sticker]) in the corner, top on phones; click to open.
   Settings > Notifications > Pop-ups. OS notifications now show the sender's picture.
 
+- [x] **AutoMod and safety tools** (Nov 2026) - per-server rules in Server
+  Settings > AutoMod: banned words (with * wildcards; accents and hidden
+  characters don't get around them), spam/flooding and repeats, mention spam,
+  links (with allowed sites) and invite links. Each rule blocks (the send fails
+  with AutoMod's reason) or flags (posted + queued), can time the sender out,
+  and can skip roles/channels. Server Settings > Review queue (Manage messages)
+  shows blocked/flagged items for channels you can see: keep, delete, time out,
+  kick. Raid protection: minimum account age / time in server before posting,
+  and a join surge pauses new joins (lockdown, also by hand) and lists the
+  joiners for a one-click kick. `regression/automod*.test.js`.
+
 - [x] **Richer push notifications** - the sender's picture, [Image]/[GIF]/
   [Sticker] tags, a big picture preview where supported, and clicking opens
   that exact message.
+
+- [x] **Backups and data export** (Nov 2026) - a full backup (database +
+  files on disk) every day into `BACKUP_DIR` (on the NAS: `./backups`),
+  kept 7 daily / 8 weekly / 12 monthly, files stored once. Settings >
+  Backups (Purple only): Back up now, Download as .tar, Restore (saves the
+  current data first). An empty database restores the newest backup on
+  start. Everyone: Privacy & Safety > Download my data. Moderators: right-click
+  a channel > Export channel. See [BACKUPS.md](BACKUPS.md). Still needs the
+  backup folder copied off the NAS (Hyper Backup / Sync & Backup).
+
+- [x] **Server onboarding and Discovery** - *done Nov 2026*: Server Settings >
+  Onboarding (up to 8 questions that give roles and unlock private channels; members
+  change answers from the server menu > Channels & Roles), Rules Screen (new members
+  must accept before posting, reacting, threads, uploads or voice; "ask everyone
+  again"), and Discovery (the globe on the rail lists servers their owner opted in,
+  joinable without an invite). *Answers never give roles with powers. People already
+  in a server when onboarding/rules are turned on aren't asked. Listing needs a
+  description and is owner-only.*
+
+- [x] **Voice messages and a soundboard** (Nov 2026) - hold the mic button in
+  the message bar to record (up to 5 minutes; slide away or Esc cancels); it's
+  sent as a kept attachment with its length and a waveform, and plays in a
+  waveform player (1x/1.5x/2x). Servers get up to 24 soundboard sounds
+  (Manage emoji, stickers & sounds; MP3/OGG/WAV/M4A, 5 seconds, 1 MB, in
+  /assets) that people in a call play to everyone from the call's soundboard
+  button. Each browser plays the clip itself (not mixed into the mic) and cuts
+  it at 6 seconds; Settings > Voice turns them off or down; deafened people
+  don't hear them. `regression/voice_messages.test.js`.
+
+- [x] **Two-step login and passkeys** (Nov 2026) - authenticator-app codes
+  with 10 backup codes, passkey login (WebAuthn, no library: a small CBOR
+  reader + Node crypto), passkeys as the second step too; site admins need
+  it for their powers (paused, never locked out); admin reset and
+  `RESET_2FA_FOR` for lost phones; the Chat Notifier asks for the code.
+  `regression/two_step*.test.js`.
 
 ## Next: desktop app (.exe)
 
@@ -203,8 +263,14 @@ large, new system - also split it over several sessions).
   program (Electron) with desktop pop-up cards; opens the chat in the browser.
   Tested end to end (`regression/notifier_ui.test.js`); built and smoke-tested
   on Windows by `.github/workflows/notifier.yml`. See [DESKTOP_APP.md](DESKTOP_APP.md).
-- [ ] **Full Windows app** (Option B) - Electron shell with tray, push-to-talk
-  in games, screen-share picker, installer + auto-update.
+- [x] **Full Windows app** (Option B) - *done Nov 2026* (desktop 2.0.0): the
+  notifier grew a chat window (the live site), one sign-in for the window and
+  pop-ups, push to talk in games (global hook, also mouse side buttons, only
+  during a push-to-talk call), its own screen-share picker (screens/windows,
+  optional PC sound - Windows loopback, may echo the call), taskbar badge,
+  close to tray; same installer + auto-update. `regression/desktop_app.test.js`.
+  Learned: `--use-fake-ui-for-media-stream` skips Electron's
+  display-media handler, so the picker test runs without it.
 
 - [x] **Phone fixes** (Nov 2026) - hold a message for reactions/reply/edit/
   delete/copy (phones have no hover); hold names, channels, servers for their

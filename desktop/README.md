@@ -1,9 +1,17 @@
-# Chat Notifier (Windows)
+# Chat Notifier (Windows) - the chat app
 
-A small tray program that shows the chat's pop-up cards on the desktop -
-picture, name, where it was sent, and the message - while the chat itself
-isn't open in front of you. Clicking a card opens that message in your
-normal browser. There's no chat window in it.
+The chat for Windows (from 2.0.0): the chat in **its own window**, with
+**push to talk that works while a game is in front**, **its own
+screen-share picker** (a whole screen or one window, optionally with the
+computer's sound), a taskbar badge, and the desktop pop-up cards it always
+had - picture, name, where it was sent, and the message - while the chat
+isn't in front of you. It keeps running in the tray when the window is
+closed (calls keep going), and updates itself.
+
+The window is the live chat website, so every chat feature arrives the
+moment the server updates - a new .exe is only needed when the app itself
+changes. Settings > General > *Open the chat in* can send it to your normal
+browser instead (the old "notifier only" behaviour).
 
 ## Using it
 
@@ -11,7 +19,9 @@ normal browser. There's no chat window in it.
    page (the `notifier-v…` ones) and run it. If Windows says "Windows
    protected your PC", click **More info → Run anyway** (the app isn't
    code-signed).
-2. Sign in with your chat username and password. The address is filled in
+2. The chat opens in the app's window: log in there as usual. Pop-ups use
+   that same sign-in by themselves (it's one device on the Devices page).
+   Or sign in from the tray's settings window with your chat username and password. The address is filled in
    (`https://discords-zf2n.onrender.com`); at home you can use the NAS address.
 3. That's it - it sits in the tray (bottom-right, maybe under the `^`) and
    starts with Windows. Right-click the icon for: open the chat, settings,
@@ -60,6 +70,37 @@ The notifier trusts the same certificates as your browser (Windows' own list),
 so antivirus HTTPS scanning doesn't block it, and it falls back to plain
 requests where WebSockets are blocked (since 1.1.1).
 
+## The chat window
+
+- **One sign-in.** Logging in to the window turns the pop-ups on (main.js
+  `linkFromChatWindow()` reads the page's login once and keeps it encrypted
+  like a normal sign-in). *Sign out* (tray or settings) signs the window and
+  the pop-ups out together and ends that login on the server.
+- **Push to talk everywhere.** Settings > Voice > Push to Talk in the chat:
+  the key (or the middle / a side mouse button) works while any app or game
+  is in front. The app uses a low-level keyboard/mouse hook (`uiohook-napi`)
+  only during a call in push-to-talk mode, and only reports "pressed" /
+  "released" of that one key to the page - no other key is looked at or kept.
+  Games running as administrator can hide keys from non-admin programs; run
+  both the same way if the key doesn't work in one.
+- **Screen share picker.** Share Screen in a call opens the app's own picker:
+  Screens / Windows tabs with live thumbnails, and *Also share my computer's
+  sound* (Windows only; it sends everything the PC plays, so the people in
+  the call may hear themselves if Windows can't keep the call's own sound out).
+- **Badge + flash.** A red dot on the taskbar button while there's something
+  unread, and the button flashes for messages that would alert you.
+- **Stays the chat.** Links to other sites open in your browser; the window
+  can't navigate anywhere else, the page has no Node access and only gets a
+  small `window.chatDesktop` (`ui/chat-preload.js`): `pushToTalk`,
+  `onPushToTalk`, `setUnread`. Camera/mic/notification permissions are only
+  given to the chat's own address. Its login lives in its own storage
+  (`persist:chat` partition). Shows as **Chat app on Windows** in Devices.
+- Closing the window hides it to the tray (once, a card says so); Quit is
+  in the tray menu. The window remembers its size and place. If the chat
+  can't be reached (Render waking up, an update) it shows a small "trying
+  again" page and retries every 5 seconds.
+- Ctrl+R / F5 reloads, Ctrl+Shift+I opens the developer tools.
+
 ## Microsoft Store version
 
 The same app is also built as a Store package (`.appx`, electron-builder's
@@ -96,6 +137,9 @@ reason: "Desktop (Electron) app: tray icon and desktop notifications."
   bottom; same person + place = one card with "2 new").
 - `lib/logic.js` - what pops up and what it says (pure functions, tested in
   `test/logic.test.js`).
+- `lib/desktop.js` - the chat window's rules: which addresses stay in it, the
+  push-to-talk key codes, saved window places, the picker list (tested in
+  `test/desktop.test.js`).
 - `ui/` - the card, the settings window and its colour picker (`picker.js`); the
   fonts (Figtree, Bricolage Grotesque - OFL, `ui/fonts/`) are bundled. The pages are sandboxed with no
   Node access; they only talk to `main.js` through their small preload APIs,
@@ -114,7 +158,7 @@ and tabs are told a notifier runs (`notifier`).
 cd desktop
 npm install
 npm start                       # runs it from source
-npm test                        # logic tests
+npm test                        # logic tests (pop-ups + chat window)
 npm run dist                    # Windows build (needs Windows, or Wine)
 ```
 
@@ -127,7 +171,13 @@ default NSIS 3.0.4 installer crashed at random when double-clicked on Windows
 11 24H2 / build 26100 (access violation in `System.dll`, nothing installed) -
 the "it doesn't open" of 1.1.x. Don't go back to the default toolset.
 
-The end-to-end test drives the real app against its own chat server:
+`build.npmRebuild` is off on purpose: the only native module, `uiohook-napi`,
+ships N-API prebuilds (`prebuilds/win32-x64`) that work in any Electron, so
+nothing is compiled during the build. `test/smoke-packaged.js` checks on
+Windows that the packaged hook loads and hears a key.
+
+The end-to-end tests drive the real app against its own chat server -
+`node regression/desktop_app.test.js` for the chat window, and
 `node regression/notifier_ui.test.js` from the repo root (needs Postgres, and
 Xvfb on Linux - see regression/README.md). It's also in `regression/run.sh`.
 `NOTIFIER_EXE=desktop/dist/linux-unpacked/chat-notifier` runs it against a

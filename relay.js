@@ -27,6 +27,8 @@ function forwardHeaders(req) {
     if (!HOP_BY_HOP.has(name)) headers[name] = value;
   }
   headers.host = target.host;
+  // the address the visitor typed (the chat checks passkeys against it); set here, never taken from the visitor
+  headers['x-relay-host'] = String(req.headers.host || '');
   // the visitor's address, for the chat's per-network limits (it only trusts one hop)
   const visitor = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
   if (visitor) headers['x-forwarded-for'] = visitor;

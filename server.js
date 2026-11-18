@@ -18,6 +18,7 @@ const { Pool } = require('pg');
 const { Server } = require('socket.io');
 const webpush = require('web-push');
 const compression = require('compression');
+const QRCode = require('qrcode');
 
 const app = express();
 const server = http.createServer(app);
@@ -26,7 +27,10 @@ const server = http.createServer(app);
 // still cut off by headersTimeout.
 server.requestTimeout = 0;
 const io = new Server(server, {
-  maxHttpBufferSize: 1024 * 1024
+  maxHttpBufferSize: 1024 * 1024,
+  // /livekit upgrades (calls' media server) are handled further down; don't
+  // let Socket.IO close them while LiveKit answers
+  destroyUpgrade: false
 });
 
 const PORT = process.env.PORT || 3000;
@@ -59,6 +63,7 @@ const FILE_EXPIRY_HOURS = Math.max(1, Number(process.env.FILE_EXPIRY_HOURS) || 6
 // KEEP_FILE_MB is still a temporary share on local disk, gone after
 // FILE_EXPIRY_HOURS or a restart, and the app says so on the file.
 const KEEP_FILE_BYTES = Math.max(0, Number(process.env.KEEP_FILE_MB || 8)) * 1024 * 1024;
+const VOICE_MAX_SECONDS = 5 * 60; // longest voice message the app records
 const MEDIA_BUDGET_BYTES = Math.max(1, Number(process.env.MEDIA_BUDGET_MB || 250)) * 1024 * 1024;
 const HISTORY_PAGE = 75; // messages per page of /history
 const DEFAULT_CHANNELS = ['general', 'gaming', 'coding'];
@@ -788,6 +793,54 @@ async function setupSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_server ON audit_log (server_id, id DESC)`);
+  // ---- AutoMod (see "AutoMod" further down) ----
+  // One row per server and rule kind; config is JSON (words, limits, allowed sites).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automod_rules (
+      server_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 0,
+      action TEXT NOT NULL DEFAULT 'block',
+      timeout_minutes INTEGER NOT NULL DEFAULT 0,
+      config TEXT NOT NULL DEFAULT '{}',
+      exempt_roles TEXT NOT NULL DEFAULT '',
+      exempt_channels TEXT NOT NULL DEFAULT '',
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      PRIMARY KEY (server_id, kind)
+    )`);
+  // The moderators' review queue: blocked and flagged messages, raid alerts.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS automod_queue (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      username TEXT,
+      room TEXT,
+      message_id INTEGER,
+      content TEXT,
+      reason TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      handled_by TEXT,
+      handled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_automod_queue_server ON automod_queue (server_id, status, id DESC)`);
+  // Raid protection: who may post yet, join surges, lockdown.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS raid_settings (
+      server_id INTEGER PRIMARY KEY,
+      min_account_minutes INTEGER NOT NULL DEFAULT 0,
+      min_member_minutes INTEGER NOT NULL DEFAULT 0,
+      join_limit INTEGER NOT NULL DEFAULT 0,
+      join_window_seconds INTEGER NOT NULL DEFAULT 60,
+      lockdown_minutes INTEGER NOT NULL DEFAULT 30,
+      lockdown_until TIMESTAMPTZ,
+      lockdown_reason TEXT,
+      updated_by TEXT,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
   // ---- stickers ----
   await pool.query(`
     CREATE TABLE IF NOT EXISTS server_stickers (
@@ -800,6 +853,22 @@ async function setupSchema() {
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stickers_server ON server_stickers (server_id)`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sticker_id INTEGER`);
+  // ---- voice messages (an audio attachment with its length and waveform) ----
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS voice_seconds REAL`);
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS waveform TEXT`);
+  // ---- soundboard (short clips from /assets, played in calls) ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_sounds (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      emoji TEXT,
+      url TEXT NOT NULL,
+      volume REAL DEFAULT 1,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sounds_server ON server_sounds (server_id)`);
   // ---- custom emoji ----
   await pool.query(`
     CREATE TABLE IF NOT EXISTS server_emojis (
@@ -811,9 +880,86 @@ async function setupSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (server_id, name)
     )`);
+  // ---- onboarding, rules screen and Discovery (see "ONBOARDING" below) ----
+  // *_since: when the owner turned it on - people who joined before that
+  // aren't asked (NULL = ask everyone, "ask everyone again").
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS onboarding_enabled INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS onboarding_since TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS rules TEXT`); // JSON array of strings
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS rules_enabled INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS rules_since TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS discoverable INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS discovery_category TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS rules_accepted_at TIMESTAMPTZ`);
+  // what onboarding handed out, so changing an answer only takes back its own grants
+  await pool.query(`ALTER TABLE server_member_roles ADD COLUMN IF NOT EXISTS via_onboarding INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE channel_access ADD COLUMN IF NOT EXISTS via_onboarding INTEGER DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_questions (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      multiple INTEGER DEFAULT 0,
+      required INTEGER DEFAULT 0,
+      position INTEGER DEFAULT 0
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_options (
+      id SERIAL PRIMARY KEY,
+      question_id INTEGER NOT NULL,
+      server_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      description TEXT,
+      emoji TEXT,
+      role_ids TEXT DEFAULT '',
+      channel_ids TEXT DEFAULT '',
+      position INTEGER DEFAULT 0
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_answers (
+      server_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      option_id INTEGER NOT NULL,
+      PRIMARY KEY (server_id, username, option_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_questions_server ON onboarding_questions (server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_options_server ON onboarding_options (server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_servers_discoverable ON servers (discoverable) WHERE discoverable = 1`);
   // Two accounts whose names differ only by capitals ("Purple" / "purple")
   // are an impersonation tool. New names are checked in usernameTaken(); the
   // index backs that up, but can't be built if such a pair already exists.
+  // ---- two-step login (authenticator app + backup codes) and passkeys ----
+  // totp_secret is set while setting up (totp_enabled still 0) and kept once
+  // it's on; totp_last_step stops a code being used twice.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS backup_codes (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      code_hash TEXT NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_backup_codes_user ON backup_codes (username)`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS passkeys (
+      id SERIAL PRIMARY KEY,
+      username TEXT NOT NULL,
+      credential_id TEXT NOT NULL UNIQUE,
+      public_key TEXT NOT NULL,
+      alg INTEGER NOT NULL,
+      sign_count BIGINT DEFAULT 0,
+      rp_id TEXT NOT NULL,
+      name TEXT,
+      transports TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_passkeys_user ON passkeys (username)`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users (LOWER(username))`)
     .catch(err => console.warn('Skipped the case-insensitive username index (existing look-alike names?):', err.message));
 }
@@ -907,7 +1053,7 @@ let DEFAULT_SERVER = null;
 // users table explicitly invalidates (this app runs as a single process,
 // so nothing else can change a user behind its back).
 const USER_COLUMNS = `id, username, password_hash, display_name, banned, is_admin, censor_swears, is_bot, bot_owner,
-  bio, banner_color, banner_url, banner_pos, read_receipts, avatar_video, custom_status, pronouns, presence, avatar_version, created_at, hide_admin,
+  bio, banner_color, banner_url, banner_pos, read_receipts, avatar_video, custom_status, pronouns, presence, avatar_version, created_at, hide_admin, totp_enabled,
   (COALESCE(avatar_url, '') <> '') AS has_avatar,
   CASE WHEN left(avatar_url, 5) = 'data:' THEN NULL ELSE avatar_url END AS avatar_ext`;
 const userCache = new Map(); // username -> { row, at }
@@ -1106,7 +1252,7 @@ async function insertFile(room, user, toUser, isGroup, fileName, fileType, fileU
 async function getFileById(id) {
   return one(`SELECT * FROM files WHERE id = $1`, [id]);
 }
-const FILE_COLUMNS = `id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, created_at`;
+const FILE_COLUMNS = `id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, voice_seconds, waveform, created_at`;
 async function getFilesForRoom(room) {
   return q(
     `SELECT * FROM (
@@ -1184,10 +1330,24 @@ function cleanText(value, max = 4000) {
 // made a global admin via the SEED_ACCOUNTS { isAdmin: true } property or
 // by an existing global admin right-clicking a user and choosing
 // "Make Admin" (users.is_admin in the database).
-async function isAdmin(username) {
+//
+// Site admin POWERS also need two-step login (ADMIN_2FA=off turns that off):
+// an admin without it keeps their account and badge, and can turn it on at
+// any time in Settings > My Account, but isAdmin() says no until they do -
+// so nothing can lock them out, and a stolen admin password alone is no
+// longer enough to run the site. isSiteAdmin() is the role itself (who an
+// admin is, for "admins can't act against each other" and the badge).
+const ADMIN_REQUIRES_2FA = process.env.ADMIN_2FA !== 'off';
+async function isSiteAdmin(username) {
   if (username === 'Purple') return true;
   const user = await getUser(username);
   return !!(user && user.is_admin);
+}
+async function isAdmin(username) {
+  if (!(await isSiteAdmin(username))) return false;
+  if (!ADMIN_REQUIRES_2FA) return true;
+  const user = await getUser(username);
+  return !!(user && user.totp_enabled);
 }
 
 // ---- Sessions ----
@@ -1208,6 +1368,7 @@ function deviceLabel(userAgent) {
   if (!ua) return 'Unknown device';
   let browser = 'Browser';
   if (/ChatNotifier\//.test(ua)) browser = 'Chat Notifier';
+  else if (/ChatDesktop\//.test(ua)) browser = 'Chat app'; // the Windows app's chat window (desktop/)
   else if (/Edg(e|A|iOS)?\//.test(ua)) browser = 'Edge';
   else if (/OPR\/|Opera/.test(ua)) browser = 'Opera';
   else if (/SamsungBrowser\//.test(ua)) browser = 'Samsung Internet';
@@ -1486,7 +1647,7 @@ const ROLE_PERMISSIONS = [
   'manage_events',        // create, edit and cancel events
   'mention_everyone',     // @everyone, and roles that aren't mentionable
   'ban_members',          // ban from this server (and unban); time members out
-  'manage_emoji'          // add and remove this server's custom emoji and stickers
+  'manage_emoji'          // add and remove this server's custom emoji, stickers and soundboard sounds
 ];
 const ALL_PERMISSIONS = new Set(ROLE_PERMISSIONS);
 function cleanPermissions(list) {
@@ -1526,7 +1687,7 @@ const PERMISSION_LABELS = {
   manage_server: 'Manage server', manage_channels: 'Manage channels', manage_roles: 'Manage roles',
   manage_messages: 'Manage messages', kick_members: 'Kick members', manage_integrations: 'Manage bots & webhooks',
   manage_events: 'Manage events', mention_everyone: 'Mention @everyone',
-  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji & stickers'
+  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji, stickers & sounds'
 };
 // No climbing: a role (and so a member) can only be given, taken or edited
 // by someone who already has every power that role carries.
@@ -1566,6 +1727,330 @@ async function moderationProblem(actor, target, serverId) {
   const mine = await serverPermissions(actor, serverId);
   if ([...(await serverPermissions(target, serverId))].some(p => !mine.has(p))) return 'you can only moderate members whose permissions you have yourself';
   return null;
+}
+
+// ---- AutoMod ----
+// Per-server rules that check what people post in the server's channels
+// (and threads). Each rule either blocks the message (the sender gets an
+// error and the text stays in their message box) or flags it (it's posted,
+// and it goes to the moderators' review queue). A rule can also time the
+// sender out. Blocked messages go to the queue too, so moderators see the
+// attempts. Owner, admins and anyone with Manage messages or Manage server
+// are never checked; rules can also skip some roles and channels. DMs and
+// group chats aren't servers, so AutoMod doesn't look at them.
+const AUTOMOD_KINDS = ['words', 'spam', 'mentions', 'links', 'invites'];
+const AUTOMOD_TIMEOUTS = [0, 5, 10, 60, 360, 1440]; // minutes
+const AUTOMOD_ACTOR = 'AutoMod'; // audit log / timeouts "set by"
+const MAX_AUTOMOD_WORDS = 300;
+function automodDefaults(kind) {
+  return {
+    words: { words: [] },
+    spam: { maxMessages: 6, perSeconds: 5, maxDuplicates: 3 },
+    mentions: { maxMentions: 5 },
+    links: { allowed: [] },
+    invites: {}
+  }[kind];
+}
+const clampInt = (value, min, max, fallback) => {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
+};
+const toList = value => (Array.isArray(value) ? value : String(value || '').split(/[\n,]/)).map(v => String(v).trim()).filter(Boolean);
+// A banned word: letters/numbers/spaces/' and -, with an optional * at the
+// start and/or end (matches longer words). No regexes - nothing can be slow.
+function cleanAutomodWord(word) {
+  const w = String(word).toLowerCase().normalize('NFKC').replace(/\s+/g, ' ').trim();
+  if (!w || w.length > 60) return '';
+  const core = w.replace(/^\*/, '').replace(/\*$/, '');
+  if (!core || /\*/.test(core) || !/^[\p{L}\p{N}' .$@!_-]+$/u.test(core)) return '';
+  return w;
+}
+function cleanDomain(value) {
+  let d = String(value).toLowerCase().trim().replace(/^[a-z]+:\/\//, '').replace(/^www\./, '').split(/[/?#:]/)[0];
+  return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && d.length <= 120 ? d : '';
+}
+function cleanAutomodConfig(kind, raw) {
+  raw = raw && typeof raw === 'object' ? raw : {};
+  const d = automodDefaults(kind);
+  if (kind === 'words') return { words: [...new Set(toList(raw.words).map(cleanAutomodWord).filter(Boolean))].slice(0, MAX_AUTOMOD_WORDS) };
+  if (kind === 'spam') return {
+    maxMessages: clampInt(raw.maxMessages, 2, 50, d.maxMessages),
+    perSeconds: clampInt(raw.perSeconds, 2, 120, d.perSeconds),
+    maxDuplicates: clampInt(raw.maxDuplicates, 0, 20, d.maxDuplicates) // 0 = don't check repeats
+  };
+  if (kind === 'mentions') return { maxMentions: clampInt(raw.maxMentions, 1, 50, d.maxMentions) };
+  if (kind === 'links') return { allowed: [...new Set(toList(raw.allowed).map(cleanDomain).filter(Boolean))].slice(0, 100) };
+  return {};
+}
+function automodRuleFromRow(kind, row) {
+  let config = {};
+  try { config = row ? JSON.parse(row.config || '{}') : {}; } catch (e) {}
+  return {
+    kind,
+    enabled: !!(row && row.enabled),
+    action: row && row.action === 'flag' ? 'flag' : 'block',
+    timeoutMinutes: row && AUTOMOD_TIMEOUTS.includes(row.timeout_minutes) ? row.timeout_minutes : 0,
+    config: cleanAutomodConfig(kind, row ? config : automodDefaults(kind)),
+    exemptRoles: row ? idList(row.exempt_roles) : [],
+    exemptChannels: row ? idList(row.exempt_channels) : []
+  };
+}
+function raidFromRow(row) {
+  const r = row || {};
+  const until = r.lockdown_until && new Date(r.lockdown_until) > new Date() ? r.lockdown_until : null;
+  return {
+    minAccountMinutes: r.min_account_minutes || 0,
+    minMemberMinutes: r.min_member_minutes || 0,
+    joinLimit: r.join_limit || 0,
+    joinWindowSeconds: r.join_window_seconds || 60,
+    lockdownMinutes: r.lockdown_minutes || 30,
+    lockdownUntil: until,
+    lockdownReason: until ? (r.lockdown_reason || '') : ''
+  };
+}
+// Rules and raid settings are read on every message, so they're cached per
+// server (dropped whenever they're saved).
+const automodCache = new Map(); // serverId -> { at, rules, raid, wordRe }
+function forgetAutomod(serverId) { automodCache.delete(Number(serverId)); }
+async function automodFor(serverId) {
+  const hit = automodCache.get(serverId);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit;
+  const rows = await q(`SELECT * FROM automod_rules WHERE server_id = $1`, [serverId]);
+  const rules = AUTOMOD_KINDS.map(kind => automodRuleFromRow(kind, rows.find(r => r.kind === kind)));
+  const raid = raidFromRow(await one(`SELECT * FROM raid_settings WHERE server_id = $1`, [serverId]));
+  const words = rules.find(r => r.kind === 'words').config.words;
+  const entry = { at: Date.now(), rules, raid, wordRe: wordsRegex(words) };
+  automodCache.set(serverId, entry);
+  if (automodCache.size > 2000) automodCache.delete(automodCache.keys().next().value);
+  return entry;
+}
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function wordsRegex(words) {
+  if (!words.length) return null;
+  const parts = words.map(w => {
+    const pre = w.startsWith('*'), post = w.length > 1 && w.endsWith('*');
+    const core = escapeRe(w.replace(/^\*/, '').replace(/\*$/, '')).replace(/ /g, '\\s+');
+    return (pre ? '[\\p{L}\\p{N}]*' : '') + core + (post ? '[\\p{L}\\p{N}]*' : '');
+  });
+  return new RegExp('(?<![\\p{L}\\p{N}])(?:' + parts.join('|') + ')(?![\\p{L}\\p{N}])', 'iu');
+}
+// Lower case, accents and invisible characters removed, so "Bá​d" is "bad".
+function automodText(text) {
+  return String(text || '').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[­​-‏⁠﻿]/g, '').toLowerCase();
+}
+const URL_RE = /\bhttps?:\/\/[^\s<>()]+|\bwww\.[^\s<>()]+/gi;
+const INVITE_RE = /(?:^|[^\w.])(?:discord(?:app)?\.com\/invite\/|discord\.gg\/|dsc\.gg\/|discord\.me\/|t\.me\/(?:joinchat\/|\+)|chat\.whatsapp\.com\/|guilded\.gg\/i\/)[\w-]+/i;
+function linkHosts(text) {
+  const hosts = [];
+  for (const m of String(text).matchAll(URL_RE)) {
+    try { hosts.push(new URL(/^www\./i.test(m[0]) ? 'http://' + m[0] : m[0]).hostname.toLowerCase().replace(/^www\./, '')); } catch (e) {}
+  }
+  return hosts;
+}
+function mentionCount(text) {
+  const names = new Set();
+  for (const m of String(text).matchAll(/(?:^|[^\w@.])@([a-zA-Z0-9_.-]{2,30})/g)) names.add(m[1].toLowerCase());
+  const roles = new Set([...String(text).matchAll(/<@&(\d+)>/g)].map(m => m[1]));
+  return names.size + roles.size;
+}
+// Recent posts per server+person, for the spam rule (memory only).
+const automodRecent = new Map(); // serverId\nusername -> [{ t, text }]
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, list] of automodRecent) if (!list.length || now - list[list.length - 1].t > 2 * 60 * 1000) automodRecent.delete(key);
+}, 60 * 1000).unref();
+
+const AUTOMOD_SENDER_TEXT = {
+  words: 'it has a word this server doesn\'t allow',
+  spam: 'you\'re sending messages too quickly',
+  repeat: 'you\'ve sent the same message too many times',
+  mentions: 'it mentions too many people',
+  links: 'links to that site aren\'t allowed here',
+  invites: 'invite links to other servers aren\'t allowed here'
+};
+// Checks a message about to be posted (or an edit) in a server channel.
+// Returns null when nothing applies, else { serverId, blocked, flags, timeouts }
+// where blocked/flags are { kind, reason (for moderators), says (for the sender) }.
+async function automodCheck(username, room, text, opts = {}) {
+  const channel = await channelForRoom(room);
+  if (!channel) return null;
+  const serverId = channel.server_id;
+  const am = await automodFor(serverId);
+  const active = am.rules.filter(r => r.enabled && !r.exemptChannels.includes(channel.id) && (!opts.edit || r.kind !== 'spam'));
+  if (!active.length) return null;
+  const mine = await serverPermissions(username, serverId);
+  if (mine.has('manage_messages') || mine.has('manage_server')) return null;
+  const needRoles = active.some(r => r.exemptRoles.length);
+  const myRoles = needRoles ? new Set((await q(`SELECT role_id FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, username])).map(r => r.role_id)) : new Set();
+  const plain = automodText(text);
+  const hits = [];
+  for (const rule of active) {
+    if (rule.exemptRoles.some(id => myRoles.has(id))) continue;
+    let hit = null;
+    if (rule.kind === 'words' && am.wordRe) {
+      const m = plain.match(am.wordRe);
+      if (m) hit = { reason: `Banned word: "${m[0].slice(0, 60)}"`, says: AUTOMOD_SENDER_TEXT.words };
+    } else if (rule.kind === 'mentions') {
+      const n = mentionCount(text) + (EVERYONE_RE.test(text) ? 1 : 0);
+      if (n > rule.config.maxMentions) hit = { reason: `${n} mentions (the limit is ${rule.config.maxMentions})`, says: AUTOMOD_SENDER_TEXT.mentions + ` (up to ${rule.config.maxMentions} here)` };
+    } else if (rule.kind === 'links') {
+      const allowed = rule.config.allowed;
+      const bad = linkHosts(text).find(h => !allowed.some(a => h === a || h.endsWith('.' + a)));
+      if (bad) hit = { reason: `Link to ${bad.slice(0, 120)}`, says: AUTOMOD_SENDER_TEXT.links };
+    } else if (rule.kind === 'invites') {
+      const m = text.match(INVITE_RE);
+      if (m) hit = { reason: `Invite link: ${m[0].trim().slice(0, 120)}`, says: AUTOMOD_SENDER_TEXT.invites };
+    } else if (rule.kind === 'spam') {
+      const key = serverId + '\n' + username;
+      const now = Date.now();
+      const list = (automodRecent.get(key) || []).filter(e => now - e.t < 60 * 1000);
+      const recent = list.filter(e => now - e.t < rule.config.perSeconds * 1000).length;
+      const same = plain.trim() ? list.filter(e => e.text === plain.trim()).length : 0;
+      if (recent >= rule.config.maxMessages) hit = { reason: `More than ${rule.config.maxMessages} messages in ${rule.config.perSeconds} seconds`, says: AUTOMOD_SENDER_TEXT.spam };
+      else if (rule.config.maxDuplicates && same >= rule.config.maxDuplicates) hit = { reason: `The same message more than ${rule.config.maxDuplicates} times in a minute`, says: AUTOMOD_SENDER_TEXT.repeat };
+      if (!hit || rule.action === 'flag') { list.push({ t: now, text: plain.trim() }); automodRecent.set(key, list.slice(-60)); }
+      else automodRecent.set(key, list);
+    }
+    if (hit) hits.push({ kind: rule.kind, action: rule.action, timeoutMinutes: rule.timeoutMinutes, ...hit });
+  }
+  if (!hits.length) return null;
+  return {
+    serverId,
+    blocked: hits.find(h => h.action === 'block') || null,
+    flags: hits.filter(h => h.action === 'flag'),
+    timeout: Math.max(0, ...hits.map(h => h.timeoutMinutes))
+  };
+}
+// The sender's error for a blocked message.
+function automodError(result) {
+  return `AutoMod blocked this message: ${result.blocked.says}.`;
+}
+// Writes what a check found to the review queue (and audit log), applies a
+// rule's timeout and tells the moderators. Never throws - posting goes on.
+async function automodRecord(result, username, room, text, messageId) {
+  if (!result) return;
+  try {
+    const items = result.blocked ? [{ ...result.blocked, outcome: 'blocked' }] : result.flags.map(f => ({ ...f, outcome: 'flagged' }));
+    for (const item of items) {
+      await pool.query(
+        `INSERT INTO automod_queue (server_id, kind, outcome, username, room, message_id, content, reason) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [result.serverId, item.kind, item.outcome, username, room, result.blocked ? null : (messageId || null), String(text || '').slice(0, 4000), item.reason.slice(0, 300)]
+      );
+      auditLog(result.serverId, AUTOMOD_ACTOR, item.outcome === 'blocked' ? 'automod_block' : 'automod_flag', username, item.reason);
+    }
+    if (result.timeout && !(await activeTimeout(username, result.serverId)) && !(await isServerOwnerLevel(username, result.serverId))) {
+      const srv = await getServerById(result.serverId);
+      if (srv && !srv.is_default) {
+        await applyTimeout(srv, username, result.timeout, 'AutoMod: ' + items[0].reason.slice(0, 150), AUTOMOD_ACTOR);
+        await notifyServerMembers(srv.id, 'serverMembersChanged', { serverId: srv.id });
+      }
+    }
+    if (Math.random() < 0.02) pool.query(`DELETE FROM automod_queue WHERE created_at < NOW() - INTERVAL '30 days'`).catch(() => {});
+    await notifyReviewers(result.serverId, { kind: items[0].kind, outcome: items[0].outcome, username, room });
+  } catch (err) {
+    console.error('automod record failed:', err.message);
+  }
+}
+// Everyone who reviews the queue here: owner, server admins and members of a
+// role with Manage messages (site admins only in the open default server).
+async function automodReviewers(serverId) {
+  const srv = await getServerById(serverId);
+  if (!srv) return [];
+  if (srv.is_default) {
+    const rows = await q(`SELECT username FROM users WHERE is_admin = 1 AND banned = 0`);
+    return [...new Set(['Purple', ...rows.map(r => r.username)])];
+  }
+  const rows = await q(
+    `SELECT m.username FROM server_members m JOIN users u ON u.username = m.username
+     WHERE m.server_id = $1 AND COALESCE(u.is_bot, 0) = 0 AND (m.role = 'admin' OR m.username = $2 OR EXISTS (
+       SELECT 1 FROM server_member_roles mr JOIN server_roles r ON r.id = mr.role_id
+       WHERE mr.server_id = m.server_id AND mr.username = m.username AND (',' || COALESCE(r.permissions, '') || ',') LIKE '%,manage_messages,%'))`,
+    [serverId, srv.owner]
+  );
+  return rows.map(r => r.username);
+}
+// Open items a reviewer may see: only rooms they can read (raid alerts have no room).
+async function automodOpenCount(username, serverId) {
+  const rooms = await readableChannelRooms(username);
+  const row = await one(
+    `SELECT COUNT(*)::int AS n FROM automod_queue q WHERE q.server_id = $1 AND q.status = 'open'
+       AND (q.room IS NULL OR q.room = ANY($2) OR q.room IN (SELECT 'thread:' || t.id FROM threads t WHERE t.parent_room = ANY($2)))`,
+    [serverId, rooms]
+  );
+  return row ? row.n : 0;
+}
+async function notifyReviewers(serverId, item) {
+  for (const reviewer of await automodReviewers(serverId)) {
+    if (!(await hasServerPerm(reviewer, serverId, 'manage_messages'))) continue;
+    if (item && item.room && !(await isAllowedRoom(reviewer, item.room))) { sendToUser(reviewer, 'automodQueue', { serverId, open: await automodOpenCount(reviewer, serverId) }); continue; }
+    sendToUser(reviewer, 'automodQueue', { serverId, open: await automodOpenCount(reviewer, serverId), item: item || null });
+  }
+}
+
+// ---- Raid protection ----
+// New accounts / new members can't post until they're old enough, and a
+// burst of joins locks the server (no new members) for a while.
+async function raidPostBlock(username, channel) {
+  const am = await automodFor(channel.server_id);
+  const { minAccountMinutes, minMemberMinutes } = am.raid;
+  if (!minAccountMinutes && !minMemberMinutes) return null;
+  if (await isBotUser(username)) return null; // bots are added on purpose by their owner
+  const mine = await serverPermissions(username, channel.server_id);
+  if (mine.has('manage_messages') || mine.has('manage_server')) return null;
+  const waitText = ms => { const m = Math.ceil(ms / 60000); return m >= 1440 ? Math.ceil(m / 1440) + ' day(s)' : m >= 60 ? Math.ceil(m / 60) + ' hour(s)' : m + ' minute(s)'; };
+  if (minAccountMinutes) {
+    const u = await one(`SELECT created_at FROM users WHERE username = $1`, [username]);
+    const left = u && u.created_at ? new Date(u.created_at).getTime() + minAccountMinutes * 60000 - Date.now() : 0;
+    if (left > 0) return `This server only lets accounts that are a little older post. You can post here in ${waitText(left)}.`;
+  }
+  if (minMemberMinutes) {
+    const srv = await getServerById(channel.server_id);
+    const m = srv && !srv.is_default ? await one(`SELECT joined_at FROM server_members WHERE server_id = $1 AND username = $2`, [channel.server_id, username]) : null;
+    const left = m && m.joined_at ? new Date(m.joined_at).getTime() + minMemberMinutes * 60000 - Date.now() : 0;
+    if (left > 0) return `New members wait a little before posting in this server. You can post here in ${waitText(left)}.`;
+  }
+  return null;
+}
+const recentJoins = new Map(); // serverId -> [{ t, username }]
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, list] of recentJoins) if (!list.length || now - list[list.length - 1].t > 15 * 60 * 1000) recentJoins.delete(key);
+}, 5 * 60 * 1000).unref();
+// Is the server locked down? Returns the raid settings while it is.
+async function serverLockdown(serverId) {
+  const am = await automodFor(serverId);
+  if (!am.raid.lockdownUntil) return null;
+  if (new Date(am.raid.lockdownUntil) <= new Date()) { forgetAutomod(serverId); return null; }
+  return am.raid;
+}
+async function setLockdown(srv, minutes, reason, actor) {
+  await pool.query(
+    `INSERT INTO raid_settings (server_id, lockdown_until, lockdown_reason, updated_by) VALUES ($1, CASE WHEN $2::int > 0 THEN NOW() + make_interval(mins => $2::int) END, $3, $4)
+     ON CONFLICT (server_id) DO UPDATE SET lockdown_until = EXCLUDED.lockdown_until, lockdown_reason = EXCLUDED.lockdown_reason, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [srv.id, minutes, minutes > 0 ? String(reason || '').slice(0, 200) : null, actor]
+  );
+  forgetAutomod(srv.id);
+  auditLog(srv.id, actor, minutes > 0 ? 'lockdown_start' : 'lockdown_end', null, minutes > 0 ? minutes + ' min' + (reason ? ' - ' + reason : '') : '');
+}
+// After someone joins with an invite: counts joins, and starts a lockdown
+// (plus a review queue alert listing who joined) when there are too many.
+async function noteServerJoin(srv, username) {
+  const am = await automodFor(srv.id);
+  const { joinLimit, joinWindowSeconds, lockdownMinutes } = am.raid;
+  if (!joinLimit) return;
+  const now = Date.now();
+  const list = (recentJoins.get(srv.id) || []).filter(j => now - j.t < joinWindowSeconds * 1000);
+  list.push({ t: now, username });
+  recentJoins.set(srv.id, list);
+  if (list.length <= joinLimit || am.raid.lockdownUntil) return;
+  const reason = `${list.length} people joined in ${joinWindowSeconds} seconds`;
+  await setLockdown(srv, lockdownMinutes, 'Raid protection: ' + reason, AUTOMOD_ACTOR);
+  await pool.query(
+    `INSERT INTO automod_queue (server_id, kind, outcome, content, reason) VALUES ($1, 'raid', 'lockdown', $2, $3)`,
+    [srv.id, list.map(j => j.username).join('\n'), reason + ` - new members are paused for ${lockdownMinutes} minutes`]
+  );
+  recentJoins.delete(srv.id);
+  await notifyReviewers(srv.id, { kind: 'raid', outcome: 'lockdown', username: null, room: null });
 }
 
 // ---- Per-server profiles ----
@@ -1627,6 +2112,7 @@ async function serversForUser(username) {
   const rows = await q(
     `SELECT s.id, s.name, s.owner, s.invite_code, s.is_default, s.censor_swears, s.icon_version,
             s.description, s.banner_color, s.banner_version, s.system_channel_id, s.banner_pos,
+            s.onboarding_enabled, s.onboarding_since, s.rules_enabled, s.rules_since, s.discoverable, s.discovery_category,
             CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
             CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' WHEN left(s.banner_url, 8) = '/assets/' THEN s.banner_url ELSE 'data:' END AS banner_url
      FROM servers s
@@ -1640,14 +2126,16 @@ async function serversForUser(username) {
   const ids = rows.map(s => s.id);
   const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
   const stickerRows = await q(`SELECT id, server_id, name, url FROM server_stickers WHERE server_id = ANY($1) ORDER BY id`, [ids]);
+  const soundRows = await q(`SELECT id, server_id, name, emoji, url, volume FROM server_sounds WHERE server_id = ANY($1) ORDER BY id`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
-    q(`SELECT server_id, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
+    q(`SELECT server_id, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles, joined_at, onboarded_at, rules_accepted_at FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids]),
     q(`SELECT * FROM server_categories WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     readableChannelRooms(username)
   ]);
+  const questionCounts = new Map((await q(`SELECT server_id, COUNT(*)::int AS n FROM onboarding_questions WHERE server_id = ANY($1) GROUP BY server_id`, [ids])).map(r => [r.server_id, r.n]));
   const canSee = new Set(readable);
   const visibleChannels = channelRows.filter(c => canSee.has(c.room));
   // owners who hide their roles in their server (not named as owner to others)
@@ -1694,6 +2182,7 @@ async function serversForUser(username) {
       permissions,
       emojis: emojiRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
       stickers: stickerRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
+      sounds: soundRows.filter(e => e.server_id === s.id).map(soundFromRow),
       myServerProfile: myMemberRows.has(s.id) ? serverProfileFromRow(myMemberRows.get(s.id)) : null,
       canHideRoles: !s.is_default && (admin || isOwner || role === 'admin' ||
         customRoleRows.some(r => r.server_id === s.id && r.allow_hide && myRoleRows.some(m => m.server_id === s.id && m.role_id === r.id))),
@@ -1704,6 +2193,14 @@ async function serversForUser(username) {
       bannerUrl: serverBannerUrlOf(s),
       bannerPos: s.banner_pos || '',
       systemChannelId: s.system_channel_id || null,
+      // the join gates: what the app should walk this person through
+      onboarding: {
+        enabled: !!s.onboarding_enabled && !!questionCounts.get(s.id),
+        pending: onboardingGateOpen(s, myMemberRows.get(s.id), username, questionCounts.get(s.id) || 0, { isBot })
+      },
+      rules: { enabled: !!s.rules_enabled, pending: rulesGateOpen(s, myMemberRows.get(s.id), username, { isBot, isSiteAdmin: admin }) },
+      discoverable: !!s.discoverable,
+      discoveryCategory: s.discovery_category || '',
       roles: customRolesBy.get(s.id) || [],
       categories: categoryRows.filter(c => c.server_id === s.id).map(c => ({ id: c.id, name: c.name, position: c.position })),
       myRoleIds: myRoleRows.filter(r => r.server_id === s.id).map(r => r.role_id),
@@ -1720,7 +2217,7 @@ async function serversForUser(username) {
         kind: ['forum', 'voice'].includes(c.kind) ? c.kind : 'text',
         access: (canManage || permissions.includes('manage_channels')) && c.is_private ? {
           roleIds: accessRows.filter(a => a.channel_id === c.id && a.role_id).map(a => a.role_id),
-          usernames: accessRows.filter(a => a.channel_id === c.id && a.username).map(a => a.username)
+          usernames: accessRows.filter(a => a.channel_id === c.id && a.username && !a.via_onboarding).map(a => a.username)
         } : null
       }))
     };
@@ -1830,8 +2327,8 @@ async function filterChannelViewers(channel, names) {
      UNION SELECT owner FROM servers WHERE id = $1
      UNION SELECT username FROM channel_access WHERE channel_id = $2 AND username IS NOT NULL
      UNION SELECT r.username FROM server_member_roles r JOIN channel_access a ON a.role_id = r.role_id WHERE a.channel_id = $2
-     UNION SELECT username FROM users WHERE is_admin = 1 OR username = 'Purple'`,
-    [channel.server_id, channel.id]
+     UNION SELECT username FROM users WHERE (is_admin = 1 OR username = 'Purple') AND (NOT $3 OR totp_enabled = 1)`,
+    [channel.server_id, channel.id, ADMIN_REQUIRES_2FA]
   );
   const allowed = new Set(rows.map(r => r.username));
   return names.filter(n => allowed.has(n));
@@ -1899,11 +2396,15 @@ setInterval(() => {
 // a slowmode slot is claimed immediately, so two quick sends can't both
 // slip through. The owner and admins are exempt from both, like Discord.
 async function channelPostBlock(username, room) {
+  const rules = await rulesBlockForRoom(username, room); // threads too
+  if (rules) return rules;
   const channel = await getChannelByRoom(room);
   if (channel && channel.kind === 'forum') return 'This is a forum - start a new post instead.';
   if (channel) {
     const timeout = await activeTimeout(username, channel.server_id);
     if (timeout) return `You're timed out in this server until ${new Date(timeout.until).toUTCString()}${timeout.reason ? ' (' + timeout.reason + ')' : ''}.`;
+    const raid = await raidPostBlock(username, channel);
+    if (raid) return raid;
   }
   if (!channel || (!channel.admins_only && !channel.slowmode_seconds)) return null;
   if (await hasServerPerm(username, channel.server_id, 'manage_messages')) return null;
@@ -1960,7 +2461,9 @@ async function selfProfile(username) {
   const u = await getUser(username);
   if (!u) return null;
   const realAdmin = u.username === 'Purple' || !!u.is_admin;
-  return { ...profileFromRow(u), isAdmin: realAdmin, adminHidden: realAdmin && !!u.hide_admin, readReceipts: u.read_receipts !== 0, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
+  // isAdmin = admin powers (see isAdmin()); adminNeeds2fa = an admin who has to turn on two-step login first
+  const needs2fa = realAdmin && ADMIN_REQUIRES_2FA && !u.totp_enabled;
+  return { ...profileFromRow(u), isAdmin: realAdmin && !needs2fa, siteAdmin: realAdmin, adminNeeds2fa: needs2fa, twoStep: !!u.totp_enabled, adminHidden: realAdmin && !!u.hide_admin, readReceipts: u.read_receipts !== 0, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
 }
 
 function validHexColor(value) {
@@ -2177,6 +2680,8 @@ async function normaliseFiles(rows) {
       caption: row.caption || '',
       kept: row.storage === 'db',
       expiresAt: row.storage === 'db' ? null : (row.expires_at || null),
+      // a voice message: its length and a waveform (hex, one byte per bar)
+      voice: row.voice_seconds > 0 ? { seconds: Math.round(Number(row.voice_seconds) * 10) / 10, waveform: row.waveform || '' } : null,
       createdAt: row.created_at
     };
   });
@@ -2455,8 +2960,12 @@ app.get('/healthz', route(async (req, res) => {
 // stored with the bytes, so nothing an asset serves can run as a page.
 const ASSET_TYPES = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif',
-  'video/mp4': 'mp4', 'video/webm': 'webm'
+  'video/mp4': 'mp4', 'video/webm': 'webm',
+  // soundboard clips only (see soundProblem) - never banners or avatars
+  'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/wav': 'wav', 'audio/mp4': 'm4a', 'audio/webm': 'weba'
 };
+// Soundboard clips are small: they're kept in the database, never on disk.
+const SOUND_MAX_BYTES = 1024 * 1024;
 const ASSET_MAX_BYTES = Math.max(1, Number(process.env.ASSET_MAX_MB || 2048)) * 1024 * 1024;
 // Up to this size an asset is kept in Postgres (backed up with everything
 // else); bigger ones are streamed to ASSET_DIR on disk.
@@ -2464,7 +2973,7 @@ const ASSET_DB_MAX_BYTES = 8 * 1024 * 1024;
 // All assets together (unused ones are removed after a day).
 const ASSET_BUDGET_BYTES = Math.max(1, Number(process.env.ASSET_BUDGET_MB || 30000)) * 1024 * 1024;
 function assetDiskPath(key) { return path.join(ASSET_DIR, key); }
-const ASSET_URL_RE = /^\/assets\/([A-Za-z0-9_-]{16,40})\.(png|jpg|gif|webp|avif|mp4|webm)$/;
+const ASSET_URL_RE = /^\/assets\/([A-Za-z0-9_-]{16,40})\.(png|jpg|gif|webp|avif|mp4|webm|mp3|ogg|wav|m4a|weba)$/;
 // Why `url` can't be used as a banner (allowVideo) or avatar - or null if it can.
 async function assetProblem(url, owner, allowVideo) {
   if (!url) return null;
@@ -2473,7 +2982,19 @@ async function assetProblem(url, owner, allowVideo) {
   const row = await one(`SELECT owner, type FROM assets WHERE key = $1`, [m[1]]);
   if (!row) return 'that upload has expired - please upload it again';
   if (row.owner !== owner) return 'that upload belongs to someone else';
+  if (row.type.startsWith('audio/')) return allowVideo ? 'this needs a picture or video, not a sound' : 'this needs a picture or GIF, not a sound';
   if (!allowVideo && row.type.startsWith('video/')) return 'this needs a picture or GIF, not a video';
+  return null;
+}
+// A soundboard clip must be your own uploaded sound file (small, see SOUND_MAX_BYTES).
+async function soundProblem(url, owner) {
+  const m = ASSET_URL_RE.exec(String(url || ''));
+  if (!m) return 'upload the sound first';
+  const row = await one(`SELECT owner, type, size FROM assets WHERE key = $1`, [m[1]]);
+  if (!row) return 'that upload has expired - please upload it again';
+  if (row.owner !== owner) return 'that upload belongs to someone else';
+  if (!row.type.startsWith('audio/')) return 'that isn\'t a sound file';
+  if (Number(row.size) > SOUND_MAX_BYTES) return 'sounds can be up to 1 MB';
   return null;
 }
 // A video profile picture must be your own uploaded MP4/WEBM (or '' to clear).
@@ -2488,6 +3009,7 @@ app.post('/assets', requireAuth, route(async (req, res) => {
   const type = String(req.headers['x-file-type'] || '').toLowerCase();
   if (!ASSET_TYPES[type]) return res.status(400).json({ error: 'use a PNG, JPG, GIF, WEBP or AVIF picture, or an MP4 or WEBM video' });
   const length = Number(req.headers['content-length'] || 0);
+  if (type.startsWith('audio/') && !(length > 0 && length <= SOUND_MAX_BYTES)) return res.status(413).json({ error: 'sounds can be up to 1 MB' });
   if (length > ASSET_MAX_BYTES) return res.status(413).json({ error: `that file is too big - the limit is ${Math.round(ASSET_MAX_BYTES / 1048576)} MB` });
   if (rateLimited('asset:' + req.username, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many uploads - wait a few minutes' });
   const used = await one(`SELECT COALESCE(sum(size), 0)::bigint AS n FROM assets`);
@@ -2557,6 +3079,7 @@ async function removeUnusedAssets() {
        AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.banner_url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_emojis e WHERE e.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_stickers st WHERE st.url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM server_sounds sd WHERE sd.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM messages pm WHERE pm.persona_avatar LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%' OR m.avatar_video LIKE '/assets/' || a.key || '.%')
      RETURNING key, storage`
@@ -2642,9 +3165,577 @@ app.post('/login', route(async (req, res) => {
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return res.status(401).json({ error: 'invalid username or password' });
 
+  // Two-step login: the password was right, but no session yet. Either the
+  // code came with it (scripts, the Chat Notifier), or the app gets a short
+  // ticket and asks for the code (or a passkey) next - see /login/2fa.
+  if (user.totp_enabled) {
+    if (req.body.code !== undefined && req.body.code !== '') {
+      const check = await checkSecondFactor(user.username, req.body.code);
+      if (!check.ok) return res.status(401).json({ error: check.error, code: 'mfa_invalid' });
+    } else {
+      return res.json({ mfaRequired: true, ticket: newLoginTicket(user.username), username: user.username, passkeys: await hasPasskeys(user.username) });
+    }
+  }
+
   const token = await createToken(user.username, req);
   res.json({ message: 'ok', username: user.username, token, profile: await selfProfile(user.username) });
 }));
+
+// ---------------- TWO-STEP LOGIN AND PASSKEYS ----------------
+// Two-step login is an authenticator app (TOTP, RFC 6238: 6 digits, 30
+// seconds, SHA-1 - what every app supports) plus ten single-use backup
+// codes, kept only as hashes. Once it's on, a right password gets a short
+// login ticket instead of a session, and the session comes from
+// /login/2fa with a code, a backup code or a passkey.
+//
+// Passkeys (WebAuthn) are a login on their own: the browser and the
+// person's phone/computer/security key prove who they are (fingerprint,
+// face, PIN), so a passkey login skips the password and the code. Each
+// passkey is tied to the address it was made on (rp_id) - the browser only
+// offers it there, and the server checks it again on every login.
+//
+// Nothing here can lock someone out by itself: turning it on needs a code
+// from the new app first, the backup codes are shown before it counts as
+// on, a site admin can reset it for someone who lost everything (only
+// Purple for another admin), and RESET_2FA_FOR=name,name at boot resets it
+// for accounts nobody else can help (Purple's own).
+const TOTP_STEP = 30;
+const BACKUP_CODE_COUNT = 10;
+const LOGIN_TICKET_MS = 5 * 60 * 1000;
+const LOGIN_TICKET_TRIES = 5;
+const PASSKEY_CHALLENGE_MS = 5 * 60 * 1000;
+const MAX_PASSKEYS = 20;
+const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+
+function base32Encode(buf) {
+  let bits = 0, value = 0, out = '';
+  for (const byte of buf) {
+    value = (value << 8) | byte; bits += 8;
+    while (bits >= 5) { out += BASE32[(value >>> (bits - 5)) & 31]; bits -= 5; }
+  }
+  if (bits > 0) out += BASE32[(value << (5 - bits)) & 31];
+  return out;
+}
+function base32Decode(text) {
+  let bits = 0, value = 0;
+  const out = [];
+  for (const ch of String(text).toUpperCase().replace(/[^A-Z2-7]/g, '')) {
+    value = (value << 5) | BASE32.indexOf(ch); bits += 5;
+    if (bits >= 8) { out.push((value >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+function totpCode(secret, step) {
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(step));
+  const mac = crypto.createHmac('sha1', base32Decode(secret)).update(counter).digest();
+  const at = mac[mac.length - 1] & 15;
+  return String((mac.readUInt32BE(at) & 0x7fffffff) % 1000000).padStart(6, '0');
+}
+// The time step a code belongs to (this one, or one either side for a phone
+// clock that's a little off), or 0. Steps at or before lastStep were used.
+function totpStepFor(secret, code, lastStep) {
+  const now = Math.floor(Date.now() / 1000 / TOTP_STEP);
+  for (const step of [now - 1, now, now + 1]) {
+    if (step <= Number(lastStep || 0)) continue;
+    if (crypto.timingSafeEqual(Buffer.from(totpCode(secret, step)), Buffer.from(code))) return step;
+  }
+  return 0;
+}
+function cleanCode(code) {
+  return String(code || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40);
+}
+function backupCodeHash(code) {
+  return sha256Hex('backup:' + cleanCode(code));
+}
+// "k7m2q-x9p4r": 10 characters from a 32-letter alphabet without look-alikes
+function newBackupCode() {
+  const letters = 'abcdefghjkmnpqrstuvwxyz23456789'; // no i, l, o, 0, 1
+  let out = '';
+  for (const byte of crypto.randomBytes(10)) out += letters[byte % letters.length];
+  return out.slice(0, 5) + '-' + out.slice(5);
+}
+async function replaceBackupCodes(username) {
+  const codes = Array.from({ length: BACKUP_CODE_COUNT }, newBackupCode);
+  await pool.query(`DELETE FROM backup_codes WHERE username = $1`, [username]);
+  await pool.query(
+    `INSERT INTO backup_codes (username, code_hash) SELECT $1, unnest($2::text[])`,
+    [username, codes.map(backupCodeHash)]
+  );
+  return codes;
+}
+async function backupCodesLeft(username) {
+  const row = await one(`SELECT COUNT(*) AS n FROM backup_codes WHERE username = $1 AND used_at IS NULL`, [username]);
+  return Number(row ? row.n : 0);
+}
+async function hasPasskeys(username) {
+  return !!(await one(`SELECT 1 FROM passkeys WHERE username = $1 LIMIT 1`, [username]));
+}
+
+// Wrong codes are limited per account even when RATE_LIMITS=off (a 6-digit
+// code is only a million guesses): 10 wrong ones in 15 minutes and it waits.
+const mfaFailures = new Map(); // username -> [timestamps]
+function mfaLockedOut(username) {
+  const recent = (mfaFailures.get(username) || []).filter(t => Date.now() - t < 15 * 60 * 1000);
+  mfaFailures.set(username, recent);
+  return recent.length >= 10;
+}
+function noteMfaFailure(username) {
+  const list = mfaFailures.get(username) || [];
+  list.push(Date.now());
+  mfaFailures.set(username, list);
+}
+setInterval(() => { for (const [name] of mfaFailures) if (!mfaLockedOut(name) && !mfaFailures.get(name).length) mfaFailures.delete(name); }, 15 * 60 * 1000).unref();
+
+// A 6-digit app code or a backup code. Each works once.
+async function checkSecondFactor(username, code) {
+  if (mfaLockedOut(username)) return { ok: false, error: 'too many wrong codes - wait 15 minutes and try again' };
+  const clean = cleanCode(code);
+  const row = await one(`SELECT totp_secret, totp_enabled, totp_last_step FROM users WHERE username = $1`, [username]);
+  if (!row || !row.totp_enabled || !row.totp_secret) return { ok: false, error: 'two-step login is not on for this account' };
+  if (/^\d{6}$/.test(clean)) {
+    const step = totpStepFor(row.totp_secret, clean, row.totp_last_step);
+    // the WHERE makes using the same code twice at the same moment fail too
+    if (step && await one(`UPDATE users SET totp_last_step = $2 WHERE username = $1 AND COALESCE(totp_last_step, 0) < $2 RETURNING 1`, [username, step])) {
+      return { ok: true, method: 'app' };
+    }
+  } else if (clean.length === 10) {
+    const used = await one(
+      `UPDATE backup_codes SET used_at = NOW() WHERE id = (SELECT id FROM backup_codes WHERE username = $1 AND code_hash = $2 AND used_at IS NULL LIMIT 1) RETURNING id`,
+      [username, backupCodeHash(clean)]
+    );
+    if (used) return { ok: true, method: 'backup', backupCodesLeft: await backupCodesLeft(username) };
+  }
+  noteMfaFailure(username);
+  return { ok: false, error: 'that code isn\'t right - check your authenticator app and try again' };
+}
+
+// Login tickets: proof that the password was right, good for 5 minutes and
+// 5 tries at the second step. Only their hash is kept, in memory.
+const loginTickets = new Map(); // sha256 -> { username, expires, tries }
+function newLoginTicket(username) {
+  const ticket = crypto.randomBytes(24).toString('hex');
+  loginTickets.set(sha256Hex(ticket), { username, expires: Date.now() + LOGIN_TICKET_MS, tries: 0 });
+  return ticket;
+}
+function ticketEntry(ticket) {
+  const key = sha256Hex(String(ticket || ''));
+  const entry = loginTickets.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires || entry.tries >= LOGIN_TICKET_TRIES) { loginTickets.delete(key); return null; }
+  entry.key = key;
+  return entry;
+}
+setInterval(() => { for (const [key, e] of loginTickets) if (Date.now() > e.expires) loginTickets.delete(key); }, 60 * 1000).unref();
+const TICKET_GONE = { error: 'that login took too long - enter your password again', code: 'ticket_expired' };
+
+async function finishLogin(req, res, username, extra) {
+  const user = await getUser(username);
+  if (!user || user.banned || user.is_bot) return res.status(401).json({ error: 'invalid username or password' });
+  const token = await createToken(username, req);
+  res.json(Object.assign({ message: 'ok', username, token, profile: await selfProfile(username) }, extra || {}));
+}
+
+app.post('/login/2fa', route(async (req, res) => {
+  if (rateLimited('login-ip:' + req.ip, 40, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many login attempts - wait a few minutes and try again' });
+  const entry = ticketEntry(req.body.ticket);
+  if (!entry) return res.status(401).json(TICKET_GONE);
+  entry.tries++;
+  const check = await checkSecondFactor(entry.username, req.body.code);
+  if (!check.ok) return res.status(401).json({ error: check.error, code: 'mfa_invalid' });
+  loginTickets.delete(entry.key);
+  await finishLogin(req, res, entry.username, check.method === 'backup' ? { backupCodesLeft: check.backupCodesLeft } : null);
+}));
+
+// ---- WebAuthn (passkeys) ----
+// Just enough CBOR (RFC 8949) to read what authenticators send.
+function cborDecode(buf, start = 0) {
+  let pos = start;
+  function length(info) {
+    if (info < 24) return info;
+    if (info === 24) return buf.readUInt8(pos++);
+    if (info === 25) { const v = buf.readUInt16BE(pos); pos += 2; return v; }
+    if (info === 26) { const v = buf.readUInt32BE(pos); pos += 4; return v; }
+    if (info === 27) { const v = Number(buf.readBigUInt64BE(pos)); pos += 8; return v; }
+    throw new Error('unsupported CBOR length');
+  }
+  function item(depth) {
+    if (depth > 16) throw new Error('CBOR nested too deeply');
+    if (pos >= buf.length) throw new Error('CBOR ended early');
+    const first = buf.readUInt8(pos++);
+    const major = first >> 5, info = first & 31;
+    if (major === 7) {
+      if (info === 20) return false;
+      if (info === 21) return true;
+      if (info === 22 || info === 23) return null;
+      if (info === 25) { pos += 2; return 0; } // half floats aren't used in keys
+      if (info === 26) { const v = buf.readFloatBE(pos); pos += 4; return v; }
+      if (info === 27) { const v = buf.readDoubleBE(pos); pos += 8; return v; }
+      throw new Error('unsupported CBOR value');
+    }
+    const n = length(info);
+    if (major === 0) return n;
+    if (major === 1) return -1 - n;
+    if (major === 2 || major === 3) {
+      if (pos + n > buf.length) throw new Error('CBOR ended early');
+      const bytes = buf.subarray(pos, pos + n); pos += n;
+      return major === 2 ? Buffer.from(bytes) : bytes.toString('utf8');
+    }
+    if (major === 4) { const list = []; for (let i = 0; i < n; i++) list.push(item(depth + 1)); return list; }
+    if (major === 5) { const map = new Map(); for (let i = 0; i < n; i++) { const k = item(depth + 1); map.set(k, item(depth + 1)); } return map; }
+    if (major === 6) return item(depth + 1); // a tag: just the value
+    throw new Error('bad CBOR');
+  }
+  const value = item(0);
+  return { value, end: pos };
+}
+const b64url = buf => Buffer.from(buf).toString('base64url');
+const fromB64url = text => Buffer.from(String(text || ''), 'base64url');
+// A COSE public key (what the authenticator made) as a Node key, or null.
+// ES256 (-7), EdDSA (-8) and RS256 (-257) - what passkeys use in practice.
+function coseToKey(cose) {
+  const kty = cose.get(1), alg = cose.get(3);
+  let jwk = null;
+  if (kty === 2 && alg === -7 && cose.get(-1) === 1) jwk = { kty: 'EC', crv: 'P-256', x: b64url(cose.get(-2)), y: b64url(cose.get(-3)) };
+  else if (kty === 1 && alg === -8 && cose.get(-1) === 6) jwk = { kty: 'OKP', crv: 'Ed25519', x: b64url(cose.get(-2)) };
+  else if (kty === 3 && alg === -257) jwk = { kty: 'RSA', n: b64url(cose.get(-1)), e: b64url(cose.get(-2)) };
+  if (!jwk) return null;
+  return { alg, key: crypto.createPublicKey({ key: jwk, format: 'jwk' }) };
+}
+function parseAuthData(data) {
+  if (data.length < 37) throw new Error('authenticator data is too short');
+  const out = { rpIdHash: data.subarray(0, 32), flags: data[32], signCount: data.readUInt32BE(33) };
+  out.userPresent = !!(out.flags & 0x01);
+  out.userVerified = !!(out.flags & 0x04);
+  if (out.flags & 0x40) {
+    const idLength = data.readUInt16BE(53);
+    out.credentialId = data.subarray(55, 55 + idLength);
+    out.coseKey = cborDecode(data, 55 + idLength).value;
+  }
+  return out;
+}
+
+// Where this request comes from, as WebAuthn sees it. PASSKEY_ORIGINS
+// (comma-separated, e.g. https://discords-zf2n.onrender.com) fixes the list;
+// otherwise the page's origin must be the address the request arrived on -
+// directly, or through relay.js (which passes it on as X-Relay-Host).
+function passkeySite(req) {
+  let origin;
+  try { origin = new URL(String(req.headers.origin || '')); } catch (_) { return null; }
+  if (origin.protocol !== 'https:' && origin.hostname !== 'localhost' && origin.hostname !== '127.0.0.1') return null;
+  const list = String(process.env.PASSKEY_ORIGINS || '').split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+  if (list.length) {
+    if (!list.includes(origin.origin)) return null;
+  } else {
+    const hosts = [req.headers.host, req.headers['x-forwarded-host'], req.headers['x-relay-host']]
+      .flatMap(h => String(h || '').split(',')).map(h => h.trim().toLowerCase()).filter(Boolean);
+    if (!hosts.includes(origin.host.toLowerCase())) return null;
+  }
+  return { origin: origin.origin, rpId: origin.hostname };
+}
+const PASSKEY_WRONG_SITE = { error: 'passkeys only work on the chat\'s own address - open it there and try again' };
+
+const passkeyChallenges = new Map(); // id -> { challenge, purpose, username, origin, rpId, expires }
+function newPasskeyChallenge(fields) {
+  const id = crypto.randomBytes(16).toString('hex');
+  const challenge = b64url(crypto.randomBytes(32));
+  // anyone can ask for a login challenge, so the map can't grow without end
+  if (passkeyChallenges.size >= 5000) passkeyChallenges.delete(passkeyChallenges.keys().next().value);
+  passkeyChallenges.set(id, Object.assign({ challenge, expires: Date.now() + PASSKEY_CHALLENGE_MS }, fields));
+  return { id, challenge };
+}
+// Each challenge works once, for what it was made for.
+function takePasskeyChallenge(id, purpose) {
+  const entry = passkeyChallenges.get(String(id || ''));
+  passkeyChallenges.delete(String(id || ''));
+  if (!entry || entry.purpose !== purpose || Date.now() > entry.expires) return null;
+  return entry;
+}
+setInterval(() => { for (const [id, c] of passkeyChallenges) if (Date.now() > c.expires) passkeyChallenges.delete(id); }, 60 * 1000).unref();
+
+function checkClientData(raw, type, challenge, origin) {
+  let data;
+  try { data = JSON.parse(fromB64url(raw).toString('utf8')); } catch (_) { throw new Error('the passkey answer was unreadable'); }
+  if (data.type !== type) throw new Error('the passkey answer was for something else');
+  const sent = fromB64url(data.challenge), wanted = fromB64url(challenge);
+  if (sent.length !== wanted.length || !crypto.timingSafeEqual(sent, wanted)) throw new Error('that passkey request ran out - try again');
+  if (data.origin !== origin) throw new Error(PASSKEY_WRONG_SITE.error);
+}
+
+// Registration: checks the browser's answer and returns what to store.
+// Attestation (who made the authenticator) isn't asked for or checked - a
+// passkey is trusted because the signed-in person added it with their password.
+function verifyPasskeyRegistration(credential, challenge, site) {
+  const response = (credential && credential.response) || {};
+  checkClientData(response.clientDataJSON, 'webauthn.create', challenge.challenge, site.origin);
+  const attestation = cborDecode(fromB64url(response.attestationObject)).value;
+  if (!(attestation instanceof Map) || !Buffer.isBuffer(attestation.get('authData'))) throw new Error('the passkey answer was unreadable');
+  const auth = parseAuthData(attestation.get('authData'));
+  if (!auth.rpIdHash.equals(crypto.createHash('sha256').update(site.rpId).digest())) throw new Error(PASSKEY_WRONG_SITE.error);
+  if (!auth.userPresent) throw new Error('the passkey wasn\'t confirmed');
+  if (!auth.credentialId || !(auth.coseKey instanceof Map)) throw new Error('the passkey answer had no key in it');
+  if (b64url(auth.credentialId) !== String(credential.rawId || credential.id || '')) throw new Error('the passkey answer didn\'t match');
+  const made = coseToKey(auth.coseKey);
+  if (!made) throw new Error('this kind of passkey isn\'t supported - try another device or password manager');
+  return {
+    credentialId: b64url(auth.credentialId),
+    publicKey: made.key.export({ type: 'spki', format: 'der' }).toString('base64'),
+    alg: made.alg,
+    signCount: auth.signCount
+  };
+}
+
+// Login: checks a signed answer against a stored passkey row.
+function verifyPasskeyAssertion(credential, row, challenge, site, needVerified) {
+  const response = (credential && credential.response) || {};
+  checkClientData(response.clientDataJSON, 'webauthn.get', challenge.challenge, site.origin);
+  if (site.rpId !== row.rp_id && !site.rpId.endsWith('.' + row.rp_id)) throw new Error(PASSKEY_WRONG_SITE.error);
+  const authData = fromB64url(response.authenticatorData);
+  const auth = parseAuthData(authData);
+  if (!auth.rpIdHash.equals(crypto.createHash('sha256').update(row.rp_id).digest())) throw new Error(PASSKEY_WRONG_SITE.error);
+  if (!auth.userPresent) throw new Error('the passkey wasn\'t confirmed');
+  if (needVerified && !auth.userVerified) throw new Error('your device didn\'t check it was you (fingerprint, face or PIN) - try again');
+  const signed = Buffer.concat([authData, crypto.createHash('sha256').update(fromB64url(response.clientDataJSON)).digest()]);
+  const key = crypto.createPublicKey({ key: Buffer.from(row.public_key, 'base64'), format: 'der', type: 'spki' });
+  const signature = fromB64url(response.signature);
+  const alg = Number(row.alg);
+  const ok = alg === -8 ? crypto.verify(null, signed, key, signature)
+    : crypto.verify('sha256', signed, alg === -7 ? { key, dsaEncoding: 'der' } : key, signature);
+  if (!ok) throw new Error('that passkey didn\'t check out');
+  // a counter that goes backwards means a copied security key; synced passkeys always say 0
+  if (auth.signCount && Number(row.sign_count) && auth.signCount <= Number(row.sign_count)) throw new Error('that passkey looks copied - remove it and add it again');
+  return auth.signCount;
+}
+async function passkeyRowFor(credential) {
+  const id = String((credential && (credential.rawId || credential.id)) || '');
+  if (!id || id.length > 1400) return null;
+  return one(`SELECT id, username, credential_id, public_key, alg, sign_count, rp_id FROM passkeys WHERE credential_id = $1`, [id]);
+}
+async function notePasskeyUsed(row, signCount) {
+  await pool.query(`UPDATE passkeys SET sign_count = $2, last_used_at = NOW() WHERE id = $1`, [row.id, signCount]);
+}
+
+// Passkey login, no username or password: the browser lists this site's passkeys.
+app.post('/passkeys/login/options', route(async (req, res) => {
+  if (rateLimited('login-ip:' + req.ip, 40, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many login attempts - wait a few minutes and try again' });
+  const site = passkeySite(req);
+  if (!site) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const challenge = newPasskeyChallenge({ purpose: 'login', origin: site.origin, rpId: site.rpId });
+  res.json({ challengeId: challenge.id, publicKey: { challenge: challenge.challenge, rpId: site.rpId, timeout: PASSKEY_CHALLENGE_MS, userVerification: 'required' } });
+}));
+app.post('/passkeys/login', route(async (req, res) => {
+  const challenge = takePasskeyChallenge(req.body.challengeId, 'login');
+  if (!challenge) return res.status(400).json({ error: 'that passkey request ran out - try again' });
+  const site = passkeySite(req);
+  if (!site || site.origin !== challenge.origin) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const row = await passkeyRowFor(req.body.credential);
+  if (!row) return res.status(401).json({ error: 'this chat doesn\'t know that passkey - it may have been removed. Log in with your password.', code: 'passkey_unknown' });
+  let count;
+  try { count = verifyPasskeyAssertion(req.body.credential, row, challenge, site, true); } catch (err) { return res.status(401).json({ error: err.message }); }
+  await notePasskeyUsed(row, count);
+  await finishLogin(req, res, row.username);
+}));
+// A passkey as the second step after a password.
+app.post('/login/2fa/passkey/options', route(async (req, res) => {
+  const entry = ticketEntry(req.body.ticket);
+  if (!entry) return res.status(401).json(TICKET_GONE);
+  const site = passkeySite(req);
+  if (!site) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const rows = await q(`SELECT credential_id, transports FROM passkeys WHERE username = $1 AND ($2 = rp_id OR $2 LIKE '%.' || rp_id)`, [entry.username, site.rpId]);
+  if (!rows.length) return res.status(400).json({ error: 'you have no passkeys for this address - use your authenticator app or a backup code' });
+  const challenge = newPasskeyChallenge({ purpose: 'second', username: entry.username, ticketKey: entry.key, origin: site.origin, rpId: site.rpId });
+  res.json({
+    challengeId: challenge.id,
+    publicKey: {
+      challenge: challenge.challenge, rpId: site.rpId, timeout: PASSKEY_CHALLENGE_MS, userVerification: 'preferred',
+      allowCredentials: rows.map(r => ({ type: 'public-key', id: r.credential_id, transports: r.transports ? r.transports.split(',') : undefined }))
+    }
+  });
+}));
+app.post('/login/2fa/passkey', route(async (req, res) => {
+  const entry = ticketEntry(req.body.ticket);
+  if (!entry) return res.status(401).json(TICKET_GONE);
+  entry.tries++;
+  const challenge = takePasskeyChallenge(req.body.challengeId, 'second');
+  if (!challenge || challenge.ticketKey !== entry.key) return res.status(400).json({ error: 'that passkey request ran out - try again' });
+  const site = passkeySite(req);
+  if (!site || site.origin !== challenge.origin) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const row = await passkeyRowFor(req.body.credential);
+  if (!row || row.username !== entry.username) return res.status(401).json({ error: 'that passkey isn\'t one of this account\'s' });
+  let count;
+  try { count = verifyPasskeyAssertion(req.body.credential, row, challenge, site, false); } catch (err) { return res.status(401).json({ error: err.message }); }
+  await notePasskeyUsed(row, count);
+  loginTickets.delete(entry.key);
+  await finishLogin(req, res, entry.username);
+}));
+
+// ---- Settings > My Account > Two-step login and Passkeys ----
+async function passwordMatches(username, password) {
+  const user = await getUser(username);
+  return !!(user && password && String(password).length <= 200 && await bcrypt.compare(String(password), user.password_hash));
+}
+async function twoStepStatus(username) {
+  const user = await getUser(username);
+  const keys = await q(`SELECT id, name, rp_id, created_at, last_used_at FROM passkeys WHERE username = $1 ORDER BY id`, [username]);
+  return {
+    enabled: !!(user && user.totp_enabled),
+    backupCodesLeft: user && user.totp_enabled ? await backupCodesLeft(username) : 0,
+    adminRequires: ADMIN_REQUIRES_2FA && await isSiteAdmin(username),
+    passkeys: keys.map(k => ({ id: k.id, name: k.name || 'Passkey', site: k.rp_id, createdAt: k.created_at, lastUsedAt: k.last_used_at }))
+  };
+}
+// Two-step login can change what a site admin may do, so everything that
+// depends on admin powers is refreshed.
+async function twoStepChanged(username) {
+  invalidateUser(username);
+  sendToUser(username, 'profilesChanged', { username, profile: await profileFor(username) });
+  if (await isSiteAdmin(username)) { siteAdminListChanged(); await resyncRooms([username]); }
+}
+
+app.get('/settings/2fa', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  res.json(await twoStepStatus(req.username));
+}));
+// Step 1: a new secret (not on yet). Needs the password, like any change to how you log in.
+app.post('/settings/2fa/setup', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  const user = await getUser(req.username);
+  if (user.totp_enabled) return res.status(400).json({ error: 'two-step login is already on' });
+  const secret = base32Encode(crypto.randomBytes(20));
+  await pool.query(`UPDATE users SET totp_secret = $1, totp_last_step = 0 WHERE username = $2 AND COALESCE(totp_enabled, 0) = 0`, [secret, req.username]);
+  invalidateUser(req.username);
+  const issuer = process.env.TOTP_ISSUER || 'Chat';
+  const label = encodeURIComponent(issuer) + ':' + encodeURIComponent(req.username);
+  const uri = `otpauth://totp/${label}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=${TOTP_STEP}`;
+  const qrSvg = await QRCode.toString(uri, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' });
+  res.json({ secret: secret.match(/.{1,4}/g).join(' '), uri, qrSvg });
+}));
+// Step 2: a code from the app proves it's set up right; only then is it on.
+app.post('/settings/2fa/enable', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  const row = await one(`SELECT totp_secret, totp_enabled FROM users WHERE username = $1`, [req.username]);
+  if (!row || row.totp_enabled) return res.status(400).json({ error: 'two-step login is already on' });
+  if (!row.totp_secret) return res.status(400).json({ error: 'start the setup first' });
+  if (mfaLockedOut(req.username)) return res.status(429).json({ error: 'too many wrong codes - wait 15 minutes and try again' });
+  const code = cleanCode(req.body.code);
+  const step = /^\d{6}$/.test(code) ? totpStepFor(row.totp_secret, code, 0) : 0;
+  if (!step) { noteMfaFailure(req.username); return res.status(400).json({ error: 'that code isn\'t right - check the app shows this account, and that your phone\'s clock is set automatically' }); }
+  const on = await one(
+    `UPDATE users SET totp_enabled = 1, totp_enabled_at = NOW(), totp_last_step = $2 WHERE username = $1 AND COALESCE(totp_enabled, 0) = 0 AND totp_secret = $3 RETURNING 1`,
+    [req.username, step, row.totp_secret]
+  );
+  if (!on) return res.status(409).json({ error: 'the setup changed on another device - start again' });
+  const backupCodes = await replaceBackupCodes(req.username);
+  await twoStepChanged(req.username);
+  console.log(`two-step login turned on for ${req.username}`);
+  res.json({ message: 'ok', backupCodes, profile: await selfProfile(req.username), status: await twoStepStatus(req.username) });
+}));
+// Turning it off needs the password and a code (app or backup).
+app.post('/settings/2fa/disable', requireAuth, route(async (req, res) => {
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  const check = await checkSecondFactor(req.username, req.body.code);
+  if (!check.ok) return res.status(400).json({ error: check.error });
+  await turnOffTwoStep(req.username);
+  console.log(`two-step login turned off by ${req.username}`);
+  res.json({ message: 'ok', profile: await selfProfile(req.username), status: await twoStepStatus(req.username) });
+}));
+async function turnOffTwoStep(username) {
+  await pool.query(`UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = 0 WHERE username = $1`, [username]);
+  await pool.query(`DELETE FROM backup_codes WHERE username = $1`, [username]);
+  await twoStepChanged(username);
+}
+app.post('/settings/2fa/backup-codes', requireAuth, route(async (req, res) => {
+  const user = await getUser(req.username);
+  if (!user || !user.totp_enabled) return res.status(400).json({ error: 'two-step login is not on' });
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  res.json({ message: 'ok', backupCodes: await replaceBackupCodes(req.username), status: await twoStepStatus(req.username) });
+}));
+
+// Adding a passkey: the password again, then the browser makes one.
+app.post('/settings/passkeys/options', requireAuth, route(async (req, res) => {
+  const user = await getUser(req.username);
+  if (!user || user.is_bot) return res.status(403).json({ error: BOTS_ONLY_PEOPLE });
+  if (!(await passwordMatches(req.username, req.body.password))) return res.status(400).json({ error: 'that password isn\'t right' });
+  const site = passkeySite(req);
+  if (!site) return res.status(400).json(PASSKEY_WRONG_SITE);
+  const existing = await q(`SELECT credential_id, transports FROM passkeys WHERE username = $1`, [req.username]);
+  if (existing.length >= MAX_PASSKEYS) return res.status(400).json({ error: `you already have ${MAX_PASSKEYS} passkeys - remove one first` });
+  const challenge = newPasskeyChallenge({ purpose: 'register', username: req.username, origin: site.origin, rpId: site.rpId });
+  res.json({
+    challengeId: challenge.id,
+    publicKey: {
+      challenge: challenge.challenge,
+      rp: { id: site.rpId, name: process.env.TOTP_ISSUER || 'Chat' },
+      user: { id: b64url(Buffer.from('user:' + user.id)), name: user.username, displayName: user.display_name || user.username },
+      pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -8 }, { type: 'public-key', alg: -257 }],
+      timeout: PASSKEY_CHALLENGE_MS,
+      attestation: 'none',
+      authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'preferred' },
+      excludeCredentials: existing.map(r => ({ type: 'public-key', id: r.credential_id, transports: r.transports ? r.transports.split(',') : undefined }))
+    }
+  });
+}));
+app.post('/settings/passkeys', requireAuth, route(async (req, res) => {
+  const challenge = takePasskeyChallenge(req.body.challengeId, 'register');
+  if (!challenge || challenge.username !== req.username) return res.status(400).json({ error: 'that passkey request ran out - try again' });
+  const site = passkeySite(req);
+  if (!site || site.origin !== challenge.origin) return res.status(400).json(PASSKEY_WRONG_SITE);
+  let made;
+  try { made = verifyPasskeyRegistration(req.body.credential, challenge, site); } catch (err) { return res.status(400).json({ error: err.message }); }
+  const transports = (Array.isArray(req.body.transports) ? req.body.transports : [])
+    .map(String).filter(t => /^[a-z-]{2,20}$/.test(t)).slice(0, 6).join(',');
+  const name = cleanText(req.body.name || '', 40) || deviceLabel(req.headers['user-agent']);
+  const added = await one(
+    `INSERT INTO passkeys (username, credential_id, public_key, alg, sign_count, rp_id, name, transports)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (credential_id) DO NOTHING RETURNING id`,
+    [req.username, made.credentialId, made.publicKey, made.alg, made.signCount, site.rpId, name, transports]
+  );
+  if (!added) return res.status(409).json({ error: 'that passkey is already added' });
+  console.log(`passkey added for ${req.username}`);
+  res.json({ message: 'ok', status: await twoStepStatus(req.username) });
+}));
+app.post('/settings/passkeys/:id/rename', requireAuth, route(async (req, res) => {
+  const name = cleanText(req.body.name || '', 40);
+  if (!name) return res.status(400).json({ error: 'give it a name' });
+  await pool.query(`UPDATE passkeys SET name = $1 WHERE id = $2 AND username = $3`, [name, Number(req.params.id) || 0, req.username]);
+  res.json({ message: 'ok', status: await twoStepStatus(req.username) });
+}));
+app.post('/settings/passkeys/:id/delete', requireAuth, route(async (req, res) => {
+  await pool.query(`DELETE FROM passkeys WHERE id = $1 AND username = $2`, [Number(req.params.id) || 0, req.username]);
+  res.json({ message: 'ok', status: await twoStepStatus(req.username) });
+}));
+
+// Someone who lost their phone AND their backup codes: a site admin can turn
+// their two-step login off (and remove their passkeys) so the password works
+// alone again. Only Purple can do that for another site admin.
+app.post('/admin/users/:username/reset-2fa', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const target = await getUser(cleanUsername(req.params.username));
+  if (!target || target.is_bot) return res.status(404).json({ error: 'user not found' });
+  if (target.username === req.username) return res.status(400).json({ error: 'turn your own off in Settings > My Account' });
+  if (req.username !== 'Purple' && (await isSiteAdmin(target.username))) return res.status(403).json({ error: 'only Purple can do that to another site admin' });
+  await pool.query(`DELETE FROM passkeys WHERE username = $1`, [target.username]);
+  await turnOffTwoStep(target.username);
+  sendToUser(target.username, 'adminNotice', { message: 'A site admin turned off your two-step login and removed your passkeys. Turn it back on in Settings > My Account.' });
+  console.log(`two-step login reset for ${target.username} by ${req.username}`);
+  res.json({ message: 'ok' });
+}));
+
+// RESET_2FA_FOR=Purple (comma-separated) at boot: the way back in for an
+// account nobody above can reset. Remove it from the settings afterwards.
+async function resetTwoStepFromEnv() {
+  const names = String(process.env.RESET_2FA_FOR || '').split(',').map(s => s.trim()).filter(Boolean);
+  for (const name of names) {
+    const user = await getUser(name);
+    if (!user) { console.warn(`RESET_2FA_FOR: no account called ${name}`); continue; }
+    await pool.query(`UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_enabled_at = NULL, totp_last_step = 0 WHERE username = $1`, [user.username]);
+    await pool.query(`DELETE FROM backup_codes WHERE username = $1`, [user.username]);
+    await pool.query(`DELETE FROM passkeys WHERE username = $1`, [user.username]);
+    invalidateUser(user.username);
+    console.warn(`RESET_2FA_FOR: two-step login and passkeys reset for ${user.username} - remove RESET_2FA_FOR now`);
+  }
+}
 
 app.post('/logout', requireAuth, route(async (req, res) => {
   if (req.sessionKey) await endSessions(req.username, [req.sessionKey], 'You logged out.');
@@ -2726,7 +3817,7 @@ app.post('/profile', requireAuth, route(async (req, res) => {
   if ('bio' in body) set('bio', String(body.bio || '').trim().slice(0, 190));
   if ('readReceipts' in body) set('read_receipts', body.readReceipts ? 1 : 0);
   if ('hideAdminBadge' in body) {
-    if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'only site admins have that badge' });
+    if (!(await isSiteAdmin(req.username))) return res.status(403).json({ error: 'only site admins have that badge' });
     set('hide_admin', body.hideAdminBadge ? 1 : 0);
   }
   if ('pronouns' in body) set('pronouns', cleanText(body.pronouns || '', 40));
@@ -3245,7 +4336,7 @@ async function scheduleEventReminders() {
 // call. Calls live in memory - a restart ends them, which is fine.
 // Call keys: 'call:dm:<a>:<b>' (sorted), 'call:group:<id>', 'voice:<channel room>'.
 const calls = new Map(); // key -> { key, kind, room, startedAt, participants: Map, ringing: Set, ringTimer, messageId, everJoined: Set }
-const MAX_CALL_SIZE = 8; // everyone connects to everyone, so keep calls small
+const MAX_CALL_SIZE = 8; // mesh: everyone connects to everyone, so keep calls small (bigger ones need the media server below)
 const RING_MS = 45 * 1000;
 
 function callInfo(key) {
@@ -3272,6 +4363,7 @@ async function callJoinProblem(username, key) {
     const channel = await getChannelByRoom(info.room);
     if (!channel || channel.kind !== 'voice') return 'call not found';
     if (await activeTimeout(username, channel.server_id)) return 'You\'re timed out in this server.';
+    if (await rulesPending(username, channel.server_id)) return RULES_BLOCK;
   }
   if (await isMuted(username)) return 'you are muted';
   return null;
@@ -3291,7 +4383,7 @@ async function callAudience(key) {
 
 function callState(call) {
   return {
-    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt, now: Date.now(),
+    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt, now: Date.now(), sfu: !!call.sfu,
     participants: [...call.participants.entries()].map(([username, p]) => ({
       username, muted: p.muted, deafened: p.deafened, video: p.video, screen: p.screen,
       camStream: p.camStream, screenStream: p.screenStream, joinedAt: p.joinedAt
@@ -3341,9 +4433,12 @@ async function leaveCall(key, username, reason) {
   const p = call.participants.get(username);
   call.participants.delete(username);
   if (reason) io.to(p.socketId).emit('voice:forceLeave', { key, reason });
+  // the media server must drop them too, whatever their browser does
+  if (call.sfu && call.participants.size) sfuRemoveParticipant(key, username);
   if (!call.participants.size) {
     stopRinging(call, [...call.ringing]);
     calls.delete(key);
+    if (call.sfu) sfuEndRoom(key);
     await finishCallMessage(call).catch(err => console.error('call message failed:', err.message));
   }
   await broadcastCall(key);
@@ -3394,8 +4489,201 @@ app.get('/voice/ice', requireAuth, route(async (req, res) => {
       iceServers.push({ urls, username: process.env.TURN_USERNAME || '', credential: process.env.TURN_CREDENTIAL || '' });
     }
   }
-  res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
+  const sfu = !!sfuConfig() && sfuUp;
+  res.json({ iceServers, maxCallSize: sfu ? MAX_SFU_CALL_SIZE : MAX_CALL_SIZE, sfu });
 }));
+
+// ---------------- MEDIA SERVER (SFU) FOR BIGGER CALLS ----------------
+// Mesh calls make every browser send its voice/video to every other one, so
+// they get choppy past about 6 people. With a LiveKit media server set up
+// (LIVEKIT_URL + LIVEKIT_API_KEY and LIVEKIT_API_SECRET, or LIVEKIT_KEY_FILE:
+// LiveKit's own key file, one "key: secret" line - the NAS setup makes one),
+// group calls and voice channels go through it instead: everyone sends once
+// and the server forwards. DM calls stay direct (best for two people).
+// This server still decides who's in a call (callJoinProblem, ringing,
+// voice:state); LiveKit only carries media, and only for people this server
+// gave a short-lived token for that one room. Anyone who leaves or loses
+// access is removed from the LiveKit room too (leaveCall + sweepSfuRooms()).
+// Browsers reach LiveKit at LIVEKIT_PUBLIC_URL, or through this server at
+// /livekit/rtc (proxied below, so it also works through relay.js).
+const MAX_SFU_CALL_SIZE = Math.max(2, Math.min(100, Number(process.env.SFU_MAX_CALL_SIZE) || 25));
+const SFU_TOKEN_SECONDS = 10 * 60; // only needed to connect; LiveKit refreshes it while connected
+function sfuConfig() {
+  const url = String(process.env.LIVEKIT_URL || '').replace(/\/+$/, '');
+  let key = String(process.env.LIVEKIT_API_KEY || '');
+  let secret = String(process.env.LIVEKIT_API_SECRET || '');
+  if (process.env.LIVEKIT_KEY_FILE) {
+    let text = '';
+    try { text = fs.readFileSync(process.env.LIVEKIT_KEY_FILE, 'utf8'); } catch (_) { /* not made yet */ }
+    const m = /^\s*([A-Za-z0-9_-]+)\s*:\s*(\S+)\s*$/m.exec(text);
+    key = m ? m[1] : ''; secret = m ? m[2] : '';
+  }
+  if (!/^https?:\/\//.test(url) || !key || secret.length < 32) return null;
+  return { url, key, secret, publicUrl: String(process.env.LIVEKIT_PUBLIC_URL || '').replace(/\/+$/, '') };
+}
+// Whether LiveKit answered the last check (sweepSfuRooms). While it's down,
+// new calls fall back to direct (mesh) ones instead of failing.
+let sfuUp = true;
+function callUsesSfu(kind) { return kind !== 'dm' && sfuUp && !!sfuConfig(); }
+function maxCallSizeFor(kind) { return callUsesSfu(kind) ? MAX_SFU_CALL_SIZE : MAX_CALL_SIZE; }
+// LiveKit room names: a hash of the call key (call keys contain usernames)
+function sfuRoomName(key) { return 'call-' + sha256Hex('sfu:' + key).slice(0, 40); }
+
+function base64url(input) { return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_'); }
+// LiveKit tokens are plain HS256 JWTs signed with the API secret.
+function sfuJwt(cfg, claims, seconds) {
+  const now = Math.floor(Date.now() / 1000);
+  const body = { iss: cfg.key, nbf: now - 10, exp: now + seconds, ...claims };
+  const unsigned = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' })) + '.' + base64url(JSON.stringify(body));
+  return unsigned + '.' + base64url(crypto.createHmac('sha256', cfg.secret).update(unsigned).digest());
+}
+// A token for one person, for one call's room. Stage channels can later
+// hand listeners canPublish: false.
+function sfuJoinToken(cfg, username, key, { canPublish = true } = {}) {
+  return sfuJwt(cfg, {
+    sub: username, name: username,
+    video: {
+      room: sfuRoomName(key), roomJoin: true, canSubscribe: true, canPublishData: false,
+      canPublish, canPublishSources: canPublish ? ['microphone', 'camera', 'screen_share'] : [],
+      canUpdateOwnMetadata: false
+    }
+  }, SFU_TOKEN_SECONDS);
+}
+// LiveKit's server API (Twirp: POST JSON). Failures are logged, never thrown
+// at the caller - the call bookkeeping here must not depend on it.
+async function sfuApi(method, body, room) {
+  const cfg = sfuConfig();
+  if (!cfg) return null;
+  const grant = room ? { roomAdmin: true, roomCreate: true, room } : { roomList: true };
+  try {
+    const res = await fetch(`${cfg.url}/twirp/livekit.RoomService/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + sfuJwt(cfg, { video: grant }, 60) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) {
+      if (res.status !== 404) console.error(`livekit ${method}: HTTP ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error(`livekit ${method} failed:`, err.message);
+    return null;
+  }
+}
+function sfuRemoveParticipant(key, username) {
+  const room = sfuRoomName(key);
+  return sfuApi('RemoveParticipant', { room, identity: username }, room);
+}
+function sfuEndRoom(key) {
+  const room = sfuRoomName(key);
+  return sfuApi('DeleteRoom', { room }, room);
+}
+// Safety net, every 20s: anyone in a LiveKit room who isn't in that call here
+// (missed removal, a restart, a stale tab) is removed, and rooms with no call
+// behind them are closed. A room gets a minute's grace after a restart so
+// people's apps can rejoin first.
+const sfuStrayRooms = new Map(); // room name -> first seen without a call
+async function sweepSfuRooms() {
+  if (!sfuConfig()) return;
+  const listed = await sfuApi('ListRooms', {});
+  if (!!listed !== sfuUp) console.log(listed ? 'Call media server is back.' : 'Call media server can\'t be reached - new calls are direct (mesh) until it is back.');
+  sfuUp = !!listed;
+  if (!listed) return;
+  const byRoom = new Map();
+  for (const call of calls.values()) if (call.sfu) byRoom.set(sfuRoomName(call.key), call);
+  const seen = new Set();
+  for (const room of listed.rooms || []) {
+    const name = String(room.name || '');
+    if (!name.startsWith('call-')) continue;
+    seen.add(name);
+    const call = byRoom.get(name);
+    if (!call) {
+      if (!sfuStrayRooms.has(name)) sfuStrayRooms.set(name, Date.now());
+      else if (Date.now() - sfuStrayRooms.get(name) > 60 * 1000) { sfuStrayRooms.delete(name); await sfuApi('DeleteRoom', { room: name }, name); }
+      continue;
+    }
+    sfuStrayRooms.delete(name);
+    const people = await sfuApi('ListParticipants', { room: name }, name);
+    for (const p of (people && people.participants) || []) {
+      const who = String(p.identity || '');
+      // joining: the token is handed out just after they're added here
+      if (!call.participants.has(who)) await sfuApi('RemoveParticipant', { room: name, identity: who }, name);
+    }
+  }
+  for (const name of [...sfuStrayRooms.keys()]) if (!seen.has(name)) sfuStrayRooms.delete(name);
+}
+const SFU_SWEEP_MS = Math.max(1, Number(process.env.SFU_SWEEP_SECONDS) || 20) * 1000;
+setInterval(() => { sweepSfuRooms().catch(err => console.error('sfu sweep failed:', err.message)); }, SFU_SWEEP_MS).unref();
+setTimeout(() => { sweepSfuRooms().catch(() => {}); }, 2000).unref();
+
+// The LiveKit browser library, from node_modules (the page's CSP only allows
+// scripts from this origin). Loaded only when someone joins such a call.
+const LIVEKIT_CLIENT_FILE = (() => { const f = path.join(__dirname, 'node_modules', 'livekit-client', 'dist', 'livekit-client.umd.js'); return fs.existsSync(f) ? f : ''; })();
+app.get('/vendor/livekit-client.js', (req, res) => {
+  if (!LIVEKIT_CLIENT_FILE) return res.status(404).end();
+  res.sendFile(LIVEKIT_CLIENT_FILE, { headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' } });
+});
+
+// Browsers' connection to LiveKit (/livekit/rtc..., HTTP and WebSocket),
+// passed through to LIVEKIT_URL so no extra public address is needed. Only
+// the /rtc paths: LiveKit's admin API stays private.
+const SFU_PROXY_RE = /^\/livekit(\/rtc(?:\/[A-Za-z0-9/_-]*)?(?:\?.*)?)$/;
+function sfuProxyTarget(reqUrl) {
+  const cfg = sfuConfig();
+  const m = SFU_PROXY_RE.exec(String(reqUrl || ''));
+  if (!cfg || !m) return null;
+  return { target: new URL(cfg.url), path: (new URL(cfg.url).pathname.replace(/\/+$/, '')) + m[1] };
+}
+function sfuProxyHeaders(req, target) {
+  const skip = new Set(['host', 'connection', 'upgrade', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'cookie', 'authorization']);
+  const headers = {};
+  for (const [name, value] of Object.entries(req.headers)) if (!skip.has(name)) headers[name] = value;
+  headers.host = target.host;
+  return headers;
+}
+app.use('/livekit', (req, res, next) => {
+  const t = sfuProxyTarget(req.originalUrl);
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const lib = t.target.protocol === 'https:' ? require('https') : http;
+  const upstream = lib.request({
+    protocol: t.target.protocol, hostname: t.target.hostname, port: t.target.port || undefined,
+    method: req.method, path: t.path, headers: sfuProxyHeaders(req, t.target)
+  }, upRes => {
+    res.writeHead(upRes.statusCode, { 'content-type': upRes.headers['content-type'] || 'text/plain', 'cache-control': 'no-store' });
+    upRes.pipe(res);
+  });
+  upstream.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'The call server can\'t be reached.' }); else res.destroy(); });
+  req.pipe(upstream);
+});
+server.on('upgrade', (req, socket, head) => {
+  if (String(req.url || '').startsWith('/socket.io/')) return; // Socket.IO's own
+  const t = sfuProxyTarget(req.url);
+  if (!t) { socket.end('HTTP/1.1 404 Not Found\r\n\r\n'); return; }
+  const lib = t.target.protocol === 'https:' ? require('https') : http;
+  const upstream = lib.request({
+    protocol: t.target.protocol, hostname: t.target.hostname, port: t.target.port || undefined,
+    method: req.method, path: t.path,
+    headers: { ...sfuProxyHeaders(req, t.target), connection: 'Upgrade', upgrade: req.headers.upgrade || 'websocket' }
+  });
+  upstream.on('upgrade', (upRes, upSocket, upHead) => {
+    const lines = [`HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage}`];
+    for (let i = 0; i < upRes.rawHeaders.length; i += 2) lines.push(`${upRes.rawHeaders[i]}: ${upRes.rawHeaders[i + 1]}`);
+    socket.write(lines.join('\r\n') + '\r\n\r\n');
+    if (upHead && upHead.length) socket.write(upHead);
+    if (head && head.length) upSocket.write(head);
+    upSocket.pipe(socket);
+    socket.pipe(upSocket);
+    const close = () => { socket.destroy(); upSocket.destroy(); };
+    upSocket.on('error', close); socket.on('error', close);
+    upSocket.on('close', close); socket.on('close', close);
+  });
+  upstream.on('response', upRes => { socket.end(`HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage}\r\n\r\n`); upRes.resume(); });
+  upstream.on('error', () => socket.destroy());
+  socket.on('error', () => upstream.destroy());
+  upstream.end();
+});
 
 // ---------------- BOT ACCOUNTS ----------------
 // A bot is a users row with is_bot = 1 and bot_owner = the person who made
@@ -3578,6 +4866,7 @@ app.post('/bots/:name/servers/:serverId/remove', requireAuth, route(async (req, 
   if (!bot) return;
   const serverId = Number(req.params.serverId) || 0;
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, bot.username]);
+  await forgetOnboarding(serverId, bot.username);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, bot.username]);
   await resyncRooms([bot.username]);
   sendToUser(bot.username, 'serversChanged', {});
@@ -4245,6 +5534,19 @@ app.post('/threads', requireAuth, route(async (req, res) => {
     firstText = cleanText(req.body.text, 4000);
     if (!firstText) return res.status(400).json({ error: 'write something for your post' });
   }
+  const rulesBlock = await rulesBlockForRoom(req.username, parentRoom);
+  if (rulesBlock) return res.status(403).json({ error: rulesBlock });
+  const parentChannel = await getChannelByRoom(parentRoom);
+  if (parentChannel) { // timeouts and raid protection apply to new threads and posts too
+    if (await activeTimeout(req.username, parentChannel.server_id)) return res.status(403).json({ error: 'You\'re timed out in this server.' });
+    const raid = await raidPostBlock(req.username, parentChannel);
+    if (raid) return res.status(403).json({ error: raid });
+  }
+  const automod = await automodCheck(req.username, parentRoom, firstText ? name + '\n' + firstText : name, { edit: !firstText });
+  if (automod && automod.blocked) {
+    await automodRecord(automod, req.username, parentRoom, firstText ? name + '\n' + firstText : name, null);
+    return res.status(403).json({ error: automodError(automod) });
+  }
   const thread = await one(
     `INSERT INTO threads (parent_room, starter_message_id, name, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
     [parentRoom, starter ? starter.id : null, name, req.username]
@@ -4254,6 +5556,7 @@ app.post('/threads', requireAuth, route(async (req, res) => {
   if (firstText) {
     const mentions = await mentionFlags(req.username, room, firstText);
     const created = await insertMessage(room, req.username, firstText, null, 0, null, mentions);
+    if (automod) automodRecord(automod, req.username, room, name + '\n' + firstText, created.id);
     await touchThread(room);
     pushMentions(room, firstText, req.username, mentions, created).catch(err => console.error('pushMentions failed:', err.message));
     io.to(room).emit('message', await normaliseMessage(created));
@@ -4339,6 +5642,12 @@ app.post('/polls', requireAuth, route(async (req, res) => {
     const blocked = await channelPostBlock(req.username, room);
     if (blocked) return res.status(403).json({ error: blocked });
   }
+  const pollText = [question, ...options].join('\n');
+  const automod = toUser ? null : await automodCheck(req.username, room, pollText);
+  if (automod && automod.blocked) {
+    await automodRecord(automod, req.username, room, pollText, null);
+    return res.status(403).json({ error: automodError(automod) });
+  }
 
   const created = await one(
     `INSERT INTO messages (room, "user", text, to_user, is_group, kind) VALUES ($1, $2, $3, $4, $5, 'poll') RETURNING *`,
@@ -4353,6 +5662,7 @@ app.post('/polls', requireAuth, route(async (req, res) => {
     `INSERT INTO poll_options (poll_id, position, text) SELECT $1, o.pos - 1, o.text FROM unnest($2::text[]) WITH ORDINALITY AS o(text, pos)`,
     [poll.id, options]
   );
+  if (automod) automodRecord(automod, req.username, room, pollText, created.id);
   const msg = await normaliseMessage(created);
   if (toUser) {
     sendToUser(req.username, 'dmMessage', msg);
@@ -4455,13 +5765,14 @@ async function getGlobalCensor() {
 // badge - admins may know each other), and who is banned or muted.
 app.get('/admin/overview', requireAuth, route(async (req, res) => {
   if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
-  const admins = await q(`SELECT username, display_name, hide_admin FROM users WHERE (is_admin = 1 OR username = 'Purple') AND COALESCE(is_bot, 0) = 0 ORDER BY LOWER(username)`);
+  const admins = await q(`SELECT username, display_name, hide_admin, totp_enabled FROM users WHERE (is_admin = 1 OR username = 'Purple') AND COALESCE(is_bot, 0) = 0 ORDER BY LOWER(username)`);
   const banned = await q(`SELECT username, display_name FROM users WHERE banned = 1 ORDER BY LOWER(username)`);
   const muted = await q(`SELECT username, muted_until, muted_by FROM mutes WHERE muted_until > NOW() ORDER BY muted_until`);
   res.json({
     me: req.username,
     canManageAdmins: req.username === 'Purple',
-    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple' })),
+    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple', twoStep: !!a.totp_enabled })),
+    adminRequires2fa: ADMIN_REQUIRES_2FA,
     banned: banned.map(b => ({ username: b.username, displayName: b.display_name || b.username })),
     muted: muted.map(m => ({ username: m.username, until: m.muted_until, by: m.muted_by })),
     globalCensor: await getGlobalCensor()
@@ -4533,6 +5844,7 @@ function pushContent(text, msg) {
     if (type === 'image/gif' || /\.gif$/i.test(name)) return 'GIF';
     if (type.startsWith('image/')) return 'Image';
     if (type.startsWith('video/')) return 'Video';
+    if (f.voice) return 'Voice message';
     if (type.startsWith('audio/')) return 'Audio';
     return 'File';
   };
@@ -4872,7 +6184,10 @@ app.post('/servers/join', requireAuth, route(async (req, res) => {
   const srv = await getServerByCode(code);
   if (!srv) return res.status(404).json({ error: 'invite code not found' });
   if (await isServerBanned(req.username, srv.id)) return res.status(403).json({ error: 'You are banned from this server.' });
-  await addServerMember(srv, req.username);
+  if (!srv.is_default && !(await isServerMember(req.username, srv.id)) && (await serverLockdown(srv.id))) {
+    return res.status(403).json({ error: `${srv.name} isn't letting new members in right now (raid protection). Try again later.` });
+  }
+  if ((await addServerMember(srv, req.username)) && !srv.is_default) await noteServerJoin(srv, req.username).catch(err => console.error('raid check failed:', err.message));
   res.json({ id: srv.id, name: srv.name });
 }));
 
@@ -4982,6 +6297,7 @@ app.post('/servers/:id/leave', requireAuth, route(async (req, res) => {
   if (srv.is_default) return res.status(400).json({ error: 'you cannot leave the general server' });
   if (srv.owner === req.username) return res.status(400).json({ error: 'the owner cannot leave their own server' });
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  await forgetOnboarding(serverId, req.username);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
   await resyncRooms([req.username]);
   sendToUser(req.username, 'serversChanged', {});
@@ -5009,6 +6325,12 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   await pool.query(`DELETE FROM webhooks WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_commands WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM reaction_roles WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM onboarding_options WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM onboarding_questions WHERE server_id = $1`, [serverId]);
+  for (const table of ['automod_rules', 'automod_queue', 'raid_settings']) await pool.query(`DELETE FROM ${table} WHERE server_id = $1`, [serverId]);
+  forgetAutomod(serverId);
+  await pool.query(`DELETE FROM server_sounds WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
   await resyncRooms(members);
   for (const member of members) sendToUser(member, 'serversChanged', {});
@@ -5161,15 +6483,20 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
   if ([...(await serverPermissions(target, serverId))].some(p => !mine.has(p))) {
     return res.status(403).json({ error: 'you can only kick members whose permissions you have yourself' });
   }
-  await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, target]);
-  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await kickMember(srv, target, req.username);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+// Removes `target` from the server (the caller has done the checks).
+async function kickMember(srv, target, actor) {
+  await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [srv.id, target]);
+  await forgetOnboarding(srv.id, target);
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [srv.id, target]);
   await resyncRooms([target]);
   sendToUser(target, 'adminNotice', { message: `You were removed from ${srv.name}.` });
   sendToUser(target, 'serversChanged', {});
-  await notifyServerMembers(serverId, 'serversChanged', {});
-  auditLog(serverId, req.username, 'kick', target);
-  res.json({ message: 'ok' });
-}));
+  auditLog(srv.id, actor, 'kick', target);
+}
 
 // ---------------- CUSTOM EMOJI ----------------
 // A server's own emoji: a picture or GIF from /assets with a short name.
@@ -5240,6 +6567,59 @@ async function usableSticker(username, room, stickerId) {
   return (await isServerMember(username, sticker.server_id)) ? sticker : null;
 }
 
+// Soundboard: a server's short sound clips (from /assets), played to
+// everyone in a call. Each listener's browser plays the clip itself (it's
+// not mixed into anyone's microphone), and stops it after
+// SOUND_PLAY_SECONDS, so a long file can't be used to drown out a call.
+const MAX_SOUNDS_PER_SERVER = 24;
+const SOUND_PLAY_SECONDS = 6;
+function soundFromRow(r) {
+  return { id: r.id, serverId: r.server_id, name: r.name, emoji: r.emoji || '', url: r.url, volume: r.volume == null ? 1 : Number(r.volume) };
+}
+app.post('/servers/:id/sounds', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'add sounds'))) return;
+  const name = cleanText(req.body.name || '', 30);
+  if (name.length < 2) return res.status(400).json({ error: 'give the sound a name (2-30 characters)' });
+  const emoji = cleanText(req.body.emoji || '', 16);
+  if (emoji && (/[\s<>]/.test(emoji) || [...emoji].length > 8)) return res.status(400).json({ error: 'pick one emoji for the sound' });
+  const volume = req.body.volume === undefined ? 1 : Number(req.body.volume);
+  if (!(volume >= 0.05 && volume <= 1)) return res.status(400).json({ error: 'the volume must be between 5% and 100%' });
+  const problem = await soundProblem(req.body.url, req.username);
+  if (problem) return res.status(400).json({ error: problem });
+  const count = await one(`SELECT count(*)::int AS n FROM server_sounds WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_SOUNDS_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_SOUNDS_PER_SERVER} sounds` });
+  const row = await one(
+    `INSERT INTO server_sounds (server_id, name, emoji, url, volume, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [serverId, name, emoji || null, String(req.body.url), volume, req.username]
+  );
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'sound_add', name);
+  res.status(201).json(soundFromRow(row));
+}));
+app.post('/servers/:id/sounds/:soundId/delete', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'remove sounds'))) return;
+  const row = await one(`DELETE FROM server_sounds WHERE id = $1 AND server_id = $2 RETURNING name`, [Number(req.params.soundId), serverId]);
+  if (!row) return res.status(404).json({ error: 'sound not found' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'sound_remove', row.name);
+  res.json({ message: 'ok' });
+}));
+// A sound someone may play in the call `key`: in a voice channel, one of
+// that server's; in a DM or group call, one from any server they're in.
+async function usableSound(username, key, soundId) {
+  const sound = await one(`SELECT * FROM server_sounds WHERE id = $1`, [Number(soundId) || 0]);
+  if (!sound) return null;
+  const info = callInfo(key);
+  if (!info) return null;
+  if (info.kind === 'voice') {
+    const channel = await getChannelByRoom(info.room);
+    return channel && channel.server_id === sound.server_id ? sound : null;
+  }
+  return (await isServerMember(username, sound.server_id)) ? sound : null;
+}
+
 // A reaction is one of the built-in emoji, or a custom emoji of the server
 // the message is in (written <:name:id>).
 async function validReaction(emoji, room) {
@@ -5270,6 +6650,7 @@ app.post('/servers/:id/members/:username/ban', requireAuth, route(async (req, re
     [serverId, target, reason || null, req.username]
   );
   const wasMember = await one(`DELETE FROM server_members WHERE server_id = $1 AND username = $2 RETURNING 1`, [serverId, target]);
+  await forgetOnboarding(serverId, target);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
   await pool.query(`DELETE FROM server_timeouts WHERE server_id = $1 AND username = $2`, [serverId, target]);
   await resyncRooms([target]);
@@ -5296,6 +6677,23 @@ app.get('/servers/:id/bans', requireAuth, route(async (req, res) => {
   const rows = await q(`SELECT username, reason, banned_by, created_at FROM server_bans WHERE server_id = $1 ORDER BY created_at DESC LIMIT 500`, [serverId]);
   res.json(rows.map(r => ({ username: r.username, reason: r.reason || '', bannedBy: r.banned_by || '', createdAt: r.created_at })));
 }));
+// Times `target` out for `minutes` (also used by AutoMod, actor 'AutoMod').
+async function applyTimeout(srv, target, minutes, reason, actor) {
+  const serverId = srv.id;
+  await pool.query(
+    `INSERT INTO server_timeouts (server_id, username, until, reason, set_by) VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4, $5)
+     ON CONFLICT (server_id, username) DO UPDATE SET until = EXCLUDED.until, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by`,
+    [serverId, target, String(minutes), reason || null, actor]
+  );
+  await enforceCallAccess([target]).catch(() => {});
+  const call = callOf(target);
+  if (call && call.kind === 'voice') {
+    const channel = await getChannelByRoom(call.room);
+    if (channel && channel.server_id === serverId) await leaveCall(call.key, target, `You were timed out in ${srv.name}.`);
+  }
+  sendToUser(target, 'adminNotice', { message: `You were timed out in ${srv.name} for ${minutes >= 1440 ? Math.round(minutes / 1440) + ' day(s)' : minutes >= 60 ? Math.round(minutes / 60) + ' hour(s)' : minutes + ' minutes'}.` + (reason ? ' Reason: ' + reason : '') });
+  auditLog(serverId, actor, 'timeout', target, minutes + ' min' + (reason ? ' - ' + reason : ''));
+}
 const TIMEOUT_CHOICES = [0, 5, 10, 60, 360, 1440, 10080]; // minutes; 0 = lift it
 app.post('/servers/:id/members/:username/timeout', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
@@ -5313,19 +6711,7 @@ app.post('/servers/:id/members/:username/timeout', requireAuth, route(async (req
     sendToUser(target, 'adminNotice', { message: `Your timeout in ${srv.name} was lifted.` });
     auditLog(serverId, req.username, 'timeout_lifted', target);
   } else {
-    await pool.query(
-      `INSERT INTO server_timeouts (server_id, username, until, reason, set_by) VALUES ($1, $2, NOW() + ($3 || ' minutes')::interval, $4, $5)
-       ON CONFLICT (server_id, username) DO UPDATE SET until = EXCLUDED.until, reason = EXCLUDED.reason, set_by = EXCLUDED.set_by`,
-      [serverId, target, String(minutes), reason || null, req.username]
-    );
-    await enforceCallAccess([target]).catch(() => {});
-    const call = callOf(target);
-    if (call && call.kind === 'voice') {
-      const channel = await getChannelByRoom(call.room);
-      if (channel && channel.server_id === serverId) await leaveCall(call.key, target, `You were timed out in ${srv.name}.`);
-    }
-    sendToUser(target, 'adminNotice', { message: `You were timed out in ${srv.name} for ${minutes >= 1440 ? Math.round(minutes / 1440) + ' day(s)' : minutes >= 60 ? Math.round(minutes / 60) + ' hour(s)' : minutes + ' minutes'}.` + (reason ? ' Reason: ' + reason : '') });
-    auditLog(serverId, req.username, 'timeout', target, minutes + ' min' + (reason ? ' - ' + reason : ''));
+    await applyTimeout(srv, target, minutes, reason, req.username);
   }
   await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
   res.json({ message: 'ok' });
@@ -5336,6 +6722,185 @@ app.get('/servers/:id/timeouts', requireAuth, route(async (req, res) => {
   const rows = await q(`SELECT username, until, reason, set_by FROM server_timeouts WHERE server_id = $1 AND until > NOW() ORDER BY until ASC`, [serverId]);
   res.json(rows.map(r => ({ username: r.username, until: r.until, reason: r.reason || '', setBy: r.set_by || '' })));
 }));
+// ---------------- AUTOMOD, REVIEW QUEUE, RAID PROTECTION ----------------
+// Settings: anyone with Manage server changes them; Manage messages can look.
+async function canSeeAutomod(username, serverId) {
+  const mine = await serverPermissions(username, serverId);
+  return mine.has('manage_server') || mine.has('manage_messages');
+}
+app.get('/servers/:id/automod', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await getServerById(serverId))) return res.status(404).json({ error: 'server not found' });
+  if (!(await canSeeAutomod(req.username, serverId))) return res.status(403).json({ error: 'you need "Manage server" or "Manage messages" to see AutoMod' });
+  forgetAutomod(serverId);
+  const am = await automodFor(serverId);
+  res.json({
+    rules: am.rules,
+    raid: am.raid,
+    canEdit: await hasServerPerm(req.username, serverId, 'manage_server'),
+    canLockdown: (await hasServerPerm(req.username, serverId, 'manage_server')) || (await hasServerPerm(req.username, serverId, 'ban_members')),
+    open: (await hasServerPerm(req.username, serverId, 'manage_messages')) ? await automodOpenCount(req.username, serverId) : 0,
+    timeoutChoices: AUTOMOD_TIMEOUTS
+  });
+}));
+app.post('/servers/:id/automod/rules/:kind', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const kind = String(req.params.kind);
+  if (!AUTOMOD_KINDS.includes(kind)) return res.status(404).json({ error: 'unknown rule' });
+  if (!(await getServerById(serverId))) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change AutoMod'))) return;
+  const b = req.body || {};
+  const action = b.action === 'flag' ? 'flag' : 'block';
+  const timeoutMinutes = Number(b.timeoutMinutes) || 0;
+  if (!AUTOMOD_TIMEOUTS.includes(timeoutMinutes)) return res.status(400).json({ error: 'pick one of the timeout lengths' });
+  const config = cleanAutomodConfig(kind, b.config);
+  if (kind === 'words' && b.enabled && !config.words.length) return res.status(400).json({ error: 'add at least one word first' });
+  const wantRoles = (Array.isArray(b.exemptRoles) ? b.exemptRoles : []).map(Number).filter(n => n > 0).slice(0, 50);
+  const wantChannels = (Array.isArray(b.exemptChannels) ? b.exemptChannels : []).map(Number).filter(n => n > 0).slice(0, 100);
+  const roles = wantRoles.length ? (await q(`SELECT id FROM server_roles WHERE server_id = $1 AND id = ANY($2)`, [serverId, wantRoles])).map(r => r.id) : [];
+  const channels = wantChannels.length ? (await q(`SELECT id FROM server_channels WHERE server_id = $1 AND id = ANY($2)`, [serverId, wantChannels])).map(r => r.id) : [];
+  await pool.query(
+    `INSERT INTO automod_rules (server_id, kind, enabled, action, timeout_minutes, config, exempt_roles, exempt_channels, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (server_id, kind) DO UPDATE SET enabled = EXCLUDED.enabled, action = EXCLUDED.action, timeout_minutes = EXCLUDED.timeout_minutes,
+       config = EXCLUDED.config, exempt_roles = EXCLUDED.exempt_roles, exempt_channels = EXCLUDED.exempt_channels, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [serverId, kind, b.enabled ? 1 : 0, action, timeoutMinutes, JSON.stringify(config), roles.join(','), channels.join(','), req.username]
+  );
+  forgetAutomod(serverId);
+  auditLog(serverId, req.username, 'automod_update', null, `${kind}: ${b.enabled ? (action === 'flag' ? 'flag' : 'block') : 'off'}`);
+  const am = await automodFor(serverId);
+  res.json(am.rules.find(r => r.kind === kind));
+}));
+app.post('/servers/:id/raid', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change raid protection'))) return;
+  const b = req.body || {};
+  const v = {
+    account: clampInt(b.minAccountMinutes, 0, 60 * 24 * 30, 0),
+    member: clampInt(b.minMemberMinutes, 0, 60 * 24 * 7, 0),
+    joins: clampInt(b.joinLimit, 0, 500, 0),
+    windowS: clampInt(b.joinWindowSeconds, 10, 3600, 60),
+    lockdown: clampInt(b.lockdownMinutes, 5, 60 * 24, 30)
+  };
+  await pool.query(
+    `INSERT INTO raid_settings (server_id, min_account_minutes, min_member_minutes, join_limit, join_window_seconds, lockdown_minutes, updated_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (server_id) DO UPDATE SET min_account_minutes = EXCLUDED.min_account_minutes, min_member_minutes = EXCLUDED.min_member_minutes,
+       join_limit = EXCLUDED.join_limit, join_window_seconds = EXCLUDED.join_window_seconds, lockdown_minutes = EXCLUDED.lockdown_minutes,
+       updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [serverId, v.account, v.member, srv.is_default ? 0 : v.joins, v.windowS, v.lockdown, req.username]
+  );
+  forgetAutomod(serverId);
+  auditLog(serverId, req.username, 'raid_update', null, `account ${v.account} min, member ${v.member} min, joins ${v.joins}/${v.windowS}s`);
+  res.json((await automodFor(serverId)).raid);
+}));
+// Start (minutes > 0) or end (0) a lockdown by hand: no new members meanwhile.
+app.post('/servers/:id/lockdown', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'everyone is in the general server, so it can\'t be locked' });
+  const mine = await serverPermissions(req.username, serverId);
+  if (!mine.has('manage_server') && !mine.has('ban_members')) return res.status(403).json({ error: 'you need "Manage server" or "Ban & time out members" to lock the server' });
+  const minutes = clampInt(req.body.minutes, 0, 60 * 24, 0);
+  await setLockdown(srv, minutes, cleanText(req.body.reason || '', 200), req.username);
+  res.json((await automodFor(serverId)).raid);
+}));
+
+// Where a queued item was posted, as the reviewer sees it ("#general", "#general > Thread").
+async function automodWhere(room, cache) {
+  if (!room) return '';
+  if (cache.has(room)) return cache.get(room);
+  const channel = await channelForRoom(room);
+  let where = channel ? '#' + channel.name : '';
+  const threadId = threadIdFromRoom(room);
+  if (channel && threadId) { const t = await getThread(threadId); if (t) where += ' > ' + t.name; }
+  cache.set(room, where);
+  return where;
+}
+app.get('/servers/:id/automod/queue', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await getServerById(serverId))) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_messages', 'review AutoMod'))) return;
+  const open = req.query.status !== 'closed';
+  const rooms = await readableChannelRooms(req.username);
+  const rows = await q(
+    `SELECT q.*, m.deleted_at AS message_deleted, (m.id IS NULL) AS message_missing FROM automod_queue q
+     LEFT JOIN messages m ON m.id = q.message_id
+     WHERE q.server_id = $1 AND ${open ? `q.status = 'open'` : `q.status <> 'open'`}
+       AND (q.room IS NULL OR q.room = ANY($2) OR q.room IN (SELECT 'thread:' || t.id FROM threads t WHERE t.parent_room = ANY($2)))
+     ORDER BY q.id DESC LIMIT 100`,
+    [serverId, rooms]
+  );
+  const cache = new Map();
+  const items = [];
+  for (const r of rows) {
+    items.push({
+      id: r.id, kind: r.kind, outcome: r.outcome, username: r.username || '', room: r.room || '', where: await automodWhere(r.room, cache),
+      messageId: r.message_id || null, messageGone: !!r.message_id && (!!r.message_deleted || r.message_missing),
+      content: r.content || '', reason: r.reason || '', status: r.status, handledBy: r.handled_by || '', handledAt: r.handled_at, createdAt: r.created_at
+    });
+  }
+  res.json({ items, open: await automodOpenCount(req.username, serverId) });
+}));
+// Handle a queued item: keep/dismiss it, delete the flagged message, time
+// the sender out, or kick them (for a raid alert: everyone it lists).
+app.post('/servers/:id/automod/queue/:itemId', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await getServerById(serverId);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (!(await requirePerm(req, res, serverId, 'manage_messages', 'review AutoMod'))) return;
+  const item = await one(`SELECT * FROM automod_queue WHERE id = $1 AND server_id = $2`, [Number(req.params.itemId), serverId]);
+  if (!item || (item.room && !(await isAllowedRoom(req.username, item.room)))) return res.status(404).json({ error: 'not in the queue' });
+  const action = String(req.body.action || '');
+  let status = 'dismissed', note = '';
+  if (action === 'dismiss') {
+    status = 'dismissed';
+  } else if (action === 'delete') {
+    const row = item.message_id ? await getMessageById(item.message_id) : null;
+    if (!row || row.deleted_at) return res.status(400).json({ error: 'that message is already gone' });
+    await pool.query(`UPDATE messages SET deleted_at = NOW(), deleted_by = $1 WHERE id = $2`, [req.username, row.id]);
+    const files = await q(`SELECT id, room, to_user, file_url, storage, message_id FROM files WHERE message_id = $1`, [row.id]);
+    if (files.length) await deleteFiles(files.map(f => ({ ...f, message_id: null })));
+    const msg = await normaliseMessage(await getMessageById(row.id));
+    emitRoomOrDM(msg.room, msg.to, 'messageDeleted', msg);
+    auditLog(serverId, req.username, 'message_delete', row.user, String(row.text || '').slice(0, 120));
+    status = 'removed';
+  } else if (action === 'timeout') {
+    if (!(await requirePerm(req, res, serverId, 'ban_members', 'time members out'))) return;
+    const minutes = Number(req.body.minutes);
+    if (!TIMEOUT_CHOICES.includes(minutes) || !minutes) return res.status(400).json({ error: 'pick one of the timeout lengths' });
+    if (!item.username || !(await isServerMember(item.username, serverId))) return res.status(400).json({ error: 'they aren\'t in the server any more' });
+    const problem = await moderationProblem(req.username, item.username, serverId);
+    if (problem) return res.status(403).json({ error: problem });
+    await applyTimeout(srv, item.username, minutes, 'AutoMod review: ' + (item.reason || '').slice(0, 150), req.username);
+    await notifyServerMembers(serverId, 'serverMembersChanged', { serverId });
+    status = 'actioned';
+    note = 'timed out ' + minutes + ' min';
+  } else if (action === 'kick') {
+    if (srv.is_default) return res.status(400).json({ error: 'everyone is in the general server - use a site-wide action instead' });
+    if (!(await requirePerm(req, res, serverId, 'kick_members', 'kick members'))) return;
+    const targets = item.kind === 'raid' ? String(item.content || '').split('\n').map(cleanUsername).filter(Boolean) : [item.username].filter(Boolean);
+    let kicked = 0, skipped = 0;
+    for (const target of targets) {
+      if (!(await isServerMember(target, serverId)) || (await moderationProblem(req.username, target, serverId))) { skipped++; continue; }
+      await kickMember(srv, target, req.username);
+      kicked++;
+    }
+    if (targets.length === 1 && !kicked) return res.status(400).json({ error: 'they can\'t be kicked (already gone, or they have powers you don\'t)' });
+    if (kicked) await notifyServerMembers(serverId, 'serversChanged', {});
+    status = 'actioned';
+    note = `kicked ${kicked}` + (skipped ? `, skipped ${skipped}` : '');
+  } else {
+    return res.status(400).json({ error: 'unknown action' });
+  }
+  await pool.query(`UPDATE automod_queue SET status = $1, handled_by = $2, handled_at = NOW() WHERE id = $3`, [status, req.username, item.id]);
+  await notifyReviewers(serverId, null);
+  res.json({ message: 'ok', status, note });
+}));
+
 app.get('/servers/:id/audit', requireAuth, route(async (req, res) => {
   const serverId = Number(req.params.id);
   if (!(await canSeeAuditLog(req.username, serverId))) return res.status(403).json({ error: 'only moderators and admins can see the audit log' });
@@ -5473,11 +7038,14 @@ app.post('/servers/:id/channels/:channelId/access', requireAuth, route(async (re
   if (!usernames.every(u => members.has(u))) return res.status(400).json({ error: 'one of those people is not in this server' });
 
   await pool.query(`UPDATE server_channels SET is_private = $1 WHERE id = $2`, [isPrivate, channelId]);
-  await pool.query(`DELETE FROM channel_access WHERE channel_id = $1`, [channelId]);
+  // grants made by onboarding answers stay (the answer still unlocks it); they
+  // aren't in the editor's list, so they'd otherwise be wiped on every save
+  await pool.query(`DELETE FROM channel_access WHERE channel_id = $1 AND COALESCE(via_onboarding, 0) = 0`, [channelId]);
   if (isPrivate && roleIds.length) {
     await pool.query(`INSERT INTO channel_access (channel_id, role_id) SELECT $1, unnest($2::int[])`, [channelId, roleIds]);
   }
   if (isPrivate && usernames.length) {
+    await pool.query(`DELETE FROM channel_access WHERE channel_id = $1 AND username = ANY($2::text[])`, [channelId, usernames]); // chosen by hand now
     await pool.query(`INSERT INTO channel_access (channel_id, username) SELECT $1, unnest($2::text[])`, [channelId, usernames]);
   }
   await resyncRooms([...members]);
@@ -5609,7 +7177,8 @@ app.post('/servers/:id/roles/assign', requireAuth, route(async (req, res) => {
   } else {
     await pool.query(
       `INSERT INTO server_member_roles (server_id, role_id, username)
-       SELECT $1, r, u FROM unnest($2::int[]) AS r CROSS JOIN unnest($3::text[]) AS u ON CONFLICT DO NOTHING`,
+       SELECT $1, r, u FROM unnest($2::int[]) AS r CROSS JOIN unnest($3::text[]) AS u
+       ON CONFLICT (role_id, username) DO UPDATE SET via_onboarding = 0`, // given by hand now: an onboarding answer will not take it back
       [serverId, roleIds, usernames]
     );
   }
@@ -5663,6 +7232,362 @@ app.post('/servers/:id/invite/regenerate', requireAuth, route(async (req, res) =
   await pool.query(`UPDATE servers SET invite_code = $1 WHERE id = $2`, [code, serverId]);
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok', inviteCode: code });
+}));
+
+// ---------------- ONBOARDING, RULES SCREEN, DISCOVERY ----------------
+// Onboarding: questions new members answer when they join; each answer can
+// give powerless roles (never ones with permissions - same as auto-roles
+// and reaction roles) and unlock private channels. What it handed out is
+// marked via_onboarding, so changing an answer only takes back its own grants.
+// Rules screen: members who joined after it was turned on can't post, react,
+// start threads, upload or join voice until they accept (rulesPending(),
+// enforced in channelPostBlock() and friends). The owner, server admins,
+// site admins and bots are never asked.
+// Discovery: servers whose OWNER opts in are listed at GET /discovery for
+// every signed-in person, who can join them without an invite.
+const MAX_RULES = 20;
+const MAX_RULE_LENGTH = 300;
+const MAX_ONBOARDING_QUESTIONS = 8;
+const MAX_ONBOARDING_OPTIONS = 12;
+const DISCOVERY_CATEGORIES = ['gaming', 'school', 'study', 'friends', 'creators', 'local', 'other'];
+const DISCOVERY_PAGE = 24;
+const RULES_BLOCK = 'Read and accept this server\'s rules before you take part here.';
+
+function rulesFromText(text) {
+  try {
+    const list = JSON.parse(text || '[]');
+    return Array.isArray(list) ? list.map(r => String(r || '').trim()).filter(Boolean).slice(0, MAX_RULES) : [];
+  } catch (err) { return []; }
+}
+function idList(text) {
+  return [...new Set(String(text || '').split(',').map(Number).filter(n => Number.isInteger(n) && n > 0))];
+}
+function joinedSince(member, since) {
+  return !since || !member.joined_at || new Date(member.joined_at) >= new Date(since);
+}
+// The two gates, worked out from a servers row and the person's server_members
+// row (both from one query, so serversForUser() can do every server at once).
+function rulesGateOpen(srv, member, username, { isBot, isSiteAdmin }) {
+  if (!srv || !member || srv.is_default || !srv.rules_enabled || member.rules_accepted_at) return false;
+  if (isBot || isSiteAdmin || srv.owner === username || member.role === 'admin' || member.role === 'owner') return false;
+  return joinedSince(member, srv.rules_since);
+}
+function onboardingGateOpen(srv, member, username, questionCount, { isBot }) {
+  if (!srv || !member || srv.is_default || !srv.onboarding_enabled || !questionCount || member.onboarded_at) return false;
+  if (isBot || srv.owner === username) return false;
+  return joinedSince(member, srv.onboarding_since);
+}
+
+// True when `username` still has to accept this server's rules.
+async function rulesPending(username, serverId) {
+  if (!serverId) return false;
+  const row = await one(
+    `SELECT s.owner, s.is_default, s.rules_enabled, s.rules_since, m.role, m.joined_at, m.rules_accepted_at
+     FROM servers s JOIN server_members m ON m.server_id = s.id AND m.username = $2 WHERE s.id = $1`,
+    [serverId, username]
+  );
+  if (!row || !row.rules_enabled) return false; // the common case: one query, no more
+  return rulesGateOpen(row, row, username, { isBot: await isBotUser(username), isSiteAdmin: await isAdmin(username) });
+}
+async function rulesBlockForRoom(username, room) {
+  const channel = await channelForRoom(room);
+  return channel && (await rulesPending(username, channel.server_id)) ? RULES_BLOCK : null;
+}
+
+// The onboarding questions of a server, with their options, in order.
+async function onboardingQuestions(serverId) {
+  const [questions, options] = await Promise.all([
+    q(`SELECT * FROM onboarding_questions WHERE server_id = $1 ORDER BY position ASC, id ASC`, [serverId]),
+    q(`SELECT * FROM onboarding_options WHERE server_id = $1 ORDER BY position ASC, id ASC`, [serverId])
+  ]);
+  return questions.map(qn => ({ ...qn, options: options.filter(o => o.question_id === qn.id) }));
+}
+
+// Take back onboarding's grants when someone leaves, is kicked or banned.
+async function forgetOnboarding(serverId, username) {
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1 AND username = $2`, [serverId, username]);
+  await pool.query(
+    `DELETE FROM channel_access WHERE username = $2 AND via_onboarding = 1 AND channel_id IN (SELECT id FROM server_channels WHERE server_id = $1)`,
+    [serverId, username]
+  );
+}
+
+app.get('/servers/:id/onboarding', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv || !(await isServerMember(req.username, serverId))) return res.status(404).json({ error: 'server not found' });
+  const perms = await serverPermissions(req.username, serverId);
+  const manager = perms.has('manage_server');
+  const member = await one(`SELECT * FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  const questions = await onboardingQuestions(serverId);
+  const answers = (await q(`SELECT option_id FROM onboarding_answers WHERE server_id = $1 AND username = $2`, [serverId, req.username])).map(r => r.option_id);
+  const who = { isBot: await isBotUser(req.username), isSiteAdmin: await isAdmin(req.username) };
+  const roles = new Map((await q(`SELECT id, name, color FROM server_roles WHERE server_id = $1 AND COALESCE(permissions, '') = ''`, [serverId])).map(r => [r.id, r]));
+  res.json({
+    enabled: !!srv.onboarding_enabled,
+    pending: onboardingGateOpen(srv, member, req.username, questions.length, who),
+    questions: questions.map(qn => ({
+      id: qn.id, title: qn.title, multiple: !!qn.multiple, required: !!qn.required,
+      options: qn.options.map(o => ({
+        id: o.id, label: o.label, description: o.description || '', emoji: o.emoji || '',
+        // role names are public (every member gets the role list); which
+        // private channels an answer unlocks is only for the people setting it up
+        roles: idList(o.role_ids).filter(id => roles.has(id)).map(id => ({ id, name: roles.get(id).name, color: roles.get(id).color || '' })),
+        channelIds: manager ? idList(o.channel_ids) : undefined
+      }))
+    })),
+    myAnswers: answers,
+    rules: {
+      enabled: !!srv.rules_enabled,
+      list: rulesFromText(srv.rules),
+      accepted: !!(member && member.rules_accepted_at),
+      pending: rulesGateOpen(srv, member, req.username, who)
+    },
+    discovery: manager ? { discoverable: !!srv.discoverable, category: srv.discovery_category || '' } : undefined
+  });
+}));
+
+// Saves the whole onboarding setup. Questions/options sent with their id keep
+// it (so people's answers survive edits); ones left out are deleted.
+app.post('/servers/:id/onboarding', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'the general server has no onboarding' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'set up onboarding'))) return;
+  const input = Array.isArray(req.body.questions) ? req.body.questions : [];
+  if (input.length > MAX_ONBOARDING_QUESTIONS) return res.status(400).json({ error: `up to ${MAX_ONBOARDING_QUESTIONS} questions` });
+  const [roleRows, channelRows, existing] = await Promise.all([
+    q(`SELECT id, permissions FROM server_roles WHERE server_id = $1`, [serverId]),
+    q(`SELECT id, name, is_private FROM server_channels WHERE server_id = $1`, [serverId]),
+    onboardingQuestions(serverId)
+  ]);
+  const roleById = new Map(roleRows.map(r => [r.id, r]));
+  const channelById = new Map(channelRows.map(c => [c.id, c]));
+  const oldQuestions = new Map(existing.map(qn => [qn.id, qn]));
+  const oldOptions = new Map(existing.flatMap(qn => qn.options).map(o => [o.id, o]));
+  const questions = [];
+  let grantsRoles = false, grantsChannels = false;
+  for (const raw of input) {
+    const title = cleanText(raw && raw.title, 120);
+    if (!title) return res.status(400).json({ error: 'every question needs a title' });
+    const opts = Array.isArray(raw.options) ? raw.options : [];
+    if (!opts.length) return res.status(400).json({ error: `"${title}" needs at least one answer` });
+    if (opts.length > MAX_ONBOARDING_OPTIONS) return res.status(400).json({ error: `up to ${MAX_ONBOARDING_OPTIONS} answers per question` });
+    const options = [];
+    for (const o of opts) {
+      const label = cleanText(o && o.label, 80);
+      if (!label) return res.status(400).json({ error: `every answer to "${title}" needs a name` });
+      const roleIds = [...new Set((Array.isArray(o.roleIds) ? o.roleIds : []).map(Number))];
+      const channelIds = [...new Set((Array.isArray(o.channelIds) ? o.channelIds : []).map(Number))];
+      for (const id of roleIds) {
+        const role = roleById.get(id);
+        if (!role) return res.status(400).json({ error: 'one of those roles is not in this server' });
+        if (permissionsFromText(role.permissions).length) return res.status(400).json({ error: 'Onboarding can only give roles without permissions.' });
+      }
+      for (const id of channelIds) {
+        const channel = channelById.get(id);
+        if (!channel) return res.status(400).json({ error: 'one of those channels is not in this server' });
+        if (!channel.is_private) return res.status(400).json({ error: `#${channel.name} isn't private - everyone can already see it. Answers only need to unlock private channels.` });
+      }
+      const keep = oldOptions.get(Number(o.id));
+      const before = keep && keep.question_id === Number(raw.id) ? keep : null;
+      const same = (a, b) => [...a].sort().join() === [...b].sort().join();
+      if (!same(roleIds, before ? idList(before.role_ids) : [])) grantsRoles = true;
+      if (!same(channelIds, before ? idList(before.channel_ids) : [])) grantsChannels = true;
+      options.push({ id: before ? before.id : null, label, description: cleanText(o.description, 120), emoji: cleanText(o.emoji, 64), roleIds, channelIds });
+    }
+    questions.push({ id: oldQuestions.has(Number(raw.id)) ? Number(raw.id) : null, title, multiple: raw.multiple ? 1 : 0, required: raw.required ? 1 : 0, options });
+  }
+  // changing what answers hand out needs the power to hand it out yourself
+  if (grantsRoles && !(await requirePerm(req, res, serverId, 'manage_roles', 'choose which roles answers give'))) return;
+  if (grantsChannels && !(await requirePerm(req, res, serverId, 'manage_channels', 'choose which channels answers unlock'))) return;
+  const enabled = req.body.enabled ? 1 : 0;
+  if (enabled && !questions.length) return res.status(400).json({ error: 'add a question before turning onboarding on' });
+
+  const keptQuestions = questions.filter(qn => qn.id).map(qn => qn.id);
+  const keptOptions = questions.flatMap(qn => qn.options).filter(o => o.id).map(o => o.id);
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1 AND NOT (option_id = ANY($2::int[]))`, [serverId, keptOptions]);
+  await pool.query(`DELETE FROM onboarding_options WHERE server_id = $1 AND NOT (id = ANY($2::int[]))`, [serverId, keptOptions]);
+  await pool.query(`DELETE FROM onboarding_questions WHERE server_id = $1 AND NOT (id = ANY($2::int[]))`, [serverId, keptQuestions]);
+  for (const [qi, qn] of questions.entries()) {
+    const questionId = qn.id
+      ? (await pool.query(`UPDATE onboarding_questions SET title = $1, multiple = $2, required = $3, position = $4 WHERE id = $5`, [qn.title, qn.multiple, qn.required, qi, qn.id]), qn.id)
+      : (await one(`INSERT INTO onboarding_questions (server_id, title, multiple, required, position) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [serverId, qn.title, qn.multiple, qn.required, qi])).id;
+    for (const [oi, o] of qn.options.entries()) {
+      const values = [o.label, o.description || null, o.emoji || null, o.roleIds.join(','), o.channelIds.join(','), oi];
+      if (o.id) await pool.query(`UPDATE onboarding_options SET label = $1, description = $2, emoji = $3, role_ids = $4, channel_ids = $5, position = $6 WHERE id = $7`, [...values, o.id]);
+      else await pool.query(`INSERT INTO onboarding_options (label, description, emoji, role_ids, channel_ids, position, question_id, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [...values, questionId, serverId]);
+    }
+  }
+  // turning it on: people already here aren't sent through it (they can still
+  // open Channels & Roles from the server menu)
+  if (enabled && !srv.onboarding_enabled) await pool.query(`UPDATE servers SET onboarding_enabled = 1, onboarding_since = NOW() WHERE id = $1`, [serverId]);
+  else if (!enabled) await pool.query(`UPDATE servers SET onboarding_enabled = 0 WHERE id = $1`, [serverId]);
+  auditLog(serverId, req.username, 'onboarding_update', srv.name, `${questions.length} question(s), ${enabled ? 'on' : 'off'}`);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// A member's answers: gives the roles / unlocks the channels of what they
+// picked, and takes back what onboarding gave for answers they dropped.
+app.post('/servers/:id/onboarding/answers', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv || srv.is_default || !(await one(`SELECT 1 FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]))) {
+    return res.status(404).json({ error: 'server not found' });
+  }
+  if (!srv.onboarding_enabled) return res.status(400).json({ error: 'this server has no onboarding' });
+  if (rateLimited('onboarding:' + req.username, 20, 60 * 1000)) return res.status(429).json({ error: 'Slow down a little.' });
+  const questions = await onboardingQuestions(serverId);
+  const picked = new Set((Array.isArray(req.body.optionIds) ? req.body.optionIds : []).map(Number));
+  const chosen = [];
+  for (const qn of questions) {
+    const mine = qn.options.filter(o => picked.has(o.id));
+    if (qn.required && !mine.length) return res.status(400).json({ error: `"${qn.title}" needs an answer` });
+    if (!qn.multiple && mine.length > 1) return res.status(400).json({ error: `pick one answer for "${qn.title}"` });
+    chosen.push(...mine);
+  }
+  if (chosen.length !== picked.size) return res.status(400).json({ error: 'one of those answers is not in this server' });
+  const [safeRoles, privateChannels] = await Promise.all([
+    q(`SELECT id FROM server_roles WHERE server_id = $1 AND COALESCE(permissions, '') = ''`, [serverId]),
+    q(`SELECT id FROM server_channels WHERE server_id = $1 AND COALESCE(is_private, 0) = 1`, [serverId])
+  ]);
+  const roleOk = new Set(safeRoles.map(r => r.id));
+  const channelOk = new Set(privateChannels.map(c => c.id));
+  const isBot = await isBotUser(req.username);
+  const roleIds = isBot ? [] : [...new Set(chosen.flatMap(o => idList(o.role_ids)))].filter(id => roleOk.has(id));
+  const channelIds = [...new Set(chosen.flatMap(o => idList(o.channel_ids)))].filter(id => channelOk.has(id));
+  const before = new Set(await readableChannelRooms(req.username));
+
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2 AND via_onboarding = 1 AND NOT (role_id = ANY($3::int[]))`, [serverId, req.username, roleIds]);
+  if (roleIds.length) {
+    await pool.query(`INSERT INTO server_member_roles (server_id, role_id, username, via_onboarding) SELECT $1, unnest($3::int[]), $2, 1 ON CONFLICT DO NOTHING`, [serverId, req.username, roleIds]);
+  }
+  await pool.query(
+    `DELETE FROM channel_access WHERE username = $2 AND via_onboarding = 1 AND NOT (channel_id = ANY($3::int[]))
+       AND channel_id IN (SELECT id FROM server_channels WHERE server_id = $1)`,
+    [serverId, req.username, channelIds]
+  );
+  if (channelIds.length) {
+    await pool.query(
+      `INSERT INTO channel_access (channel_id, username, via_onboarding)
+       SELECT c, $1, 1 FROM unnest($2::int[]) c
+       WHERE NOT EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c AND a.username = $1)`,
+      [req.username, channelIds]
+    );
+  }
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  if (chosen.length) {
+    await pool.query(`INSERT INTO onboarding_answers (server_id, username, option_id) SELECT $1, $2, unnest($3::int[]) ON CONFLICT DO NOTHING`, [serverId, req.username, chosen.map(o => o.id)]);
+  }
+  await pool.query(`UPDATE server_members SET onboarded_at = NOW() WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  await resyncRooms([req.username]);
+  // channels they've just been let into: their history isn't "unread"
+  const fresh = (await readableChannelRooms(req.username)).filter(room => !before.has(room));
+  if (fresh.length) {
+    const threads = (await q(`SELECT 'thread:' || id AS room FROM threads WHERE parent_room = ANY($1)`, [fresh])).map(t => t.room);
+    await markRoomsRead(req.username, fresh.concat(threads)).catch(err => console.error('onboarding read baseline failed:', err.message));
+  }
+  sendToUser(req.username, 'serversChanged', {});
+  await notifyServerMembers(serverId, 'serversChanged', {}); // their roles show in the member list
+  res.json({ message: 'ok', roleIds, unlocked: fresh.length });
+}));
+
+// The rules screen.
+app.post('/servers/:id/rules', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'the general server has no rules screen' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change the rules'))) return;
+  const raw = Array.isArray(req.body.rules) ? req.body.rules : [];
+  const rules = raw.map(r => cleanText(r, MAX_RULE_LENGTH)).filter(Boolean);
+  if (rules.length > MAX_RULES) return res.status(400).json({ error: `up to ${MAX_RULES} rules` });
+  const enabled = req.body.enabled ? 1 : 0;
+  if (enabled && !rules.length) return res.status(400).json({ error: 'write at least one rule before turning the rules screen on' });
+  await pool.query(`UPDATE servers SET rules = $1, rules_enabled = $2 WHERE id = $3`, [JSON.stringify(rules), enabled, serverId]);
+  if (enabled && req.body.askEveryone) {
+    // everyone (but the owner/admins) has to accept again, e.g. after a big change
+    await pool.query(`UPDATE servers SET rules_since = NULL WHERE id = $1`, [serverId]);
+    await pool.query(`UPDATE server_members SET rules_accepted_at = NULL WHERE server_id = $1`, [serverId]);
+  } else if (enabled && !srv.rules_enabled) {
+    await pool.query(`UPDATE servers SET rules_since = NOW() WHERE id = $1`, [serverId]); // only people who join from now on
+  }
+  auditLog(serverId, req.username, 'rules_update', srv.name, `${rules.length} rule(s), ${enabled ? 'on' : 'off'}${enabled && req.body.askEveryone ? ', everyone asked again' : ''}`);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok', rules });
+}));
+
+app.post('/servers/:id/rules/accept', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT rules_enabled, is_default FROM servers WHERE id = $1`, [serverId]);
+  const updated = srv && !srv.is_default ? await one(
+    `UPDATE server_members SET rules_accepted_at = COALESCE(rules_accepted_at, NOW()) WHERE server_id = $1 AND username = $2 RETURNING 1`,
+    [serverId, req.username]
+  ) : null;
+  if (!updated) return res.status(404).json({ error: 'server not found' });
+  sendToUser(req.username, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// Listing a server in Discovery publishes it to everyone, so it's the
+// owner's call (like deleting it), not something a role can do.
+app.post('/servers/:id/discovery', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'everyone is already in the general server' });
+  if (!(await isServerOwnerLevel(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can list it in Discovery' });
+  const discoverable = req.body.discoverable ? 1 : 0;
+  const category = DISCOVERY_CATEGORIES.includes(req.body.category) ? req.body.category : (srv.discovery_category || 'other');
+  if (discoverable && !String(srv.description || '').trim()) return res.status(400).json({ error: 'Add a description in Overview first, so people know what the server is about.' });
+  await pool.query(`UPDATE servers SET discoverable = $1, discovery_category = $2 WHERE id = $3`, [discoverable, category, serverId]);
+  auditLog(serverId, req.username, 'discovery_update', srv.name, discoverable ? 'listed (' + category + ')' : 'not listed');
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok', discoverable: !!discoverable, category });
+}));
+
+// Public servers, biggest first. Signed-in people only (it's a list to join
+// from, not a public directory for crawlers). Nothing about who's in them.
+app.get('/discovery', requireAuth, route(async (req, res) => {
+  const text = cleanText(req.query.q, 60);
+  const like = text ? '%' + text.replace(/[\\%_]/g, m => '\\' + m) + '%' : '';
+  const category = DISCOVERY_CATEGORIES.includes(req.query.category) ? req.query.category : '';
+  const offset = Math.max(0, Math.min(10000, Number(req.query.offset) || 0));
+  const rows = await q(
+    `SELECT s.id, s.name, s.description, s.discovery_category, s.icon_version, s.banner_color, s.banner_version, s.banner_pos,
+            CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
+            CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' WHEN left(s.banner_url, 8) = '/assets/' THEN s.banner_url ELSE 'data:' END AS banner_url,
+            (SELECT COUNT(*)::int FROM server_members m WHERE m.server_id = s.id) AS members,
+            EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1) AS joined
+     FROM servers s JOIN users u ON u.username = s.owner
+     WHERE s.discoverable = 1 AND COALESCE(s.is_default, 0) = 0 AND COALESCE(u.banned, 0) = 0
+       AND ($2 = '' OR s.name ILIKE $2 OR s.description ILIKE $2)
+       AND ($3 = '' OR s.discovery_category = $3)
+     ORDER BY members DESC, s.id DESC
+     LIMIT ${DISCOVERY_PAGE + 1} OFFSET $4`,
+    [req.username, like, category, offset]
+  );
+  res.json({
+    servers: rows.slice(0, DISCOVERY_PAGE).map(s => ({
+      id: s.id, name: s.name, description: s.description || '', category: s.discovery_category || 'other',
+      iconUrl: serverIconUrlOf(s), bannerUrl: serverBannerUrlOf(s), bannerColor: s.banner_color || '', bannerPos: s.banner_pos || '',
+      members: s.members, joined: !!s.joined
+    })),
+    more: rows.length > DISCOVERY_PAGE,
+    categories: DISCOVERY_CATEGORIES
+  });
+}));
+
+app.post('/discovery/:id/join', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: 'Bots join servers when their owner adds them (Settings > My Bots).' });
+  const srv = await one(`SELECT * FROM servers WHERE id = $1 AND discoverable = 1 AND COALESCE(is_default, 0) = 0`, [Number(req.params.id)]);
+  if (!srv) return res.status(404).json({ error: 'That server isn\'t in Discovery any more.' });
+  if (await isServerBanned(req.username, srv.id)) return res.status(403).json({ error: 'You are banned from this server.' });
+  if (rateLimited('discoverjoin:' + req.username, 20, 60 * 60 * 1000)) return res.status(429).json({ error: 'You\'ve joined a lot of servers - try again in a while.' });
+  await addServerMember(srv, req.username);
+  res.json({ id: srv.id, name: srv.name });
 }));
 
 // ---------------- FRIENDS + BLOCKING ----------------
@@ -5966,11 +7891,21 @@ app.post('/upload', requireAuth, route(async (req, res) => {
   // x-attach: 1 = a file for a message that's about to be sent (the message
   // gets the checks and the broadcast); otherwise a standalone file
   const attach = req.headers['x-attach'] === '1';
+  // a voice message (recorded in the app): its length and waveform come along
+  let voice = null;
+  if (req.headers['x-voice-seconds'] !== undefined) {
+    const seconds = Number(req.headers['x-voice-seconds']);
+    const waveform = String(req.headers['x-voice-waveform'] || '').toLowerCase();
+    if (!attach || !fileType.toLowerCase().startsWith('audio/') || !(seconds > 0 && seconds <= VOICE_MAX_SECONDS + 5) ||
+        !/^([0-9a-f]{2}){1,128}$/.test(waveform)) return res.status(400).json({ error: 'that voice message couldn\'t be read - try recording it again' });
+    voice = { seconds, waveform };
+  }
   if (!toUser) {
     if (attach) {
       const channel = await channelForRoom(finalRoom);
       const timeout = channel ? await activeTimeout(req.username, channel.server_id) : null;
       if (timeout) return res.status(403).json({ error: 'You\'re timed out in this server.' });
+      if (channel && await rulesPending(req.username, channel.server_id)) return res.status(403).json({ error: RULES_BLOCK });
     } else {
       const blocked = await channelPostBlock(req.username, finalRoom);
       if (blocked) return res.status(403).json({ error: blocked });
@@ -6016,6 +7951,7 @@ app.post('/upload', requireAuth, route(async (req, res) => {
         [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/uploads/${storedName}`, size, caption || null, attach ? 1 : 0]
       );
     }
+    if (voice) await pool.query(`UPDATE files SET voice_seconds = $1, waveform = $2 WHERE id = $3`, [voice.seconds, voice.waveform, created.id]);
     const fileMsg = await normaliseFile(await getFileById(created.id));
     if (attach) return res.status(201).json(fileMsg); // shown when its message is sent
 
@@ -6276,9 +8212,16 @@ io.on('connection', (socket) => {
       if (typeof ack === 'function') ack({ error: blocked });
       return;
     }
+    const automod = text ? await automodCheck(socket.username, room, text) : null;
+    if (automod && automod.blocked) {
+      await automodRecord(automod, socket.username, room, text, null);
+      if (typeof ack === 'function') ack({ error: automodError(automod), automod: true });
+      return;
+    }
     const mentions = await mentionFlags(socket.username, room, text);
     let created = await insertMessage(room, socket.username, text, null, groupIdFromRoom(room) ? 1 : 0, replyTo, mentions);
     await claimAttachments(created.id, attached.ids);
+    if (automod) automodRecord(automod, socket.username, room, text, created.id);
     if (sticker) created = await one(`UPDATE messages SET sticker_id = $1 WHERE id = $2 RETURNING *`, [sticker.id, created.id]);
     const msg = await normaliseMessage(created);
     io.to(room).emit('message', msg);
@@ -6454,6 +8397,13 @@ io.on('connection', (socket) => {
       return;
     }
     if (!text) return;
+    const automod = getDMUsers(row.room) ? null : await automodCheck(socket.username, row.room, text, { edit: true });
+    if (automod && automod.blocked) {
+      await automodRecord(automod, socket.username, row.room, text, null);
+      if (typeof ack === 'function') ack({ error: automodError(automod), automod: true });
+      return;
+    }
+    if (automod) automodRecord(automod, socket.username, row.room, text, id);
     // re-check mentions so highlights match the new text (edits never re-ping)
     const mentions = getDMUsers(row.room) ? { everyone: 0, roles: '' } : await mentionFlags(socket.username, row.room, text);
     await pool.query(
@@ -6498,6 +8448,11 @@ io.on('connection', (socket) => {
     const row = await getMessageById(id);
     if (!row || row.deleted_at || !(await isAllowedRoom(socket.username, row.room)) || !(await validReaction(emoji, row.room))) {
       if (typeof ack === 'function') ack({ error: 'invalid reaction' });
+      return;
+    }
+    const rulesBlock = await rulesBlockForRoom(socket.username, row.room);
+    if (rulesBlock) {
+      if (typeof ack === 'function') ack({ error: rulesBlock });
       return;
     }
     // a reaction role: reacting gives the role, un-reacting takes it away
@@ -6590,7 +8545,7 @@ io.on('connection', (socket) => {
       if (['mute', 'kick', 'ban', 'setAdmin'].includes(action) && socket.username !== 'Purple') {
         const target = cleanUsername(data.username);
         const removing = action !== 'setAdmin' || !data.isAdmin;
-        if (removing && (await isAdmin(target))) throw new Error('only Purple can do that to another site admin');
+        if (removing && (await isSiteAdmin(target))) throw new Error('only Purple can do that to another site admin');
       }
       if (action === 'createChannel') {
         const name = cleanUsername(data.name).replace(/^#/, '');
@@ -6696,10 +8651,11 @@ io.on('connection', (socket) => {
       if (old.socketId !== socket.id) io.to(old.socketId).emit('voice:forceLeave', { key, reason: 'You joined this call from somewhere else.' });
       call.participants.delete(socket.username);
     }
-    if (call && call.participants.size >= MAX_CALL_SIZE) return reply({ error: `This call is full (${MAX_CALL_SIZE} people max).` });
+    const maxSize = call ? (call.sfu ? MAX_SFU_CALL_SIZE : MAX_CALL_SIZE) : maxCallSizeFor(info.kind);
+    if (call && call.participants.size >= maxSize) return reply({ error: `This call is full (${maxSize} people max).` });
     const isNew = !call;
     if (isNew) {
-      call = { key, kind: info.kind, room: info.room, startedAt: Date.now(), participants: new Map(), ringing: new Set(), ringTimer: null, messageId: null, everJoined: new Set() };
+      call = { key, kind: info.kind, room: info.room, startedAt: Date.now(), participants: new Map(), ringing: new Set(), ringTimer: null, messageId: null, everJoined: new Set(), sfu: callUsesSfu(info.kind) };
       calls.set(key, call);
     }
     const others = [...call.participants.keys()];
@@ -6709,7 +8665,16 @@ io.on('connection', (socket) => {
     });
     call.everJoined.add(socket.username);
     stopRinging(call, [socket.username]);
-    reply({ message: 'ok', participants: others });
+    let sfu;
+    if (call.sfu) {
+      const cfg = sfuConfig();
+      if (!cfg) { // the media server was switched off while this call ran
+        await leaveCall(key, socket.username);
+        return reply({ error: 'The call server isn\'t available right now.' });
+      }
+      sfu = { url: cfg.publicUrl, token: sfuJoinToken(cfg, socket.username, key) };
+    }
+    reply({ message: 'ok', participants: others, ...(sfu ? { sfu } : {}) });
     if (isNew && info.kind !== 'voice' && !data.rejoin) {
       // ring everyone else in the DM / group (not when someone's app is just
       // reconnecting to a call the server forgot about in a restart)
@@ -6787,6 +8752,27 @@ io.on('connection', (socket) => {
     if (typeof ack === 'function') ack({ calls: out });
   });
 
+  // Soundboard: play one of the call's sounds to everyone in it (including
+  // the sender). Only current participants, not while muted or deafened,
+  // and only sounds they're allowed (usableSound) - re-checking the call's
+  // access each time, so a timeout or block stops it straight away.
+  socket.on('voice:sound', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    if (!me || me.socketId !== socket.id) return reply({ error: 'You\'re not in this call.' });
+    if (me.muted || me.deafened) return reply({ error: 'Unmute to use the soundboard.' });
+    if (rateLimited('voicesound:' + socket.username, 1, 1500) || rateLimited('voicesoundmin:' + socket.username, 20, 60 * 1000)) return reply({ error: 'Slow down a little.' });
+    const problem = await callJoinProblem(socket.username, call.key);
+    if (problem) return reply({ error: problem });
+    const sound = await usableSound(socket.username, call.key, data.soundId);
+    if (!sound) return reply({ error: 'That sound isn\'t available in this call.' });
+    if (!calls.get(call.key) || !call.participants.has(socket.username)) return reply({ error: 'You\'re not in this call.' });
+    const payload = { key: call.key, by: socket.username, maxSeconds: SOUND_PLAY_SECONDS, sound: soundFromRow(sound) };
+    for (const p of call.participants.values()) io.to(p.socketId).emit('voice:sound', payload);
+    reply({ message: 'ok' });
+  });
+
   // Server admins can disconnect someone from a voice channel.
   socket.on('voice:kick', async (data = {}, ack) => {
     const call = calls.get(String(data.key || ''));
@@ -6816,15 +8802,37 @@ io.on('connection', (socket) => {
   });
 });
 
+// ---------------- BACKUPS + EXPORTS ----------------
+// backup.js (see BACKUPS.md): scheduled backups to BACKUP_DIR, restore,
+// "Download my data" and "Export channel".
+const backups = require('./backup')({
+  app, pool, q, one, route, requireAuth, rateLimited,
+  dirs: { UPLOAD_DIR, ASSET_DIR },
+  diskPathForUpload, getChannelByRoom, canViewChannel, hasServerPerm, auditLog, isAdmin,
+  version: () => APP_VERSION,
+  hooks: {
+    shuttingDown: () => shuttingDown,
+    // after a restore, everything in memory belongs to the old data
+    restarting(why) {
+      console.log(why + ' - restarting');
+      io.emit('serverUpdating', { restore: true });
+      setTimeout(() => shutdown('restore'), 1500);
+    }
+  }
+});
+
 // ---------------- BOOT ----------------
 async function main() {
   await setupSchema();
+  // an empty database with backups in BACKUP_DIR (a new or replaced disk): bring the newest back
+  await backups.restoreIfEmpty().catch(err => console.error('restore from backup failed:', err.message));
   await ensureVapidKeys();
   DEFAULT_SERVER = await ensureDefaultServer();
   for (const name of DEFAULT_CHANNELS) {
     await pool.query(`INSERT INTO channels (name, created_by) VALUES ($1, 'system') ON CONFLICT (name) DO NOTHING`, [name]);
   }
   await applySeedAccounts();
+  await resetTwoStepFromEnv();
   await addDefaultVoiceChannelOnce().catch(err => console.error('default voice channel failed:', err.message));
   // calls are kept in memory, so none survive a restart - close their logs
   await pool.query(`UPDATE messages SET text = 'ended' WHERE kind = 'call' AND text = 'ongoing'`);
@@ -6840,6 +8848,7 @@ async function main() {
   // a kept file whose message row is gone (e.g. its room was deleted) is just wasted space
   await pool.query(`DELETE FROM file_blobs WHERE file_id NOT IN (SELECT id FROM files)`);
   await scheduleEventReminders();
+  backups.start();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);

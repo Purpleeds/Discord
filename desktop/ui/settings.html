@@ -25,9 +25,13 @@
     <label class="field">Password
       <input id="password" type="password" autocomplete="current-password" required maxlength="200">
     </label>
+    <label class="field" id="codeField" hidden>Two-step login code
+      <input id="code" type="text" inputmode="numeric" autocomplete="one-time-code" spellcheck="false" maxlength="20" placeholder="From your authenticator app, or a backup code">
+    </label>
     <div class="msg" id="signInMsg" role="alert"></div>
     <button type="submit" class="primary wide" id="signInBtn">Sign in</button>
-    <p class="fine">Your password only goes to the chat, to sign in. The notifier keeps the sign-in encrypted by Windows, and it shows in the chat under Settings &gt; Devices.</p>
+    <button type="button" class="ghost wide" id="useChatWindow">Sign in in the chat window instead</button>
+    <p class="fine">Signed in to the chat window already? Pop-ups turn on by themselves. Your password only goes to the chat, to sign in. The notifier keeps the sign-in encrypted by Windows, and it shows in the chat under Settings &gt; Devices.</p>
   </form>
 </main>
 
@@ -164,6 +168,13 @@
     <p class="lede">Starting up, updates and your sign-in.</p>
 
     <div class="list">
+      <div class="item">
+        <span class="itemText"><b>Open the chat in</b><span>The app's own window has push to talk in games and a screen picker.</span></span>
+        <select class="choice" id="openIn" aria-label="Open the chat in">
+          <option value="app">This app</option>
+          <option value="browser">My web browser</option>
+        </select>
+      </div>
       <label class="item" id="autostartRow">
         <span class="itemText"><b>Start with Windows</b><span>Runs quietly in the tray when you sign in to Windows.</span></span>
         <input type="checkbox" class="switch" id="autostart">
@@ -187,7 +198,7 @@
 
     <div class="list">
       <div class="item">
-        <span class="itemText"><b id="accountLine"></b><span>Signing out also signs this device out of the chat.</span></span>
+        <span class="itemText"><b id="accountLine"></b><span>Signing out also signs this device and the chat window out of the chat.</span></span>
         <button type="button" class="ghost" id="signOut">Sign out</button>
       </div>
       <div class="item">

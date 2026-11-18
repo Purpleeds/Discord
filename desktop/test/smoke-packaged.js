@@ -21,12 +21,36 @@ async function until(fn, ms = 20000) { const end = Date.now() + ms; let v; while
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'notifier-smoke-'));
   const app = await _electron.launch({
     executablePath: exe,
-    env: Object.assign({}, process.env, { CHAT_NOTIFIER_TEST: '1', CHAT_NOTIFIER_DATA: data, CHAT_NOTIFIER_NO_UPDATE_CHECK: '1' }),
+    env: Object.assign({}, process.env, { CHAT_NOTIFIER_TEST: '1', CHAT_NOTIFIER_DATA: data, CHAT_NOTIFIER_NO_UPDATE_CHECK: '1', CHAT_DESKTOP_REAL_HOOK: '1' }),
     timeout: 90000
   });
   const errors = [];
   app.on('window', p => p.on('pageerror', e => errors.push(e.message)));
   check('the app starts', true);
+  // first start: the chat window (the live chat, or "can't reach" when offline)
+  const chat = await until(() => app.windows().find(w => !/(settings|card|share)\.html/.test(w.url()) && w.url() !== 'about:blank'));
+  check('the chat window opens', !!chat);
+  if (chat) {
+    check('…on the chat (or the offline page)', /^https:\/\/discords-zf2n\.onrender\.com\/|offline\.html/.test(chat.url()), chat.url());
+    check('…with the desktop API', await chat.evaluate(() => !!(window.chatDesktop && window.chatDesktop.globalPushToTalk)).catch(() => false));
+    await sleep(3000);
+    await chat.screenshot({ path: path.join(out, 'chat.png') }).catch(() => {});
+  }
+  check('push to talk hook loads (uiohook)', await app.evaluate(() => global.__notifier.hookLoads()) === true);
+  // push to talk on the real platform: the low-level hook sees a key pressed
+  // while another window has the keyboard (a synthesized F13, which nothing uses)
+  let heard = false;
+  for (let i = 0; i < 3 && !heard; i++) {
+    await app.evaluate(() => global.__notifier.setPtt({ enabled: true, code: 'F13' }));
+    await sleep(800);
+    await app.evaluate(() => global.__notifier.synthKey(91, true));
+    heard = !!(await until(() => app.evaluate(() => global.__notifier.ptt().down), 2000));
+    await app.evaluate(() => global.__notifier.synthKey(91, false));
+  }
+  check('push to talk: the global hook hears the key', heard);
+  check('…and the release', !!(await until(() => app.evaluate(() => !global.__notifier.ptt().down), 3000)));
+  await app.evaluate(() => global.__notifier.setPtt(null));
+  await app.evaluate(() => global.__notifier.settings());
   const page = await until(() => app.windows().find(w => /settings\.html$/.test(w.url())));
   check('the sign-in window opens', !!page);
   await page.waitForLoadState();

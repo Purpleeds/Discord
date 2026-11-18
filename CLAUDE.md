@@ -28,9 +28,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   and open pages reload when `serverInfo.version` changes.
 - `discord-bridge.js`: the Discord bridge bot (discord.js), run by `relay.js` on
   Render when `DISCORD_BOT_TOKEN` + `DISCORDS_BRIDGE_KEY` are set - see DISCORD_BRIDGE.md.
+- `backup.js`: backups (`BACKUP_DIR`), restore, "Download my data" and
+  "Export channel" - see BACKUPS.md. New tables/columns are backed up
+  automatically (every table in the schema); routes are owner-only (Purple).
 - `public/sw.js`: Web Push service worker.
-- `desktop/`: the Chat Notifier, a Windows tray program (Electron) - see
-  desktop/README.md. Released by `.github/workflows/notifier.yml`.
+- `desktop/`: the Windows app (Electron, still named Chat Notifier): tray +
+  pop-ups, and the chat window (the live site) with global push to talk and
+  a screen-share picker - see desktop/README.md. Released by
+  `.github/workflows/notifier.yml`. The page there gets `window.chatDesktop`
+  (`desktop/ui/chat-preload.js`); `public/index.html` uses it as `desktopApp`
+  and must keep working without it. Keep the two in step.
 - `test/smoke.test.js`: end-to-end test (`npm test`, needs `TEST_DATABASE_URL`).
   Calls need a real browser to check audio/video: Playwright's Chromium
   with `--use-fake-ui-for-media-stream --use-fake-device-for-media-stream`.
@@ -98,7 +105,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   first frame, made in the browser by `videoPoster()`) because push, the notifier and
   `/avatars/` need an image. A new still without `avatarVideo` clears the video.
   `removeUnusedAssets()` must count `avatar_video` as in use. Client: `addAvatarVideo()`
-  - profile cards autoplay, small avatars play while their row is pointed at.
+  - profile cards and call tiles (`callAvatar()`, in-server picture in voice channels) autoplay, small
+  avatars play while their row is pointed at. Reduce motion is checked live (`motionReduced()`,
+  `syncMotionVideos()`); a video the browser can't play falls back to the still.
   Profile card banners are 17:6 and server banners 6:5 of the sidebar width (`cqw`) -
   each the same shape as its Arrange frame and settings preview. `regression/video_avatars.test.js`.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->
@@ -124,6 +133,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   removes access ends the person's call too. `voice:signal` is relayed
   only between two current participants; never relay to anyone else.
   Ring notifications follow the honest-notification rule above.
+  The speaking ring is drawn inside the tile (`.callTile::after`, inset) and on the
+  picture itself in the voice channel list; `regression/call_looks.test.js` checks
+  both (and video profile pictures in calls) on real screenshots.
+- Bigger calls (SFU): with `LIVEKIT_URL` + key, group calls and voice channels
+  carry media through LiveKit (`call.sfu`); DMs stay mesh. The chat stays the
+  only judge of who's in a call - LiveKit tokens (`sfuJoinToken()`) are
+  10-minute, one-room, issued only from `voice:join` after `callJoinProblem()`;
+  `leaveCall()` also removes them from LiveKit, `sweepSfuRooms()` drops
+  strays. Only `/livekit/rtc...` is proxied to LiveKit, never its API.
+  `regression/sfu_calls.test.js`.
 - Webhook tokens are passwords: store only `sha256Hex(token)`, show the
   token once, compare with `webhookTokenMatches()` (constant time). Webhook
   messages are `"user" = 'webhook:<id>'` (never a real username) with
@@ -135,6 +154,18 @@ to do next) - read it before a big upgrade and add an entry after one.
   people's messages in that room to the `/bridge` namespace and never sends bridged ones
   back (no loops). The client shows a "from Discord" tag (`.sourceTag`).
   `regression/discord_bridge.test.js`.
+- Onboarding, rules screen, Discovery (`ONBOARDING` block in server.js). Onboarding
+  questions (`onboarding_questions`/`_options`/`_answers`) give roles WITHOUT powers and
+  unlock PRIVATE channels only; grants are marked `via_onboarding` (on `server_member_roles`
+  and `channel_access`) so changing an answer only takes back its own grants - the channel
+  access editor keeps those rows and doesn't list them. The rules gate is `rulesPending()`
+  (owner, server admins, site admins and bots are never asked; members who joined before
+  `rules_since` aren't either, unless "ask everyone again" set it NULL). It is enforced in
+  `channelPostBlock()` (threads too), `/threads`, attached uploads, reactions and
+  `callJoinProblem()` - check it in anything new that lets people take part in a server.
+  Listing in Discovery (`servers.discoverable`) is owner-level only and needs a
+  description; `GET /discovery` is for signed-in people and never shows who's in a server.
+  `forgetOnboarding()` runs on leave/kick/ban. `regression/onboarding*.test.js`.
 - Message kinds made by the server (`roll`, `command`, `call`, `join`,
   `event`, `poll`) can't be edited - `editMessage` refuses any `kind`.
 - Anything that fetches a URL a user supplied must go through the
@@ -159,6 +190,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   never auto-creates an account; `AUTO_REGISTER_ON_LOGIN` only applies to
   callers that leave it out. Check new names with `usernameTaken()` (it
   ignores capitals).
+- Two-step login / passkeys: `totp_*` columns on users, `backup_codes` (sha256
+  only), `passkeys` (rp_id = the address it was made on, checked on every use).
+  A right password on a 2FA account gives a short in-memory login ticket, never a
+  session; `/login/2fa` (code or backup code), `/login/2fa/passkey`, or `code` sent
+  with `/login`. `/passkeys/login` logs in alone (user verification required).
+  Wrong codes are limited per account even with `RATE_LIMITS=off`.
+  `isAdmin()` = admin POWERS (needs two-step unless `ADMIN_2FA=off`);
+  `isSiteAdmin()` = the role (badge, "admins can't act against each other").
+  Admins without it are never locked out - only their powers pause.
+  `regression/two_step*.test.js`.
 - Unread is server-side: `unreadFor()` counts messages newer than the
   person's read receipt (and their `unread_base_id`). Anything that gives
   someone a room that already has history (joining a server, being added to
@@ -197,6 +238,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   (`server_timeouts`, enforced in `channelPostBlock()`, uploads and voice)
   need `ban_members`; `moderationProblem()` decides who can be moderated.
   Log moderator actions with `auditLog()` (never blocks the action).
+- AutoMod (`automod_rules`, one row per server + kind; `automod_queue`;
+  `raid_settings`): `automodCheck()` runs on every way people post text in a
+  server channel (socket `message`, edits, `/threads`, polls) - add it to any
+  new one. Block = refuse with `automodError()`; flag = post, then
+  `automodRecord()` with the message id. Rules are cached per server
+  (`automodFor()`): call `forgetAutomod()` after changing the tables. Owner,
+  admins, Manage messages/Manage server are never checked. The queue needs
+  Manage messages and only shows rooms the reviewer can read (keep it that way).
+  Raid protection: `raidPostBlock()` in `channelPostBlock()`; join surges and
+  lockdowns in `noteServerJoin()` / `serverLockdown()` (`/servers/join`).
 - Custom emoji (`server_emojis`, `manage_emoji`) are written `<:name:id>` in
   text and reactions; `validReaction()` checks reactions. Personas were
   removed: old persona messages keep their label (`persona` flag); don't
@@ -210,6 +261,17 @@ to do next) - read it before a big upgrade and add an entry after one.
   emoji picker directly. The sticker button is always shown
   (an empty picker offers "Add stickers" to managers); in the open general
   server only site admins can add them.
+- Voice messages are attachments: `/upload` with `X-Attach: 1` plus
+  `X-Voice-Seconds` / `X-Voice-Waveform` (hex, 1 byte per bar) fills
+  `files.voice_seconds` / `waveform` (in `FILE_COLUMNS`); files then carry
+  `voice: { seconds, waveform }` and the client draws `buildVoicePlayer()`.
+  Recording is `startVoiceRecording()` / `finishVoiceRecording()` on `#voiceMsgBtn`.
+- Soundboard: `server_sounds` (`manage_emoji`), clips are audio `/assets`
+  (only via `soundProblem()`, max `SOUND_MAX_BYTES`; `assetProblem()` refuses
+  audio for every picture/video use). `voice:sound` is relayed only to the
+  call's participants, after `callJoinProblem()` + `usableSound()` (voice
+  channel: that server's sounds; DM/group calls: servers the player is in);
+  not while muted/deafened. Clients play it locally, cut at `maxSeconds`.
 - In server channels the client must not cache message names/avatars as
   profiles (`cacheFromPayload()` skips them): they can be nicknames (or old personas).
 - TURN: `/voice/ice` gives coturn time-limited logins from `TURN_SECRET` /
@@ -240,6 +302,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   `build.toolsets.nsis` (NSIS 3.12) - the default NSIS 3.0.4 installer crashes on Windows 11 24H2.
   The Microsoft Store build (`appx` target, `STORE` in main.js) must not self-update or
   set login items; `desktop/test/store-test.ps1` installs and starts it in CI.
+- The app's chat window (`openChatWindow()` in desktop/main.js) may only show
+  the chat's own origin: other sites go to the browser (`D.externalOk()`),
+  permissions only for the chat origin. The global push-to-talk hook runs only
+  while the page asks (in a call, push-to-talk mode) and reports only that
+  one key - never forward or log other keys. Screen-share audio travels in
+  the screen's stream (receivers play it via `attachScreenAudio()`).
+  `regression/desktop_app.test.js`.
 - The web app offers the Chat Notifier (`#notifierOffer`, `maybeOfferNotifier()`) on
   Windows desktops after signing in and after a server restart/update reload -
   never while one runs for the account (`notifierRunning`) or after "Don't show

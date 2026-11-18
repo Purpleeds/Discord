@@ -19,7 +19,7 @@ const VIDEO = path.join(__dirname, 'fixtures', 'avatar-test.webm');
   check('a picture isn\'t accepted as a video avatar', (await post('/profile', A, { avatarVideo: png.url })).status === 400);
   check('someone else\'s video isn\'t accepted', (await post('/profile', B, { avatarVideo: vid.url })).status === 400);
 
-  const browser = await chromium.launch({ executablePath: CHROME });
+  const browser = await chromium.launch({ executablePath: CHROME, args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
   const errors = [];
   const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 } })).newPage();
   page.on('pageerror', e => errors.push(e.message));
@@ -66,6 +66,41 @@ const VIDEO = path.join(__dirname, 'fixtures', 'avatar-test.webm');
   await emit(sA, 'message', { room: general.room, text: 'server look' });
   const hist = (await get('/history?room=' + encodeURIComponent(general.room), A)).data.messages.pop();
   check('messages in that server carry the in-server video', hist.avatarVideo === vid2.url && hist.avatarUrl === png.url, hist);
+  // the member list shows the in-server video (still until pointed at)
+  // (waits for the list rather than a fixed time: late in a full run the server is slower)
+  await page.evaluate(async () => { await refreshServers(); await renderMembers(true); });
+  await page.waitForFunction(src => [...document.querySelectorAll('.memberRow .avatar video')].some(x => x.getAttribute('src') === src), vid2.url, { timeout: 10000 }).catch(() => {});
+  const memberVid = await page.evaluate(src => { const v = [...document.querySelectorAll('.memberRow .avatar video')].find(x => x.getAttribute('src') === src); return v ? { paused: v.paused } : null; }, vid2.url);
+  check('the member list has the in-server video', memberVid && memberVid.paused, memberVid);
+  await page.locator('.memberRow', { has: page.locator('.avatar video') }).first().screenshot({ path: SHOTS + 'video-avatar-member-row.png' });
+
+  // calls: the tile's picture is the in-server one and plays by itself
+  await page.locator('#sidebarBody .channel', { hasText: 'lounge' }).click();
+  const tileVideo = () => page.evaluate(() => { const v = document.querySelector('#callPanel .callTile .avatar video'); return v ? { src: v.getAttribute('src'), paused: v.paused } : null; });
+  const playing = await page.waitForFunction(() => { const v = document.querySelector('#callPanel .callTile .avatar video'); return v && !v.paused && v.readyState >= 2; }, null, { timeout: 15000 }).then(() => true, () => false);
+  check('in a call the video picture plays by itself', playing, await tileVideo());
+  check('…and it is the in-server one', (await tileVideo() || {}).src === vid2.url, await tileVideo());
+  await sleep(800);
+  await page.locator('#callPanel').screenshot({ path: SHOTS + 'video-avatar-call.png' });
+
+  // reduce motion: turning it on stops it straight away, off starts it again
+  await page.evaluate(() => setAppearance({ reduceMotion: true })); await sleep(300);
+  check('reduce motion stops a playing video picture', !!(await tileVideo() || {}).paused);
+  await page.evaluate(() => setAppearance({ reduceMotion: false })); await sleep(600);
+  check('turning it off plays it again', (await tileVideo() || {}).paused === false);
+  await page.evaluate(() => leaveCall && leaveCall()); await sleep(500);
+
+  // a video that can't play leaves the still picture, not a blank box
+  const fallback = await page.evaluate(async png => {
+    const wrap = createAvatar('nobody', '', { url: png, video: '/assets/missing-video.webm', autoplay: true });
+    document.body.appendChild(wrap);
+    await new Promise(r => setTimeout(r, 1500));
+    const out = { video: !!wrap.querySelector('video'), img: !!wrap.querySelector('img'), hasVideo: wrap.querySelector('.avatar').classList.contains('hasVideo') };
+    wrap.remove();
+    return out;
+  }, png.url);
+  check('a broken video falls back to the still picture', !fallback.video && fallback.img && !fallback.hasVideo, fallback);
+
   check('a new still picture without a video clears it', (await post(`/servers/${sid}/profile`, A, { avatarUrl: png.url })).data.avatarVideo === '');
 
   // the profile banner has the Arrange editor's shape

@@ -39,7 +39,7 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Install
         run: npm ci --no-audit --no-fund
-      - name: Logic tests
+      - name: Logic tests (pop-ups and the chat window)
         run: npm test
       - name: Build the installer and portable .exe
         run: npx electron-builder --win nsis portable --x64 --publish never
@@ -128,7 +128,7 @@ jobs:
             out/Chat-Notifier-*-portable.exe
             out/latest.yml
           body: |
-            Desktop pop-ups for the chat, from the system tray (Windows 10/11, 64-bit).
+            The chat for Windows 10/11 (64-bit): its own window, push to talk that works while a game is in front, a screen-share picker (screens or single windows, optionally with sound), and desktop pop-ups from the system tray.
 
             **Install:** download `Chat-Notifier-Setup-${{ steps.version.outputs.version }}.exe` and run it. It installs for your account only (no admin needed), starts, and asks you to sign in. Or use the `portable` .exe, which runs without installing.
 

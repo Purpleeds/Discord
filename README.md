@@ -39,6 +39,7 @@ tables itself on startup, so an empty database is all it needs.
 | `ASSET_MAX_MB` | no | Largest banner/avatar/sticker picture, GIF or video people can upload (default `2048` = 2 GB). Over 8 MB they're kept on disk in `DATA_DIR/assets`, not in Postgres. |
 | `KEEPALIVE_URL` | no | An address to visit every `KEEPALIVE_MINUTES` (default 1) to keep it awake - e.g. a Render relay's `/healthz`. In relay mode the relay pings its own `RENDER_EXTERNAL_URL` by itself (`KEEPALIVE_MINUTES=0` turns that off). |
 | `AUTO_UPDATE_REPO` | no | `owner/repo` - check GitHub every `AUTO_UPDATE_MINUTES` (default 3) and restart on a new commit of `AUTO_UPDATE_BRANCH` (default `main`); waits for calls to end (up to `AUTO_UPDATE_MAX_WAIT_MIN`, default 120). For the NAS setup, whose start-up script downloads the code and writes `.version`. |
+| `BACKUP_DIR` | no | Turns on daily backups (database + files) into this folder, with restore and download in Settings > Backups (the site owner). Also `BACKUP_EVERY_HOURS`, `BACKUP_KEEP_DAILY`/`WEEKLY`/`MONTHLY`, `BACKUP_RESTORE_IF_EMPTY=off`. See [BACKUPS.md](BACKUPS.md). |
 | `ASSET_BUDGET_MB` | no | Total space for all of those together (default `30000`); uploads are refused once it's full. |
 | `RELAY_TO` | no | Relay mode: this copy runs no chat and no database, it just passes everything (pages, uploads, live connections) to the real chat at this address, e.g. a NAS. Keeps the old address working. See relay.js. |
 | `MOVED_TO` | no | Set on an old copy of the app after moving it: pages redirect to this address and no more messages are accepted. |
@@ -46,6 +47,14 @@ tables itself on startup, so an empty database is all it needs.
 | `LINK_PREVIEW_TEST_HOSTS` | no | Tests only (ignored unless `RATE_LIMITS=off`): exact `host:port` pairs link previews may fetch even though they're private. |
 | `TURN_URLS` | no | Comma-separated TURN relay URLs for calls, e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349`. |
 | `TURN_USERNAME` / `TURN_CREDENTIAL` | no | Login for that TURN relay. |
+| `LIVEKIT_URL` | no | Address of a LiveKit media server the chat can reach, e.g. `http://livekit:7880`. With it (and a key), group calls and voice channels go through it and hold up to 25 people. |
+| `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | no | LiveKit's API key and secret (32+ characters). Or `LIVEKIT_KEY_FILE`: LiveKit's own key file (`key: secret`), as the NAS setup makes. |
+| `LIVEKIT_PUBLIC_URL` | no | Where browsers reach LiveKit (`wss://...`). Leave unset to go through the chat itself at `/livekit/rtc`. |
+| `SFU_MAX_CALL_SIZE` | no | Biggest call through the media server (default `25`). |
+| `ADMIN_2FA` | no | Site admins need two-step login for their admin powers (default on; `off` turns that off - the regression runner does, for its other suites). |
+| `PASSKEY_ORIGINS` | no | Comma-separated addresses passkeys may be made and used on, e.g. `https://discords-zf2n.onrender.com`. Without it, the page's own address is used (through `relay.js` too). |
+| `RESET_2FA_FOR` | no | Comma-separated usernames whose two-step login and passkeys are turned off at start-up - the way back in for an account nobody else can reset (`Purple`). Remove it again afterwards. |
+| `TOTP_ISSUER` | no | The name authenticator apps show for this chat (default `Chat`). |
 
 ### Calls and TURN
 
@@ -59,6 +68,17 @@ needs a TURN relay (a paid or self-hosted service such as coturn or
 Cloudflare/Twilio TURN) set with the three variables above. Calls live in
 the server's memory, so a restart or redeploy ends them (people's apps
 rejoin automatically when the server comes back).
+
+**Bigger calls (media server).** With `LIVEKIT_URL` and a key set, group
+calls and voice channels go through a [LiveKit](https://livekit.io) media
+server (an SFU) instead: everyone sends their voice and video once and the
+server forwards it, so calls stay smooth with 10 to 25 people and screen
+shares don't slow everyone down. DM calls stay direct. The chat still
+decides who may join (the same checks as before) and hands out a 10-minute
+LiveKit login for that one call only; anyone who leaves, is kicked or loses
+access is removed from the media server too. Browsers reach LiveKit through
+the chat at `/livekit/rtc` (only those paths are passed on), so it needs no
+public address of its own. The NAS setup runs it (`deploy/nas/`).
 
 ### Webhooks
 
@@ -155,6 +175,21 @@ TEST_DATABASE_URL=postgresql://user:pass@localhost:5432/chat_test PGSSL=false np
 The account named `Purple` is always a site-wide admin. Other accounts can
 be created or made admins at startup via `SEED_ACCOUNTS` near the top of
 `server.js`.
+
+### Two-step login and passkeys
+
+Settings > My Account has **Two-step login** (an authenticator app code at
+login, plus 10 single-use backup codes) and **Passkeys** (log in with a
+fingerprint, face or screen lock, no password). Site admins need two-step
+login for their admin powers: until they turn it on they keep their account
+but the Site Admin page and admin actions are paused (`ADMIN_2FA=off` turns
+the requirement off).
+
+If someone loses their phone and their backup codes, a site admin can turn
+their two-step login off from Settings > Site Admin (only Purple can for
+another admin). For Purple, set `RESET_2FA_FOR=Purple` and restart, then
+remove it. Scripts and the Chat Notifier send the code with the password
+(`POST /login` with `code`).
 
 `regression/` holds the larger suites, including the browser ones that
 click through the real page (see [regression/README.md](regression/README.md)).

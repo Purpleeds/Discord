@@ -1,15 +1,18 @@
-// Chat Notifier - a tray program for the chat. It has no chat window: it
-// stays connected in the background and shows the chat's pop-up cards on
-// the desktop (bottom-right, above the taskbar). Clicking one opens that
-// message in the normal browser.
+// Chat Notifier - the chat's Windows app. A tray program that stays
+// connected in the background and shows the chat's pop-up cards on the
+// desktop (bottom-right, above the taskbar), plus a chat window (the live
+// chat website, see "the chat window" below) with push to talk that works
+// while a game is in front and its own screen-share picker. Clicking a card
+// opens that message in the window (or the normal browser, a setting).
 //
 // It connects as a "background" device (see server.js): it doesn't make you
 // look online, and it stays quiet while the chat is open in front of you.
-const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, safeStorage, screen, powerMonitor, session, net, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, safeStorage, screen, powerMonitor, session, net, dialog, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { io } = require('socket.io-client');
 const L = require('./lib/logic');
+const D = require('./lib/desktop');
 
 // Trust the same certificates the browser does. Node normally only knows its
 // own built-in list, so antivirus "HTTPS scanning" (which re-signs sites with
@@ -70,7 +73,7 @@ const gotLock = TEST || app.requestSingleInstanceLock();
 if (!gotLock) { log('already running: asking that copy to show its window'); app.quit(); }
 
 /* ---------------- settings on disk ---------------- */
-const DEFAULTS = { server: DEFAULT_SERVER, username: '', token: '', tokenEnc: '', mode: 'mentions', theme: 'afterhours', accent: '#ffb648', autostart: true, pausedUntil: 0, cardSeconds: null, autoUpdate: true, customThemes: [] };
+const DEFAULTS = { server: DEFAULT_SERVER, username: '', token: '', tokenEnc: '', mode: 'mentions', theme: 'afterhours', accent: '#ffb648', autostart: true, pausedUntil: 0, cardSeconds: null, autoUpdate: true, customThemes: [], openIn: 'app', chatBounds: null, chatMaximized: false };
 let cfg = { ...DEFAULTS };
 const configFile = () => path.join(app.getPath('userData'), 'config.json');
 function loadConfig() {
@@ -81,6 +84,7 @@ function loadConfig() {
     .filter(t => t && t.id && !seen.has(t.id) && seen.add(t.id)).slice(0, L.MAX_CUSTOM_THEMES);
   if (!L.themeById(cfg.theme, cfg.customThemes)) cfg.theme = 'afterhours';
   if (!/^#[0-9a-f]{6}$/i.test(cfg.accent)) cfg.accent = DEFAULTS.accent;
+  if (!['app', 'browser'].includes(cfg.openIn)) cfg.openIn = 'app';
 }
 function saveConfig() {
   const file = configFile();
@@ -113,8 +117,8 @@ const signedIn = () => !!getToken();
 const paused = () => cfg.pausedUntil > Date.now();
 
 /* ---------------- talking to the chat ---------------- */
-async function request(url, { method = 'GET', body, auth = true } = {}) {
-  const headers = { 'content-type': 'application/json' };
+async function request(url, { method = 'GET', body, auth = true, headers: extra } = {}) {
+  const headers = { 'content-type': 'application/json', ...(extra || {}) };
   const token = getToken();
   if (auth && token) headers.authorization = 'Bearer ' + token;
   const res = await net.fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000) });
@@ -243,7 +247,7 @@ function signedOutByServer() {
   closeAllCards();
   live.notice = 'You were signed out (that sign-in ended). Sign in again to keep getting pop-ups.';
   pushState();
-  openSettings();
+  if (cfg.openIn !== 'app') openSettings();
 }
 
 /* ---------------- deciding and showing ---------------- */
@@ -381,6 +385,7 @@ ipcMain.on('card:open', e => {
   if (!card) return;
   if (card.data.updateReady) { closeCard(card); installUpdateNow(); return; }
   if (card.data.openSettings) { closeCard(card); openSettings(); return; }
+  if (card.data.openChat) { closeCard(card); openChatWindow(); return; }
   openLink(card.url, card.external);
   closeCard(card);
 });
@@ -398,8 +403,12 @@ function openLink(url, external) {
   const text = String(url || '');
   const allowed = external ? /^https:\/\/github\.com\//.test(text) : text.startsWith(cfg.server + '/');
   if (!allowed) return;
-  if (TEST) { (global.__opened = global.__opened || []).push(text); return; }
-  shell.openExternal(text);
+  if (!external && cfg.openIn === 'app') { openChatWindow(text); return; }
+  openExternal(text);
+}
+function openExternal(url) {
+  if (TEST) { (global.__opened = global.__opened || []).push(url); return; }
+  shell.openExternal(url);
 }
 function openChat() { openLink(cfg.server + '/'); }
 // Store version: Windows > Settings > Apps > Startup is where it's switched on or off
@@ -415,9 +424,12 @@ async function signIn(details) {
   const username = String((details && details.username) || '').trim();
   const password = String((details && details.password) || '');
   if (!username || !password) return { error: 'Enter your username and password.' };
+  const code = String((details && details.code) || '').trim();
   let res;
-  try { res = await request(origin + '/login', { method: 'POST', body: { username, password, create: false }, auth: false }); }
+  try { res = await request(origin + '/login', { method: 'POST', body: { username, password, create: false, ...(code ? { code } : {}) }, auth: false }); }
   catch (_) { return { error: 'Couldn\'t reach the chat at that address. Check it and your internet connection.' }; }
+  // two-step login is on for this account: the code goes with the password
+  if (res.ok && res.data.mfaRequired) return { needCode: true, error: 'Enter the code from your authenticator app (or a backup code).' };
   if (!res.ok || !res.data.token) {
     const why = String(res.data.error || 'Sign-in failed.');
     return { error: why.charAt(0).toUpperCase() + why.slice(1) };
@@ -441,7 +453,9 @@ async function signOut() {
   saveConfig();
   closeAllCards();
   live.username = ''; live.servers = []; live.groups = []; live.blocked = new Set(); live.threads.clear();
+  await signOutChatWindow();
   pushState();
+  if (cfg.openIn === 'app' && chatWin && !chatWin.isDestroyed() && chatWin.isVisible()) return;
   openSettings();
 }
 function setPresence(status) {
@@ -535,7 +549,7 @@ function stateForUi() {
     customThemes: cfg.customThemes.map(t => publicTheme({ ...t, builtIn: false })), maxCustomThemes: L.MAX_CUSTOM_THEMES,
     pausedUntil: paused() ? cfg.pausedUntil : 0, version: app.getVersion(), notice: live.notice,
     cardSeconds: CARD_CHOICES.includes(cfg.cardSeconds) ? cfg.cardSeconds : '', autoUpdate: !!cfg.autoUpdate,
-    canAutoUpdate: canAutoUpdate(), updateReady: live.updateReady || '', store: STORE
+    canAutoUpdate: canAutoUpdate(), updateReady: live.updateReady || '', store: STORE, openIn: cfg.openIn
   };
 }
 const publicTheme = t => ({ id: t.id, name: t.name, bg: t.bg, surface: t.surface, text: t.text, muted: t.muted, builtIn: !!t.builtIn });
@@ -569,24 +583,14 @@ function setOption(key, value) {
   else if (key === 'pauseHours') { if ([1, 8].includes(Number(value))) pause(Number(value) * 60 * 60 * 1000); return; }
   else if (key === 'cardSeconds') cfg.cardSeconds = CARD_CHOICES.includes(Number(value)) && value !== '' && value !== null ? Number(value) : null;
   else if (key === 'autoUpdate') { cfg.autoUpdate = !!value; startAutoUpdate(); }
+  else if (key === 'openIn' && ['app', 'browser'].includes(value)) cfg.openIn = value;
   else return;
   saveConfig();
   pushState();
 }
 function openSettings() {
   if (settingsWin && !settingsWin.isDestroyed()) {
-    const win = settingsWin;
-    if (win.isMinimized()) win.restore();
-    win.show();
-    // Windows won't let a background program take the front by itself: a
-    // moment of always-on-top brings the window up where it can be seen
-    win.setAlwaysOnTop(true);
-    win.focus();
-    setTimeout(() => {
-      if (win.isDestroyed()) return;
-      win.setAlwaysOnTop(false);
-      log('window shown again: visible', win.isVisible(), 'minimized', win.isMinimized(), 'focused', win.isFocused());
-    }, 400);
+    bringToFront(settingsWin);
     return;
   }
   const t = currentTokens();
@@ -607,6 +611,19 @@ function openSettings() {
   win.webContents.on('render-process-gone', (e, d) => log('settings window page stopped:', d.reason));
   win.webContents.on('did-fail-load', (e, code, desc) => log('settings window failed to load:', code, desc));
   win.on('closed', () => { if (settingsWin === win) settingsWin = null; });
+}
+function bringToFront(win) {
+  if (win.isMinimized()) win.restore();
+  win.show();
+  // Windows won't let a background program take the front by itself: a
+  // moment of always-on-top brings the window up where it can be seen
+  win.setAlwaysOnTop(true);
+  win.focus();
+  setTimeout(() => {
+    if (win.isDestroyed()) return;
+    win.setAlwaysOnTop(false);
+    log('window shown again: visible', win.isVisible(), 'minimized', win.isMinimized(), 'focused', win.isFocused());
+  }, 400);
 }
 const fromSettings = e => settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents;
 ipcMain.handle('settings:get', e => (fromSettings(e) ? stateForUi() : null));
@@ -653,6 +670,268 @@ ipcMain.handle('settings:deleteTheme', (e, id) => {
   pushState();
   return { ok: true };
 });
+
+/* ---------------- the chat window ---------------- */
+// The live chat website in the app's own window (its own sign-in, kept in
+// the "persist:chat" partition). Every chat feature comes from the server,
+// so merges reach the app without a new .exe; the window only adds what a
+// website can't: push to talk while another app is in front, a screen-share
+// picker, a taskbar badge. The page runs sandboxed with no Node and only
+// gets `window.chatDesktop` (ui/chat-preload.js). It can never navigate away
+// from the chat: other sites open in the normal browser.
+const CHAT_PARTITION = 'persist:chat';
+// A normal Chrome user agent (so the site treats it as Chrome) that says
+// "ChatDesktop" - the chat's Devices page shows "Chat app on Windows".
+const CHAT_UA = String(app.userAgentFallback || '').replace(/ Electron\/\S+/, '').replace(/ (chat-notifier|Chat ?Notifier)\/\S+/gi, '') + ' ChatDesktop/' + app.getVersion();
+const CHAT_PERMISSIONS = new Set(['media', 'notifications', 'clipboard-sanitized-write', 'fullscreen', 'display-capture', 'speaker-selection']);
+let chatWin = null, chatSessionReady = false, chatRetry = null, linkTimer = null;
+const chatSession = () => session.fromPartition(CHAT_PARTITION);
+const isChatContents = contents => !!(chatWin && !chatWin.isDestroyed() && contents === chatWin.webContents);
+
+function setupChatSession() {
+  if (chatSessionReady) return;
+  chatSessionReady = true;
+  const ses = chatSession();
+  ses.setUserAgent(CHAT_UA);
+  // microphone, camera, notifications... only for the chat itself
+  ses.setPermissionRequestHandler((contents, permission, callback, details) => {
+    callback(CHAT_PERMISSIONS.has(permission) && D.sameOrigin((details && details.requestingUrl) || contents.getURL(), cfg.server));
+  });
+  ses.setPermissionCheckHandler((contents, permission, origin) => CHAT_PERMISSIONS.has(permission) && D.sameOrigin(origin, cfg.server));
+  ses.setDisplayMediaRequestHandler((request, callback) => pickShare(request, callback));
+}
+
+function openChatWindow(link, { hidden = false } = {}) {
+  setupChatSession();
+  const url = D.chatUrl(cfg.server, link);
+  if (chatWin && !chatWin.isDestroyed()) {
+    const current = chatWin.webContents.getURL();
+    // a pop-up's "#m/<id>" just moves the open page (no reload); a page
+    // that isn't the chat (offline, another address) loads it
+    if (!D.sameOrigin(current, cfg.server)) loadChat(url);
+    else if (url.includes('#') && url !== current) loadChat(url);
+    if (!hidden) bringToFront(chatWin);
+    return chatWin;
+  }
+  const area = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(1280, area.width - 60), height = Math.min(820, area.height - 60);
+  const fallback = { x: area.x + Math.round((area.width - width) / 2), y: area.y + Math.round((area.height - height) / 2), width, height };
+  const bounds = D.restoreBounds(cfg.chatBounds, screen.getAllDisplays(), fallback);
+  const win = chatWin = new BrowserWindow({
+    ...bounds, minWidth: 380, minHeight: 520, title: 'Chat Notifier', icon: ICON, show: false,
+    backgroundColor: currentTokens()['--floating'], autoHideMenuBar: true,
+    webPreferences: {
+      partition: CHAT_PARTITION, preload: path.join(__dirname, 'ui', 'chat-preload.js'),
+      contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false,
+      spellcheck: true, backgroundThrottling: false, // calls keep running while it's hidden
+      additionalArguments: ['--chat-desktop-version=' + app.getVersion()]
+    }
+  });
+  win.setMenu(null);
+  win.on('page-title-updated', e => e.preventDefault()); // always says which app it is
+  if (cfg.chatMaximized) win.maximize();
+  let saveTimer = null;
+  const remember = () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (win.isDestroyed()) return;
+      cfg.chatMaximized = win.isMaximized();
+      if (!win.isMinimized()) cfg.chatBounds = win.getNormalBounds();
+      saveConfig();
+    }, 600);
+  };
+  ['resize', 'move', 'maximize', 'unmaximize'].forEach(ev => win.on(ev, remember));
+  win.once('ready-to-show', () => { if (!hidden && !win.isDestroyed()) win.show(); });
+  // closing hides it to the tray (a call keeps going); Quit really quits
+  win.on('close', ev => {
+    if (quitting) return;
+    ev.preventDefault();
+    win.hide();
+    if (!cfg.toldHidden) {
+      cfg.toldHidden = true; saveConfig();
+      showCard({ key: 'hidden', openChat: true, name: 'Chat Notifier', colourKey: 'Chat Notifier',
+        avatar: nativeImage.createFromPath(ICON).resize({ width: 84, height: 84 }).toDataURL(),
+        where: 'Still running in the tray', tags: [], text: 'Calls and pop-ups keep going. Click here or the tray icon to open the chat again; Quit is in the tray menu.', url: '' });
+    }
+  });
+  win.on('focus', () => win.flashFrame(false));
+  win.on('closed', () => { if (chatWin === win) chatWin = null; setPushToTalk(null); clearTimeout(chatRetry); });
+  const wc = win.webContents;
+  wc.on('did-start-navigation', d => { if (d && d.isMainFrame && !d.isSameDocument) setPushToTalk(null); }); // the new page says again
+  wc.on('did-fail-load', (e, code, desc, failedUrl, isMainFrame) => {
+    if (!isMainFrame || code === -3) return; // -3: replaced by another load
+    log('chat window could not load:', code, desc);
+    clearTimeout(chatRetry);
+    win.loadFile(path.join(__dirname, 'ui', 'offline.html'), { query: { reason: String(desc || code).slice(0, 80) } }).catch(() => {});
+    chatRetry = setTimeout(() => { if (!win.isDestroyed()) loadChat(url); }, 5000);
+  });
+  wc.on('did-finish-load', () => { if (D.sameOrigin(wc.getURL(), cfg.server)) linkSoon(1500); });
+  wc.on('render-process-gone', (e, d) => {
+    log('chat window page stopped:', d.reason);
+    if (d.reason !== 'clean-exit') setTimeout(() => { if (!win.isDestroyed()) loadChat(cfg.server + '/'); }, 1000);
+  });
+  if (!TEST) wc.on('before-input-event', (e, input) => { // the usual browser keys
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F5' || (input.control && input.key.toLowerCase() === 'r')) { e.preventDefault(); wc.reload(); }
+    if (input.control && input.shift && input.key.toLowerCase() === 'i') { e.preventDefault(); wc.toggleDevTools(); }
+  });
+  wc.on('zoom-changed', (e, dir) => wc.setZoomLevel(Math.max(-3, Math.min(4, wc.getZoomLevel() + (dir === 'in' ? 0.5 : -0.5)))));
+  loadChat(url);
+  return win;
+}
+function loadChat(url) {
+  if (!chatWin || chatWin.isDestroyed()) return;
+  clearTimeout(chatRetry);
+  chatWin.loadURL(url).catch(() => {}); // failures land in did-fail-load
+}
+// Signing the app out signs the chat window out too.
+async function signOutChatWindow() {
+  try {
+    if (chatWin && !chatWin.isDestroyed() && D.sameOrigin(chatWin.webContents.getURL(), cfg.server)) {
+      await chatWin.webContents.executeJavaScript("try{localStorage.removeItem('session')}catch(e){}; true").catch(() => {});
+    }
+    await chatSession().clearStorageData({ storages: ['localstorage', 'cookies', 'indexdb', 'serviceworkers', 'cachestorage'] });
+  } catch (err) { log('could not clear the chat window sign-in:', err.message); }
+  if (chatWin && !chatWin.isDestroyed()) loadChat(cfg.server + '/');
+}
+
+// One sign-in for the whole app: once someone signs in to the chat window,
+// the pop-ups use that same sign-in (it's one device on the Devices page).
+function linkSoon(ms) {
+  clearTimeout(linkTimer);
+  if (signedIn() || !chatWin || chatWin.isDestroyed()) return;
+  linkTimer = setTimeout(linkFromChatWindow, ms);
+}
+async function linkFromChatWindow() {
+  if (signedIn() || !chatWin || chatWin.isDestroyed()) return;
+  const wc = chatWin.webContents;
+  if (!D.sameOrigin(wc.getURL(), cfg.server)) return;
+  let found = null;
+  try { found = await wc.executeJavaScript("(typeof token === 'string' && token && typeof username === 'string') ? { token, username } : null"); } catch (_) {}
+  if (found && typeof found.token === 'string' && /^[A-Za-z0-9._-]{16,200}$/.test(found.token)) {
+    let me = null;
+    try { me = await request(cfg.server + '/profile', { auth: false, headers: { authorization: 'Bearer ' + found.token } }); } catch (_) {}
+    if (me && me.ok && !signedIn()) {
+      log('pop-ups now use the chat window\'s sign-in');
+      cfg.username = String(me.data.username || found.username || '');
+      setToken(found.token);
+      cfg.pausedUntil = 0;
+      saveConfig();
+      live.notice = '';
+      live.username = cfg.username;
+      applyAutostart();
+      connect();
+      pushState();
+      return;
+    }
+  }
+  linkSoon(4000); // not signed in yet: look again in a moment
+}
+
+// ---- taskbar: unread badge, flash on a DM/mention
+ipcMain.on('chat:unread', (e, count, attention) => {
+  if (!isChatContents(e.sender)) return;
+  const text = D.badgeText(Number(count));
+  live.unread = text;
+  if (process.platform === 'win32') chatWin.setOverlayIcon(text ? nativeImage.createFromPath(path.join(__dirname, 'assets', 'badge.png')) : null, text ? text + ' unread' : '');
+  else app.setBadgeCount(Number(count) || 0);
+  if (attention && !chatWin.isFocused()) chatWin.flashFrame(true);
+});
+
+// ---- push to talk, everywhere
+// A browser only sees keys while it's in front. Here a low-level hook
+// (uiohook) watches for the ONE key or mouse button the page asked for, and
+// only while the page asks (in a call, push-to-talk mode). It reports just
+// "pressed"/"released" of that key - nothing else is looked at or kept.
+let hook = null;
+const ptt = { binding: null, down: false };
+function setPushToTalk(opts) {
+  const binding = opts && opts.enabled ? D.pttBinding(opts.code) : null;
+  if (ptt.down && (!binding || JSON.stringify(binding) !== JSON.stringify(ptt.binding))) sendPtt(false);
+  ptt.binding = binding;
+  if (binding && !hook) startHook();
+  else if (!binding && hook) stopHook();
+}
+function startHook() {
+  if (TEST && !process.env.CHAT_DESKTOP_REAL_HOOK) { hook = 'test'; log('push to talk: listening (test)'); return; }
+  try {
+    const { uIOhook } = require('uiohook-napi');
+    uIOhook.removeAllListeners();
+    uIOhook.on('keydown', e => pttInput('key', e.keycode, true));
+    uIOhook.on('keyup', e => pttInput('key', e.keycode, false));
+    uIOhook.on('mousedown', e => pttInput('mouse', e.button, true));
+    uIOhook.on('mouseup', e => pttInput('mouse', e.button, false));
+    uIOhook.start();
+    hook = uIOhook;
+    log('push to talk: listening for the key everywhere');
+  } catch (err) { hook = null; log('push to talk: global key unavailable:', err.message); }
+}
+function stopHook() {
+  if (hook && hook !== 'test') { try { hook.stop(); hook.removeAllListeners(); } catch (_) {} }
+  hook = null;
+  log('push to talk: stopped listening');
+}
+function pttInput(kind, value, down) {
+  const b = ptt.binding;
+  if (!b || b.kind !== kind || (kind === 'key' ? b.keycode : b.button) !== value) return;
+  if (ptt.down !== down) sendPtt(down);
+}
+function sendPtt(down) {
+  ptt.down = down;
+  if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:ptt', down);
+}
+ipcMain.on('chat:pushToTalk', (e, opts) => { if (isChatContents(e.sender) && D.sameOrigin(e.sender.getURL(), cfg.server)) setPushToTalk(opts); });
+
+// ---- screen share: our own picker (screens and windows, live thumbnails)
+let sharePicker = null;
+function pickShare(request, callback) {
+  let done = false;
+  const finish = result => { if (done) return; done = true; try { callback(result); } catch (err) { log('screen share answer failed:', err.message); } };
+  const fromChat = request && request.frame && D.sameOrigin(request.frame.url || request.securityOrigin, cfg.server);
+  if (!fromChat || !chatWin || chatWin.isDestroyed()) return finish({});
+  if (sharePicker) sharePicker.cancel();
+  const t = currentTokens();
+  const audioPossible = process.platform === 'win32' && !!request.audioRequested;
+  const win = new BrowserWindow({
+    parent: chatWin, modal: true, width: 780, height: 560, minWidth: 520, minHeight: 400, show: false, title: 'Share your screen',
+    icon: ICON, backgroundColor: t['--floating'], autoHideMenuBar: true, minimizable: false, maximizable: false, fullscreenable: false,
+    titleBarStyle: 'hidden', titleBarOverlay: { color: t['--input'], symbolColor: t['--text'], height: 40 },
+    webPreferences: { preload: path.join(__dirname, 'ui', 'share-preload.js'), contextIsolation: true, sandbox: true, nodeIntegration: false, spellcheck: false }
+  });
+  win.setMenu(null);
+  let sources = [], timer = null;
+  const ownIds = () => BrowserWindow.getAllWindows().filter(w => !w.isDestroyed()).map(w => { try { return w.getMediaSourceId(); } catch (_) { return ''; } });
+  const refresh = async () => {
+    try {
+      sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 320, height: 200 }, fetchWindowIcons: true });
+      if (win.isDestroyed()) return;
+      const byId = new Map(sources.map(s => [s.id, s]));
+      const list = D.pickerList(sources, ownIds()).map(s => {
+        const src = byId.get(s.id);
+        const thumb = src.thumbnail && !src.thumbnail.isEmpty() ? 'data:image/jpeg;base64,' + src.thumbnail.toJPEG(70).toString('base64') : '';
+        const icon = src.appIcon && !src.appIcon.isEmpty() ? src.appIcon.resize({ width: 16, height: 16 }).toDataURL() : '';
+        return { ...s, thumbnail: thumb, icon };
+      });
+      win.webContents.send('share:sources', { sources: list, audioPossible, tokens: t });
+    } catch (err) { log('screen list failed:', err.message); }
+  };
+  const close = () => { clearInterval(timer); ipcMain.removeListener('share:ready', onReady); ipcMain.removeListener('share:choose', onChoose); if (!win.isDestroyed()) win.destroy(); if (sharePicker && sharePicker.win === win) sharePicker = null; };
+  const onReady = e => { if (e.sender !== win.webContents) return; refresh(); timer = setInterval(refresh, 3000); };
+  const onChoose = (e, id, audio) => {
+    if (e.sender !== win.webContents) return;
+    const src = id && sources.find(s => s.id === id);
+    log('screen share:', src ? (src.id.startsWith('screen:') ? 'a screen' : 'a window') + (audio && audioPossible ? ' with sound' : '') : 'cancelled');
+    finish(src ? { video: src, ...(audio && audioPossible ? { audio: 'loopback' } : {}) } : {});
+    close();
+  };
+  ipcMain.on('share:ready', onReady);
+  ipcMain.on('share:choose', onChoose);
+  win.on('closed', () => { finish({}); close(); });
+  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
+  win.loadFile(path.join(__dirname, 'ui', 'share.html'));
+  sharePicker = { win, cancel: () => { finish({}); close(); } };
+  if (TEST) global.__sharePicker = { choose: (id, audio) => onChoose({ sender: win.webContents }, id, audio), sources: () => sources.map(s => s.id) };
+}
 
 /* ---------------- updates ---------------- */
 // Installed copies update themselves: a new release is downloaded in the
@@ -720,14 +999,26 @@ async function checkForUpdate() {
 /* ---------------- start ---------------- */
 let quitting = false;
 app.on('web-contents-created', (e, contents) => {
-  // nothing in this app ever opens or navigates to another page
-  contents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  contents.on('will-navigate', ev => ev.preventDefault());
+  // Nothing in this app opens another window or leaves its page - except
+  // that the chat window moves around the chat itself. Links to other sites
+  // (from the chat) open in the normal browser.
+  contents.setWindowOpenHandler(({ url }) => {
+    if (isChatContents(contents) && D.externalOk(url)) openExternal(url);
+    return { action: 'deny' };
+  });
+  contents.on('will-navigate', (ev, url) => {
+    if (isChatContents(contents) && D.sameOrigin(url, cfg.server)) return;
+    ev.preventDefault();
+    if (isChatContents(contents) && D.externalOk(url)) openExternal(url);
+  });
+  contents.on('will-redirect', (ev, url) => { if (isChatContents(contents) && !D.sameOrigin(url, cfg.server)) ev.preventDefault(); });
   contents.on('will-attach-webview', ev => ev.preventDefault());
 });
-app.on('second-instance', () => { log('opened again: showing the window'); openSettings(); }); // opening it again shows the settings
+// opening it again shows the chat (or the settings, when the chat opens in the browser)
+app.on('second-instance', () => { log('opened again: showing the window'); showMain(); });
+function showMain() { if (cfg.openIn === 'app') openChatWindow(); else openSettings(); }
 app.on('window-all-closed', () => { /* keep running in the tray */ });
-app.on('before-quit', () => { quitting = true; log('quitting'); disconnect(); });
+app.on('before-quit', () => { quitting = true; log('quitting'); disconnect(); if (hook) stopHook(); });
 app.on('child-process-gone', (e, d) => { if (d.reason !== 'clean-exit') log('helper process stopped:', d.type, d.reason); });
 
 if (gotLock) app.whenReady().then(() => {
@@ -735,12 +1026,19 @@ if (gotLock) app.whenReady().then(() => {
   session.defaultSession.setUserAgent(UA); // the chat's Devices page shows "Chat Notifier on Windows"
   loadConfig();
   tray = new Tray(trayImage());
-  tray.on('click', openSettings);
-  tray.on('double-click', openSettings);
+  tray.on('click', showMain);
+  tray.on('double-click', showMain);
   updateTray();
   if (signedIn()) connect();
-  // started by hand (not at Windows sign-in): show that it's running
-  if (!signedIn()) openSettings();
+  // started by hand (not at Windows sign-in): show the chat (or, without
+  // the chat window, the sign-in/settings)
+  if (cfg.openIn === 'app') {
+    const hidden = process.argv.includes('--hidden') || (STORE && signedIn() && !process.argv.includes('--show'));
+    openChatWindow(null, { hidden });
+    if (hidden && STORE) showCard({ key: 'running', openChat: true, name: 'Chat Notifier', colourKey: 'Chat Notifier',
+      avatar: nativeImage.createFromPath(ICON).resize({ width: 84, height: 84 }).toDataURL(),
+      where: 'Running in the tray', tags: [], text: 'Pop-ups are on. Click here to open the chat, or use the tray icon.', url: '' });
+  } else if (!signedIn()) openSettings();
   else if (STORE) {
     // Windows starts the Store version at sign-in without telling it so (no
     // --hidden): say it's running instead of putting a window in the way.
@@ -758,5 +1056,5 @@ if (gotLock) app.whenReady().then(() => {
     setInterval(checkForUpdate, 6 * 60 * 60 * 1000).unref();
   }
   // for the tests: a read-only view of what's going on
-  if (TEST) global.__notifier = { cards: () => cards.filter(c => !c.closing).map(c => ({ key: c.key, ...c.data, url: c.url, bounds: c.win.getBounds() })), live: () => ({ ...live, blocked: [...live.blocked], threads: undefined }), logFile: LOG_FILE, cfg: () => ({ ...cfg, token: cfg.token ? '(set)' : '', tokenEnc: cfg.tokenEnc ? '(set)' : '' }), menu: () => menuTemplate().map(i => i.label || i.type), cardMs: () => cardMs(), pause: ms => pause(ms), test: () => { testCard(); } };
+  if (TEST) global.__notifier = { cards: () => cards.filter(c => !c.closing).map(c => ({ key: c.key, ...c.data, url: c.url, bounds: c.win.getBounds() })), live: () => ({ ...live, blocked: [...live.blocked], threads: undefined }), logFile: LOG_FILE, cfg: () => ({ ...cfg, token: cfg.token ? '(set)' : '', tokenEnc: cfg.tokenEnc ? '(set)' : '' }), menu: () => menuTemplate().map(i => i.label || i.type), chatWindow: () => (chatWin && !chatWin.isDestroyed() ? { visible: chatWin.isVisible(), url: chatWin.webContents.getURL(), title: chatWin.getTitle(), bounds: chatWin.getBounds() } : null), ptt: () => ({ listening: !!hook, binding: ptt.binding, down: ptt.down }), pttInput: (kind, value, down) => pttInput(kind, value, down), unread: () => live.unread || '', openChatWindow: link => { openChatWindow(link); }, hideChatWindow: () => chatWin && chatWin.close(), settings: () => openSettings(), setPtt: opts => setPushToTalk(opts), synthKey: (code, down) => require('uiohook-napi').uIOhook.keyToggle(code, down ? 'down' : 'up'), hookLoads: () => { try { return typeof require('uiohook-napi').uIOhook.start === 'function'; } catch (e) { return String(e.message); } }, cardMs: () => cardMs(), pause: ms => pause(ms), test: () => { testCard(); } };
 });

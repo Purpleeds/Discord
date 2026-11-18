@@ -46,6 +46,7 @@ function cardParts(msg, kind, roleName) {
     if (type === 'image/gif' || /\.gif$/i.test(name)) return 'GIF';
     if (type.startsWith('image/') || /\.(png|jpe?g|webp|avif|bmp|svg)$/i.test(name)) return 'Image';
     if (type.startsWith('video/')) return 'Video';
+    if (f.voice) return 'Voice message';
     if (type.startsWith('audio/')) return 'Audio';
     return 'File';
   };

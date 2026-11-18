@@ -25,7 +25,7 @@ The browser suites need a Chromium. Set `CHROME=/path/to/chrome` if
 Playwright's own isn't found. Screenshots and the server log go to
 `regression/shots/` (ignored by git).
 
-Two suites stop and restart the server on purpose (`calls_ui`, `v3_ui`) to
+Three suites stop and restart the server on purpose (`calls_ui`, `v3_ui`, `backups`) to
 check that people reconnect, so run them on a server only the tests use.
 
 ## Suites
@@ -38,14 +38,25 @@ check that people reconnect, so run them on a server only the tests use.
 | `v3_ui` | new login screen, unread badges and New line, attachments, drafts, failed sends, connection banner, Devices, phone |
 | `permissions` / `profiles` / `roles_ui` | role permissions and presets, no climbing; per-server profiles, hidden roles, picture/GIF/video banners |
 | `batch5_api` / `batch5_ui` | files inside messages, bans/timeouts/audit log, custom emoji, personas, unread dots vs mention numbers, TURN logins |
+| `voice_messages` | hold-to-record voice messages and their player, soundboard sounds (who may add/play them, in calls) |
 | `stickers` | a recorded video becomes an animated GIF sticker, the sticker button, who may use which sticker |
 | `batch1` / `batch2` | polls, links, search, mentions, mutuals / private channels, threads, forums, events |
 | `batch4_api` / `batch4_ui` / `ssrf` / `previews_ui` | webhooks, commands, reaction roles, link previews and their SSRF guards |
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
+| `call_looks` | how calls look, from real screenshots: the speaking ring all the way round tiles (camera, screen-share strip, phone) and on the picture in the voice channel list (round or rounded square); video profile pictures in call tiles and the voice list |
+| `sfu_calls` | bigger calls through LiveKit: tokens, 25-person limit, removal from the media server, browsers with camera + screen share, fallback when it's down. Starts its own LiveKit and chat (port 4103); needs `LIVEKIT_BIN` (or `livekit-server` on PATH), skips itself otherwise. `SFU_VIA_TURN=1` (needs coturn) forces relay-only like the NAS; `SFU_BROWSERS=10` for a 10-browser call |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
+| `automod` / `automod_ui` | AutoMod rules (block/flag, timeouts, exemptions), the review queue, raid protection and lockdown |
+| `two_step` / `two_step_ui` | two-step login (codes, backup codes, tickets, replays, guessing), passkeys (a software authenticator, then Chromium's virtual one), admins needing it, resets; own servers on ports 4103/4104 with `ADMIN_2FA` on |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
+| `backups` | scheduled backups, restore (incl. into an empty database and a newer schema), backup download, "Download my data", "Export channel", owner-only checks |
+| `onboarding` / `onboarding_ui` | onboarding questions (roles + private channels), the rules screen gate, Discovery listing and joining |
 
 `notifier_ui` drives the desktop notifier (desktop/) with Playwright's
 Electron support against its own server on port 4102. It needs `npm install`
 in `desktop/` (it skips itself otherwise) and a display: on Linux it starts
 `Xvfb :97` when `DISPLAY` isn't set.
+`desktop_app` does the same for the app's chat window (port 4104, `Xvfb :95`):
+sign-in, other sites kept out, push to talk from the global hook, the
+screen-share picker, badge, close to tray, sign out. Run it with
+`NODE_PATH=desktop/node_modules` if playwright-core isn't installed at the top.

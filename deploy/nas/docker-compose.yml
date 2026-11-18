@@ -33,6 +33,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    volumes:
+      - ./backups:/backups:ro
     environment:
       NEON_URL: *neon_url
       PGHOST: db
@@ -51,6 +53,8 @@ services:
           sleep 2
         done
         if [ "$$(psql -tAc "SELECT to_regclass('public.users') IS NOT NULL")" = "t" ]; then echo "Database already has data - nothing to copy."; exit 0; fi
+        # a lost or new disk with backups: the chat restores the newest backup itself, not old Neon data
+        if ls /backups/snapshots/*/manifest.json >/dev/null 2>&1; then echo "Backups found - the chat restores the newest one itself."; exit 0; fi
         pg_dump --no-owner --no-privileges "$$NEON_URL" > /tmp/neon.sql || { echo "Could not read from Neon."; exit 1; }
         psql -v ON_ERROR_STOP=1 -q < /tmp/neon.sql > /dev/null || { echo "Could not load the copy."; exit 1; }
         echo "Copied: $$(psql -tAc "SELECT count(*) FROM users") accounts, $$(psql -tAc "SELECT count(*) FROM messages") messages."
@@ -86,10 +90,18 @@ services:
       # calls on strict networks use the relay below ({host} = the public name)
       TURN_URLS: "turns:{host}:8443?transport=tcp"
       TURN_SECRET_FILE: /shared/turn-secret
+      # a full backup (database + files) every day, into ./backups below;
+      # Settings > Backups in the chat shows them (BACKUPS.md)
+      BACKUP_DIR: /backups
     volumes:
       - chat-code:/app
       - chat-files:/data
       - turn-shared:/shared
+      # the backups, as a normal folder next to this project. Better: a folder
+      # on ANOTHER disk or a USB drive, e.g. /volume2/chat-backups:/backups
+      # (change the left side here AND in the import service above), and copy
+      # it off the NAS too - see BACKUPS.md
+      - ./backups:/backups
     working_dir: /app
     entrypoint:
       - /bin/sh

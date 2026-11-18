@@ -28,6 +28,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   and open pages reload when `serverInfo.version` changes.
 - `discord-bridge.js`: the Discord bridge bot (discord.js), run by `relay.js` on
   Render when `DISCORD_BOT_TOKEN` + `DISCORDS_BRIDGE_KEY` are set - see DISCORD_BRIDGE.md.
+- `backup.js`: backups (`BACKUP_DIR`), restore, "Download my data" and
+  "Export channel" - see BACKUPS.md. New tables/columns are backed up
+  automatically (every table in the schema); routes are owner-only (Purple).
 - `public/sw.js`: Web Push service worker.
 - `desktop/`: the Chat Notifier, a Windows tray program (Electron) - see
   desktop/README.md. Released by `.github/workflows/notifier.yml`.

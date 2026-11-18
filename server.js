@@ -6816,9 +6816,30 @@ io.on('connection', (socket) => {
   });
 });
 
+// ---------------- BACKUPS + EXPORTS ----------------
+// backup.js (see BACKUPS.md): scheduled backups to BACKUP_DIR, restore,
+// "Download my data" and "Export channel".
+const backups = require('./backup')({
+  app, pool, q, one, route, requireAuth, rateLimited,
+  dirs: { UPLOAD_DIR, ASSET_DIR },
+  diskPathForUpload, getChannelByRoom, canViewChannel, hasServerPerm, auditLog,
+  version: () => APP_VERSION,
+  hooks: {
+    shuttingDown: () => shuttingDown,
+    // after a restore, everything in memory belongs to the old data
+    restarting(why) {
+      console.log(why + ' - restarting');
+      io.emit('serverUpdating', { restore: true });
+      setTimeout(() => shutdown('restore'), 1500);
+    }
+  }
+});
+
 // ---------------- BOOT ----------------
 async function main() {
   await setupSchema();
+  // an empty database with backups in BACKUP_DIR (a new or replaced disk): bring the newest back
+  await backups.restoreIfEmpty().catch(err => console.error('restore from backup failed:', err.message));
   await ensureVapidKeys();
   DEFAULT_SERVER = await ensureDefaultServer();
   for (const name of DEFAULT_CHANNELS) {
@@ -6840,6 +6861,7 @@ async function main() {
   // a kept file whose message row is gone (e.g. its room was deleted) is just wasted space
   await pool.query(`DELETE FROM file_blobs WHERE file_id NOT IN (SELECT id FROM files)`);
   await scheduleEventReminders();
+  backups.start();
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);

@@ -25,7 +25,7 @@ The browser suites need a Chromium. Set `CHROME=/path/to/chrome` if
 Playwright's own isn't found. Screenshots and the server log go to
 `regression/shots/` (ignored by git).
 
-Two suites stop and restart the server on purpose (`calls_ui`, `v3_ui`) to
+Three suites stop and restart the server on purpose (`calls_ui`, `v3_ui`, `backups`) to
 check that people reconnect, so run them on a server only the tests use.
 
 ## Suites
@@ -45,6 +45,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `call_looks` | how calls look, from real screenshots: the speaking ring all the way round tiles (camera, screen-share strip, phone) and on the picture in the voice channel list (round or rounded square); video profile pictures in call tiles and the voice list |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
+| `backups` | scheduled backups, restore (incl. into an empty database and a newer schema), backup download, "Download my data", "Export channel", owner-only checks |
 
 `notifier_ui` drives the desktop notifier (desktop/) with Playwright's
 Electron support against its own server on port 4102. It needs `npm install`

@@ -6,3 +6,4 @@ uploads/
 *.log
 regression/shots/
 .version
+/backups/

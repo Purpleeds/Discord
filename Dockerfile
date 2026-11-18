@@ -6,7 +6,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.js ./
+COPY server.js backup.js ./
 COPY public ./public
 # large (temporary) uploads live here - mount a volume on it
 ENV DATA_DIR=/data PORT=3000

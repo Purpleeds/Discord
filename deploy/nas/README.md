@@ -38,8 +38,12 @@ Docker apps, or with `docker compose up -d` anywhere. No SSH needed.
 - The chat uses its own Postgres container (`chat-db`), separate from any
   Postgres you already run.
 - Data lives in Docker volumes named after the project (`chat-db`,
-  `chat-files`). Back up with:
-  `docker exec chat-db pg_dump -U chat chat > chat-backup.sql`
+  `chat-files`). **Backups** (database + files) are made every day into the
+  `backups` folder next to the project, and listed in the chat under
+  Settings > Backups, with Download and Restore. Put that folder on another
+  disk and copy it off the NAS: see [BACKUPS.md](../../BACKUPS.md). If the
+  database is ever empty (a new or replaced disk), the chat restores the
+  newest backup by itself when it starts.
 - The older multi-file setup (building the image yourself, sharing an
   existing Postgres) is in `deploy/synology/`.
 

@@ -197,6 +197,15 @@ large, new system - also split it over several sessions).
   [Sticker] tags, a big picture preview where supported, and clicking opens
   that exact message.
 
+- [x] **Backups and data export** (Nov 2026) - a full backup (database +
+  files on disk) every day into `BACKUP_DIR` (on the NAS: `./backups`),
+  kept 7 daily / 8 weekly / 12 monthly, files stored once. Settings >
+  Backups (Purple only): Back up now, Download as .tar, Restore (saves the
+  current data first). An empty database restores the newest backup on
+  start. Everyone: Privacy & Safety > Download my data. Moderators: right-click
+  a channel > Export channel. See [BACKUPS.md](BACKUPS.md). Still needs the
+  backup folder copied off the NAS (Hyper Backup / Sync & Backup).
+
 ## Next: desktop app (.exe)
 
 - [x] **Windows notifier** (Option A) - *done Nov 2026*: `desktop/`, a tray

@@ -6346,6 +6346,7 @@ function levelMenuItems(key, title){
 function showChannelMenu(event, server, channel){
   const items = [{ label:'Copy channel name', action:() => copyText('#' + channel.name) }];
   items.push(...levelMenuItems('room:' + channel.room, 'Notifications'));
+  if(can(server, 'manage_messages')) items.push({ label:'Export channel', action:() => startDownload('/channels/export', { room:channel.room }, 'Exporting #' + channel.name + ' - the download starts in a moment…') });
   if(can(server, 'manage_channels')){
     items.push({ sep:true });
     items.push({ label:'Edit channel', action:() => openServerSettings(server.id, 'channels') });
@@ -9560,7 +9561,7 @@ function openSettings(sectionKey){
       { key:'notifications', label:'Notifications', render:renderNotificationsSection },
       { key:'keybinds', label:'Keybinds', render:renderKeybindsSection }
     ]},
-    myProfile.isAdmin ? { title:'Site Admin', items:[{ key:'site', label:'Admins & moderation', render:renderSiteSection }] } : null,
+    myProfile.isAdmin ? { title:'Site Admin', items:[{ key:'site', label:'Admins & moderation', render:renderSiteSection }, username === 'Purple' ? { key:'backups', label:'Backups', render:renderBackupsSection } : null] } : null,
     { sep:true },
     { items:[{ label:'Log Out', danger:true, action:() => { closeSettings(true); logout(); } }], foot:'Signed in as ' + username }
   ].filter(Boolean), sectionKey || 'account');
@@ -9946,7 +9947,9 @@ function renderPrivacySection(c){
     section('Read receipts', switchRow('readReceiptsToggle', 'Show people when I\'ve seen their messages', 'Shows "Seen" under messages you\'ve read in DMs, and your picture under them in group chats and servers. Turn it off and nobody sees what you\'ve read.', myProfile.readReceipts !== false)) +
     section('Content Filter', switchRow('censorToggle', 'Censor swear words', cs.note, cs.checked, cs.forced) +
       '<div class="switchDesc" style="margin-top:10px">The filter catches common spellings people use to dodge it (like s.h.i.t or sh1t). Messages are never changed on the server — this only changes how they\'re shown.</div>') +
-    section('Status', '<div class="switchDesc" style="margin-bottom:12px">Pick how you appear to others. <b>Invisible</b> shows you as offline while you can still use everything. <b>Do Not Disturb</b> silences sounds, desktop and push notifications.</div><div id="privacyStatus"></div>');
+    section('Status', '<div class="switchDesc" style="margin-bottom:12px">Pick how you appear to others. <b>Invisible</b> shows you as offline while you can still use everything. <b>Do Not Disturb</b> silences sounds, desktop and push notifications.</div><div id="privacyStatus"></div>') +
+    section('Your data', '<div class="switchDesc" style="margin-bottom:12px">Download a zip of your account and profiles, your friends and servers, every message you\'ve sent, your reactions, and the files and pictures you\'ve uploaded. Other people\'s messages aren\'t included.</div><button class="btn" id="downloadMyData">Download my data</button>');
+  $('downloadMyData').onclick = () => startDownload('/me/export', {}, 'Getting your data ready - the download starts in a moment…');
   const box = $('censorToggle');
   if(box && !cs.forced) box.onchange = () => setPersonalCensor(box.checked);
   $('readReceiptsToggle').onchange = async e => {
@@ -10210,6 +10213,96 @@ function renderKeybindsSection(c){
   c.innerHTML = '<h2 class="settingsTitle">Keybinds</h2><div class="settingsSub">Shortcuts that work anywhere in the app.</div>' +
     binds.map(([label, keys, note]) => '<div class="kbdRow"><span>' + escapeHtml(label) + (note ? ' <span style="color:var(--text-muted);font-size:13px">(' + escapeHtml(note) + ')</span>' : '') + '</span><span>' +
       keys.map(k => '<kbd class="kbd">' + escapeHtml(k) + '</kbd>').join('') + '</span></div>').join('');
+}
+
+// Downloads (my data, a channel export, a backup): the server makes a
+// short-lived single-use link, so a big file goes straight to the browser's
+// downloads instead of through memory here.
+async function startDownload(path, body, note){
+  try{
+    const response = await fetch(path, { method:'POST', headers:authHeaders(), body:JSON.stringify(body || {}) });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok || !data.url) throw new Error(data.error || 'Could not start the download');
+    if(note) toast(note);
+    const a = Object.assign(document.createElement('a'), { href:data.url, download:'' });
+    a.style.display = 'none';
+    document.body.appendChild(a); a.click(); a.remove();
+    return true;
+  }catch(err){ toast(capitalise(err.message)); return false; }
+}
+
+// Settings > Backups (the site owner only - a backup holds every DM). See
+// BACKUPS.md: scheduled backups to BACKUP_DIR, back up now, download one as a
+// single file, and restore (which saves the current data first).
+const BACKUP_LABELS = { scheduled:'Scheduled', manual:'Made by hand', 'before-restore':'Saved before a restore' };
+async function renderBackupsSection(c){
+  c.innerHTML = '<div id="backupsPage"><h2 class="settingsTitle">Backups</h2><div class="switchDesc">Loading…</div></div>';
+  let st;
+  try{ const r = await fetch('/admin/backups', { headers: bearer() }); st = await r.json(); if(!r.ok) throw new Error(st.error); }
+  catch(e){ const p = $('backupsPage'); if(p) p.querySelector('.switchDesc').textContent = 'Couldn\'t load the backups. Try again in a moment.'; return; }
+  paintBackupsPage(st);
+}
+function paintBackupsPage(st){
+  const page = $('backupsPage');
+  if(!page) return;
+  const when = t => parseTime(t).toLocaleString([], { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
+  if(!st.enabled){
+    page.innerHTML = '<h2 class="settingsTitle">Backups</h2>' +
+      section('Backups are off', '<div class="switchDesc">Set <b>BACKUP_DIR</b> on the chat to a folder (ideally on another disk) and restart it. The NAS setup in <b>deploy/nas/docker-compose.yml</b> does this for you - see BACKUPS.md.</div>');
+    return;
+  }
+  const newest = st.snapshots[0];
+  const disk = st.disk ? formatBytes(st.disk.free) + ' free of ' + formatBytes(st.disk.total) : '';
+  page.innerHTML = '<h2 class="settingsTitle">Backups</h2>' +
+    '<div class="settingsSub">The whole chat - accounts, servers, messages, DMs and every file - is backed up every ' + (st.everyHours === 24 ? 'day' : st.everyHours + ' hours') + '. Only you (the site owner) see this page.</div>' +
+    section('Status',
+      '<div class="switchDesc" id="backupStatus"></div>' +
+      '<div class="rowFlex" style="margin-top:12px"><button class="btn" id="backupNow">Back up now</button></div>' +
+      '<div class="switchDesc" style="margin-top:12px">Backups are kept in <b>' + escapeHtml(st.dir) + '</b>' + (disk ? ' (' + escapeHtml(disk) + ')' : '') + '. If that folder is on the same disk as the chat, losing the disk loses both - copy it somewhere else (another disk, a USB drive or a cloud backup app on the NAS), or download a backup now and then.</div>') +
+    section('Saved backups', '<div class="deviceList" id="backupList"></div>' +
+      '<div class="switchDesc" style="margin-top:8px">Kept: the newest ' + st.keep.daily + ', one a week for ' + st.keep.weekly + ' weeks and one a month for ' + st.keep.monthly + ' months. Files that didn\'t change are stored only once.</div>') +
+    '<div class="inlineMsg" id="backupMsg"></div>';
+  const status = $('backupStatus');
+  status.textContent = st.busy ? (st.busy === 'restore' ? 'Restoring…' : 'Backing up right now…')
+    : newest ? 'Last backup ' + when(newest.createdAt) + '. Next one around ' + when(st.nextAt) + '.' : 'No backups yet - the first one runs a couple of minutes after the chat starts.';
+  if(st.lastError) status.textContent += ' The last try failed: ' + capitalise(st.lastError.message);
+  $('backupNow').disabled = !!st.busy;
+  $('backupNow').onclick = async () => {
+    const btn = $('backupNow');
+    btn.disabled = true; btn.textContent = 'Backing up…';
+    try{
+      const r = await fetch('/admin/backups', { method:'POST', headers:authHeaders(), body:'{}' });
+      const d = await r.json().catch(() => ({}));
+      if(!r.ok) throw new Error(d.error || 'The backup failed');
+      toast('Backed up');
+    }catch(err){ toast(capitalise(err.message)); }
+    if(settingsState.section === 'backups') rerenderSettingsSection();
+  };
+  const list = $('backupList');
+  if(!st.snapshots.length) list.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'No backups yet.' }));
+  st.snapshots.forEach(s => {
+    const buttons = document.createElement('div');
+    buttons.className = 'rowFlex';
+    buttons.appendChild(siteAdminButton('Download', false, () => startDownload('/admin/backups/' + s.id + '/download', {}, 'Downloading the backup - it may take a while for a big chat…')));
+    buttons.appendChild(siteAdminButton('Restore', true, () => restoreBackup(s, when(s.createdAt))));
+    const sub = (BACKUP_LABELS[s.label] || s.label) + ' · ' + s.rows.toLocaleString() + ' rows · ' + s.files + (s.files === 1 ? ' file · ' : ' files · ') + formatBytes(s.bytes + s.fileBytes);
+    const row = siteAdminRow(when(s.createdAt), sub, s === newest ? 'Newest' : '', buttons);
+    row.querySelector('.deviceIcon').textContent = '⛁';
+    list.appendChild(row);
+  });
+}
+async function restoreBackup(s, label){
+  const typed = prompt('Restore the backup from ' + label + '?\n\nEverything in the chat goes back to how it was then: messages, accounts, servers and files made since are removed. The current data is saved as a backup first, so you can undo this. The chat restarts and everyone reconnects.\n\nType RESTORE to go ahead.');
+  if(typed === null) return;
+  if(typed.trim().toUpperCase() !== 'RESTORE'){ toast('Not restored - type RESTORE to confirm'); return; }
+  inlineMessage($('backupMsg'), 'Restoring… the chat restarts when it\'s done.');
+  try{
+    const r = await fetch('/admin/backups/' + s.id + '/restore', { method:'POST', headers:authHeaders(), body:JSON.stringify({ confirm:'RESTORE' }) });
+    const d = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(d.error || 'The restore failed');
+    inlineMessage($('backupMsg'), 'Restored. The chat is restarting - this page reloads by itself. If you were signed in after that backup, sign in again.');
+    setTimeout(() => location.reload(), 8000);
+  }catch(err){ inlineMessage($('backupMsg'), capitalise(err.message), true); }
 }
 
 // Site Admin page (every site admin sees it): the admins, adding one, bans,

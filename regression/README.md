@@ -44,6 +44,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
 | `call_looks` | how calls look, from real screenshots: the speaking ring all the way round tiles (camera, screen-share strip, phone) and on the picture in the voice channel list (round or rounded square); video profile pictures in call tiles and the voice list |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
+| `automod` / `automod_ui` | AutoMod rules (block/flag, timeouts, exemptions), the review queue, raid protection and lockdown |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
 | `backups` | scheduled backups, restore (incl. into an empty database and a newer schema), backup download, "Download my data", "Export channel", owner-only checks |
 | `onboarding` / `onboarding_ui` | onboarding questions (roles + private channels), the rules screen gate, Discovery listing and joining |

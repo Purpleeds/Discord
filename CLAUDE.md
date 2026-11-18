@@ -221,6 +221,16 @@ to do next) - read it before a big upgrade and add an entry after one.
   (`server_timeouts`, enforced in `channelPostBlock()`, uploads and voice)
   need `ban_members`; `moderationProblem()` decides who can be moderated.
   Log moderator actions with `auditLog()` (never blocks the action).
+- AutoMod (`automod_rules`, one row per server + kind; `automod_queue`;
+  `raid_settings`): `automodCheck()` runs on every way people post text in a
+  server channel (socket `message`, edits, `/threads`, polls) - add it to any
+  new one. Block = refuse with `automodError()`; flag = post, then
+  `automodRecord()` with the message id. Rules are cached per server
+  (`automodFor()`): call `forgetAutomod()` after changing the tables. Owner,
+  admins, Manage messages/Manage server are never checked. The queue needs
+  Manage messages and only shows rooms the reviewer can read (keep it that way).
+  Raid protection: `raidPostBlock()` in `channelPostBlock()`; join surges and
+  lockdowns in `noteServerJoin()` / `serverLockdown()` (`/servers/join`).
 - Custom emoji (`server_emojis`, `manage_emoji`) are written `<:name:id>` in
   text and reactions; `validReaction()` checks reactions. Personas were
   removed: old persona messages keep their label (`persona` flag); don't

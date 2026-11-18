@@ -59,6 +59,7 @@ const FILE_EXPIRY_HOURS = Math.max(1, Number(process.env.FILE_EXPIRY_HOURS) || 6
 // KEEP_FILE_MB is still a temporary share on local disk, gone after
 // FILE_EXPIRY_HOURS or a restart, and the app says so on the file.
 const KEEP_FILE_BYTES = Math.max(0, Number(process.env.KEEP_FILE_MB || 8)) * 1024 * 1024;
+const VOICE_MAX_SECONDS = 5 * 60; // longest voice message the app records
 const MEDIA_BUDGET_BYTES = Math.max(1, Number(process.env.MEDIA_BUDGET_MB || 250)) * 1024 * 1024;
 const HISTORY_PAGE = 75; // messages per page of /history
 const DEFAULT_CHANNELS = ['general', 'gaming', 'coding'];
@@ -800,6 +801,22 @@ async function setupSchema() {
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_stickers_server ON server_stickers (server_id)`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS sticker_id INTEGER`);
+  // ---- voice messages (an audio attachment with its length and waveform) ----
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS voice_seconds REAL`);
+  await pool.query(`ALTER TABLE files ADD COLUMN IF NOT EXISTS waveform TEXT`);
+  // ---- soundboard (short clips from /assets, played in calls) ----
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS server_sounds (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      emoji TEXT,
+      url TEXT NOT NULL,
+      volume REAL DEFAULT 1,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_sounds_server ON server_sounds (server_id)`);
   // ---- custom emoji ----
   await pool.query(`
     CREATE TABLE IF NOT EXISTS server_emojis (
@@ -1106,7 +1123,7 @@ async function insertFile(room, user, toUser, isGroup, fileName, fileType, fileU
 async function getFileById(id) {
   return one(`SELECT * FROM files WHERE id = $1`, [id]);
 }
-const FILE_COLUMNS = `id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, created_at`;
+const FILE_COLUMNS = `id, room, "user", to_user, is_group, file_name, file_type, file_url, file_size, caption, storage, expires_at, voice_seconds, waveform, created_at`;
 async function getFilesForRoom(room) {
   return q(
     `SELECT * FROM (
@@ -1486,7 +1503,7 @@ const ROLE_PERMISSIONS = [
   'manage_events',        // create, edit and cancel events
   'mention_everyone',     // @everyone, and roles that aren't mentionable
   'ban_members',          // ban from this server (and unban); time members out
-  'manage_emoji'          // add and remove this server's custom emoji and stickers
+  'manage_emoji'          // add and remove this server's custom emoji, stickers and soundboard sounds
 ];
 const ALL_PERMISSIONS = new Set(ROLE_PERMISSIONS);
 function cleanPermissions(list) {
@@ -1526,7 +1543,7 @@ const PERMISSION_LABELS = {
   manage_server: 'Manage server', manage_channels: 'Manage channels', manage_roles: 'Manage roles',
   manage_messages: 'Manage messages', kick_members: 'Kick members', manage_integrations: 'Manage bots & webhooks',
   manage_events: 'Manage events', mention_everyone: 'Mention @everyone',
-  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji & stickers'
+  ban_members: 'Ban & time out members', manage_emoji: 'Manage emoji, stickers & sounds'
 };
 // No climbing: a role (and so a member) can only be given, taken or edited
 // by someone who already has every power that role carries.
@@ -1640,6 +1657,7 @@ async function serversForUser(username) {
   const ids = rows.map(s => s.id);
   const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
   const stickerRows = await q(`SELECT id, server_id, name, url FROM server_stickers WHERE server_id = ANY($1) ORDER BY id`, [ids]);
+  const soundRows = await q(`SELECT id, server_id, name, emoji, url, volume FROM server_sounds WHERE server_id = ANY($1) ORDER BY id`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
     q(`SELECT server_id, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
@@ -1694,6 +1712,7 @@ async function serversForUser(username) {
       permissions,
       emojis: emojiRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
       stickers: stickerRows.filter(e => e.server_id === s.id).map(e => ({ id: e.id, name: e.name, url: e.url })),
+      sounds: soundRows.filter(e => e.server_id === s.id).map(soundFromRow),
       myServerProfile: myMemberRows.has(s.id) ? serverProfileFromRow(myMemberRows.get(s.id)) : null,
       canHideRoles: !s.is_default && (admin || isOwner || role === 'admin' ||
         customRoleRows.some(r => r.server_id === s.id && r.allow_hide && myRoleRows.some(m => m.server_id === s.id && m.role_id === r.id))),
@@ -2177,6 +2196,8 @@ async function normaliseFiles(rows) {
       caption: row.caption || '',
       kept: row.storage === 'db',
       expiresAt: row.storage === 'db' ? null : (row.expires_at || null),
+      // a voice message: its length and a waveform (hex, one byte per bar)
+      voice: row.voice_seconds > 0 ? { seconds: Math.round(Number(row.voice_seconds) * 10) / 10, waveform: row.waveform || '' } : null,
       createdAt: row.created_at
     };
   });
@@ -2455,8 +2476,12 @@ app.get('/healthz', route(async (req, res) => {
 // stored with the bytes, so nothing an asset serves can run as a page.
 const ASSET_TYPES = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/avif': 'avif',
-  'video/mp4': 'mp4', 'video/webm': 'webm'
+  'video/mp4': 'mp4', 'video/webm': 'webm',
+  // soundboard clips only (see soundProblem) - never banners or avatars
+  'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/wav': 'wav', 'audio/mp4': 'm4a', 'audio/webm': 'weba'
 };
+// Soundboard clips are small: they're kept in the database, never on disk.
+const SOUND_MAX_BYTES = 1024 * 1024;
 const ASSET_MAX_BYTES = Math.max(1, Number(process.env.ASSET_MAX_MB || 2048)) * 1024 * 1024;
 // Up to this size an asset is kept in Postgres (backed up with everything
 // else); bigger ones are streamed to ASSET_DIR on disk.
@@ -2464,7 +2489,7 @@ const ASSET_DB_MAX_BYTES = 8 * 1024 * 1024;
 // All assets together (unused ones are removed after a day).
 const ASSET_BUDGET_BYTES = Math.max(1, Number(process.env.ASSET_BUDGET_MB || 30000)) * 1024 * 1024;
 function assetDiskPath(key) { return path.join(ASSET_DIR, key); }
-const ASSET_URL_RE = /^\/assets\/([A-Za-z0-9_-]{16,40})\.(png|jpg|gif|webp|avif|mp4|webm)$/;
+const ASSET_URL_RE = /^\/assets\/([A-Za-z0-9_-]{16,40})\.(png|jpg|gif|webp|avif|mp4|webm|mp3|ogg|wav|m4a|weba)$/;
 // Why `url` can't be used as a banner (allowVideo) or avatar - or null if it can.
 async function assetProblem(url, owner, allowVideo) {
   if (!url) return null;
@@ -2473,7 +2498,19 @@ async function assetProblem(url, owner, allowVideo) {
   const row = await one(`SELECT owner, type FROM assets WHERE key = $1`, [m[1]]);
   if (!row) return 'that upload has expired - please upload it again';
   if (row.owner !== owner) return 'that upload belongs to someone else';
+  if (row.type.startsWith('audio/')) return allowVideo ? 'this needs a picture or video, not a sound' : 'this needs a picture or GIF, not a sound';
   if (!allowVideo && row.type.startsWith('video/')) return 'this needs a picture or GIF, not a video';
+  return null;
+}
+// A soundboard clip must be your own uploaded sound file (small, see SOUND_MAX_BYTES).
+async function soundProblem(url, owner) {
+  const m = ASSET_URL_RE.exec(String(url || ''));
+  if (!m) return 'upload the sound first';
+  const row = await one(`SELECT owner, type, size FROM assets WHERE key = $1`, [m[1]]);
+  if (!row) return 'that upload has expired - please upload it again';
+  if (row.owner !== owner) return 'that upload belongs to someone else';
+  if (!row.type.startsWith('audio/')) return 'that isn\'t a sound file';
+  if (Number(row.size) > SOUND_MAX_BYTES) return 'sounds can be up to 1 MB';
   return null;
 }
 // A video profile picture must be your own uploaded MP4/WEBM (or '' to clear).
@@ -2488,6 +2525,7 @@ app.post('/assets', requireAuth, route(async (req, res) => {
   const type = String(req.headers['x-file-type'] || '').toLowerCase();
   if (!ASSET_TYPES[type]) return res.status(400).json({ error: 'use a PNG, JPG, GIF, WEBP or AVIF picture, or an MP4 or WEBM video' });
   const length = Number(req.headers['content-length'] || 0);
+  if (type.startsWith('audio/') && !(length > 0 && length <= SOUND_MAX_BYTES)) return res.status(413).json({ error: 'sounds can be up to 1 MB' });
   if (length > ASSET_MAX_BYTES) return res.status(413).json({ error: `that file is too big - the limit is ${Math.round(ASSET_MAX_BYTES / 1048576)} MB` });
   if (rateLimited('asset:' + req.username, 20, 10 * 60 * 1000)) return res.status(429).json({ error: 'too many uploads - wait a few minutes' });
   const used = await one(`SELECT COALESCE(sum(size), 0)::bigint AS n FROM assets`);
@@ -2557,6 +2595,7 @@ async function removeUnusedAssets() {
        AND NOT EXISTS (SELECT 1 FROM servers s WHERE s.banner_url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_emojis e WHERE e.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_stickers st WHERE st.url LIKE '/assets/' || a.key || '.%')
+       AND NOT EXISTS (SELECT 1 FROM server_sounds sd WHERE sd.url LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM messages pm WHERE pm.persona_avatar LIKE '/assets/' || a.key || '.%')
        AND NOT EXISTS (SELECT 1 FROM server_members m WHERE m.banner_url LIKE '/assets/' || a.key || '.%' OR m.avatar_url LIKE '/assets/' || a.key || '.%' OR m.avatar_video LIKE '/assets/' || a.key || '.%')
      RETURNING key, storage`
@@ -4533,6 +4572,7 @@ function pushContent(text, msg) {
     if (type === 'image/gif' || /\.gif$/i.test(name)) return 'GIF';
     if (type.startsWith('image/')) return 'Image';
     if (type.startsWith('video/')) return 'Video';
+    if (f.voice) return 'Voice message';
     if (type.startsWith('audio/')) return 'Audio';
     return 'File';
   };
@@ -5009,6 +5049,7 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   await pool.query(`DELETE FROM webhooks WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_commands WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM reaction_roles WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM server_sounds WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
   await resyncRooms(members);
   for (const member of members) sendToUser(member, 'serversChanged', {});
@@ -5238,6 +5279,59 @@ async function usableSticker(username, room, stickerId) {
   const channel = await channelForRoom(room);
   if (channel) return channel.server_id === sticker.server_id ? sticker : null;
   return (await isServerMember(username, sticker.server_id)) ? sticker : null;
+}
+
+// Soundboard: a server's short sound clips (from /assets), played to
+// everyone in a call. Each listener's browser plays the clip itself (it's
+// not mixed into anyone's microphone), and stops it after
+// SOUND_PLAY_SECONDS, so a long file can't be used to drown out a call.
+const MAX_SOUNDS_PER_SERVER = 24;
+const SOUND_PLAY_SECONDS = 6;
+function soundFromRow(r) {
+  return { id: r.id, serverId: r.server_id, name: r.name, emoji: r.emoji || '', url: r.url, volume: r.volume == null ? 1 : Number(r.volume) };
+}
+app.post('/servers/:id/sounds', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'add sounds'))) return;
+  const name = cleanText(req.body.name || '', 30);
+  if (name.length < 2) return res.status(400).json({ error: 'give the sound a name (2-30 characters)' });
+  const emoji = cleanText(req.body.emoji || '', 16);
+  if (emoji && (/[\s<>]/.test(emoji) || [...emoji].length > 8)) return res.status(400).json({ error: 'pick one emoji for the sound' });
+  const volume = req.body.volume === undefined ? 1 : Number(req.body.volume);
+  if (!(volume >= 0.05 && volume <= 1)) return res.status(400).json({ error: 'the volume must be between 5% and 100%' });
+  const problem = await soundProblem(req.body.url, req.username);
+  if (problem) return res.status(400).json({ error: problem });
+  const count = await one(`SELECT count(*)::int AS n FROM server_sounds WHERE server_id = $1`, [serverId]);
+  if (count.n >= MAX_SOUNDS_PER_SERVER) return res.status(400).json({ error: `a server can have up to ${MAX_SOUNDS_PER_SERVER} sounds` });
+  const row = await one(
+    `INSERT INTO server_sounds (server_id, name, emoji, url, volume, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [serverId, name, emoji || null, String(req.body.url), volume, req.username]
+  );
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'sound_add', name);
+  res.status(201).json(soundFromRow(row));
+}));
+app.post('/servers/:id/sounds/:soundId/delete', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!(await requirePerm(req, res, serverId, 'manage_emoji', 'remove sounds'))) return;
+  const row = await one(`DELETE FROM server_sounds WHERE id = $1 AND server_id = $2 RETURNING name`, [Number(req.params.soundId), serverId]);
+  if (!row) return res.status(404).json({ error: 'sound not found' });
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  auditLog(serverId, req.username, 'sound_remove', row.name);
+  res.json({ message: 'ok' });
+}));
+// A sound someone may play in the call `key`: in a voice channel, one of
+// that server's; in a DM or group call, one from any server they're in.
+async function usableSound(username, key, soundId) {
+  const sound = await one(`SELECT * FROM server_sounds WHERE id = $1`, [Number(soundId) || 0]);
+  if (!sound) return null;
+  const info = callInfo(key);
+  if (!info) return null;
+  if (info.kind === 'voice') {
+    const channel = await getChannelByRoom(info.room);
+    return channel && channel.server_id === sound.server_id ? sound : null;
+  }
+  return (await isServerMember(username, sound.server_id)) ? sound : null;
 }
 
 // A reaction is one of the built-in emoji, or a custom emoji of the server
@@ -5966,6 +6060,15 @@ app.post('/upload', requireAuth, route(async (req, res) => {
   // x-attach: 1 = a file for a message that's about to be sent (the message
   // gets the checks and the broadcast); otherwise a standalone file
   const attach = req.headers['x-attach'] === '1';
+  // a voice message (recorded in the app): its length and waveform come along
+  let voice = null;
+  if (req.headers['x-voice-seconds'] !== undefined) {
+    const seconds = Number(req.headers['x-voice-seconds']);
+    const waveform = String(req.headers['x-voice-waveform'] || '').toLowerCase();
+    if (!attach || !fileType.toLowerCase().startsWith('audio/') || !(seconds > 0 && seconds <= VOICE_MAX_SECONDS + 5) ||
+        !/^([0-9a-f]{2}){1,128}$/.test(waveform)) return res.status(400).json({ error: 'that voice message couldn\'t be read - try recording it again' });
+    voice = { seconds, waveform };
+  }
   if (!toUser) {
     if (attach) {
       const channel = await channelForRoom(finalRoom);
@@ -6016,6 +6119,7 @@ app.post('/upload', requireAuth, route(async (req, res) => {
         [finalRoom, req.username, toUser || null, isGroup, originalName, fileType, `/uploads/${storedName}`, size, caption || null, attach ? 1 : 0]
       );
     }
+    if (voice) await pool.query(`UPDATE files SET voice_seconds = $1, waveform = $2 WHERE id = $3`, [voice.seconds, voice.waveform, created.id]);
     const fileMsg = await normaliseFile(await getFileById(created.id));
     if (attach) return res.status(201).json(fileMsg); // shown when its message is sent
 
@@ -6785,6 +6889,27 @@ io.on('connection', (socket) => {
       if ((await callAudience(call.key)).includes(socket.username)) out.push(callState(call));
     }
     if (typeof ack === 'function') ack({ calls: out });
+  });
+
+  // Soundboard: play one of the call's sounds to everyone in it (including
+  // the sender). Only current participants, not while muted or deafened,
+  // and only sounds they're allowed (usableSound) - re-checking the call's
+  // access each time, so a timeout or block stops it straight away.
+  socket.on('voice:sound', async (data = {}, ack) => {
+    const reply = typeof ack === 'function' ? ack : () => {};
+    const call = calls.get(String(data.key || ''));
+    const me = call && call.participants.get(socket.username);
+    if (!me || me.socketId !== socket.id) return reply({ error: 'You\'re not in this call.' });
+    if (me.muted || me.deafened) return reply({ error: 'Unmute to use the soundboard.' });
+    if (rateLimited('voicesound:' + socket.username, 1, 1500) || rateLimited('voicesoundmin:' + socket.username, 20, 60 * 1000)) return reply({ error: 'Slow down a little.' });
+    const problem = await callJoinProblem(socket.username, call.key);
+    if (problem) return reply({ error: problem });
+    const sound = await usableSound(socket.username, call.key, data.soundId);
+    if (!sound) return reply({ error: 'That sound isn\'t available in this call.' });
+    if (!calls.get(call.key) || !call.participants.has(socket.username)) return reply({ error: 'You\'re not in this call.' });
+    const payload = { key: call.key, by: socket.username, maxSeconds: SOUND_PLAY_SECONDS, sound: soundFromRow(sound) };
+    for (const p of call.participants.values()) io.to(p.socketId).emit('voice:sound', payload);
+    reply({ message: 'ok' });
   });
 
   // Server admins can disconnect someone from a voice channel.

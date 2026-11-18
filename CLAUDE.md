@@ -135,6 +135,18 @@ to do next) - read it before a big upgrade and add an entry after one.
   people's messages in that room to the `/bridge` namespace and never sends bridged ones
   back (no loops). The client shows a "from Discord" tag (`.sourceTag`).
   `regression/discord_bridge.test.js`.
+- Onboarding, rules screen, Discovery (`ONBOARDING` block in server.js). Onboarding
+  questions (`onboarding_questions`/`_options`/`_answers`) give roles WITHOUT powers and
+  unlock PRIVATE channels only; grants are marked `via_onboarding` (on `server_member_roles`
+  and `channel_access`) so changing an answer only takes back its own grants - the channel
+  access editor keeps those rows and doesn't list them. The rules gate is `rulesPending()`
+  (owner, server admins, site admins and bots are never asked; members who joined before
+  `rules_since` aren't either, unless "ask everyone again" set it NULL). It is enforced in
+  `channelPostBlock()` (threads too), `/threads`, attached uploads, reactions and
+  `callJoinProblem()` - check it in anything new that lets people take part in a server.
+  Listing in Discovery (`servers.discoverable`) is owner-level only and needs a
+  description; `GET /discovery` is for signed-in people and never shows who's in a server.
+  `forgetOnboarding()` runs on leave/kick/ban. `regression/onboarding*.test.js`.
 - Message kinds made by the server (`roll`, `command`, `call`, `join`,
   `event`, `poll`) can't be edited - `editMessage` refuses any `kind`.
 - Anything that fetches a URL a user supplied must go through the

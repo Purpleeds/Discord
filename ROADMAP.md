@@ -197,6 +197,15 @@ large, new system - also split it over several sessions).
   [Sticker] tags, a big picture preview where supported, and clicking opens
   that exact message.
 
+- [x] **Server onboarding and Discovery** - *done Nov 2026*: Server Settings >
+  Onboarding (up to 8 questions that give roles and unlock private channels; members
+  change answers from the server menu > Channels & Roles), Rules Screen (new members
+  must accept before posting, reacting, threads, uploads or voice; "ask everyone
+  again"), and Discovery (the globe on the rail lists servers their owner opted in,
+  joinable without an invite). *Answers never give roles with powers. People already
+  in a server when onboarding/rules are turned on aren't asked. Listing needs a
+  description and is owner-only.*
+
 ## Next: desktop app (.exe)
 
 - [x] **Windows notifier** (Option A) - *done Nov 2026*: `desktop/`, a tray

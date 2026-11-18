@@ -811,6 +811,52 @@ async function setupSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (server_id, name)
     )`);
+  // ---- onboarding, rules screen and Discovery (see "ONBOARDING" below) ----
+  // *_since: when the owner turned it on - people who joined before that
+  // aren't asked (NULL = ask everyone, "ask everyone again").
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS onboarding_enabled INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS onboarding_since TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS rules TEXT`); // JSON array of strings
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS rules_enabled INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS rules_since TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS discoverable INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS discovery_category TEXT`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS rules_accepted_at TIMESTAMPTZ`);
+  // what onboarding handed out, so changing an answer only takes back its own grants
+  await pool.query(`ALTER TABLE server_member_roles ADD COLUMN IF NOT EXISTS via_onboarding INTEGER DEFAULT 0`);
+  await pool.query(`ALTER TABLE channel_access ADD COLUMN IF NOT EXISTS via_onboarding INTEGER DEFAULT 0`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_questions (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      multiple INTEGER DEFAULT 0,
+      required INTEGER DEFAULT 0,
+      position INTEGER DEFAULT 0
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_options (
+      id SERIAL PRIMARY KEY,
+      question_id INTEGER NOT NULL,
+      server_id INTEGER NOT NULL,
+      label TEXT NOT NULL,
+      description TEXT,
+      emoji TEXT,
+      role_ids TEXT DEFAULT '',
+      channel_ids TEXT DEFAULT '',
+      position INTEGER DEFAULT 0
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS onboarding_answers (
+      server_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      option_id INTEGER NOT NULL,
+      PRIMARY KEY (server_id, username, option_id)
+    )`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_questions_server ON onboarding_questions (server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_options_server ON onboarding_options (server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_servers_discoverable ON servers (discoverable) WHERE discoverable = 1`);
   // Two accounts whose names differ only by capitals ("Purple" / "purple")
   // are an impersonation tool. New names are checked in usernameTaken(); the
   // index backs that up, but can't be built if such a pair already exists.
@@ -1627,6 +1673,7 @@ async function serversForUser(username) {
   const rows = await q(
     `SELECT s.id, s.name, s.owner, s.invite_code, s.is_default, s.censor_swears, s.icon_version,
             s.description, s.banner_color, s.banner_version, s.system_channel_id, s.banner_pos,
+            s.onboarding_enabled, s.onboarding_since, s.rules_enabled, s.rules_since, s.discoverable, s.discovery_category,
             CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
             CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' WHEN left(s.banner_url, 8) = '/assets/' THEN s.banner_url ELSE 'data:' END AS banner_url
      FROM servers s
@@ -1641,13 +1688,14 @@ async function serversForUser(username) {
   const emojiRows = await q(`SELECT id, server_id, name, url FROM server_emojis WHERE server_id = ANY($1) ORDER BY name`, [ids]);
   const stickerRows = await q(`SELECT id, server_id, name, url FROM server_stickers WHERE server_id = ANY($1) ORDER BY id`, [ids]);
   const [roleRows, channelRows, customRoleRows, myRoleRows, categoryRows, readable] = await Promise.all([
-    q(`SELECT server_id, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles FROM server_members WHERE username = $1`, [username]),
+    q(`SELECT server_id, role, nickname, avatar_url, avatar_video, banner_url, banner_pos, bio, hide_roles, joined_at, onboarded_at, rules_accepted_at FROM server_members WHERE username = $1`, [username]),
     q(`SELECT * FROM server_channels WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT * FROM server_roles WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     q(`SELECT server_id, role_id FROM server_member_roles WHERE username = $1 AND server_id = ANY($2)`, [username, ids]),
     q(`SELECT * FROM server_categories WHERE server_id = ANY($1) ORDER BY position ASC, id ASC`, [ids]),
     readableChannelRooms(username)
   ]);
+  const questionCounts = new Map((await q(`SELECT server_id, COUNT(*)::int AS n FROM onboarding_questions WHERE server_id = ANY($1) GROUP BY server_id`, [ids])).map(r => [r.server_id, r.n]));
   const canSee = new Set(readable);
   const visibleChannels = channelRows.filter(c => canSee.has(c.room));
   // owners who hide their roles in their server (not named as owner to others)
@@ -1704,6 +1752,14 @@ async function serversForUser(username) {
       bannerUrl: serverBannerUrlOf(s),
       bannerPos: s.banner_pos || '',
       systemChannelId: s.system_channel_id || null,
+      // the join gates: what the app should walk this person through
+      onboarding: {
+        enabled: !!s.onboarding_enabled && !!questionCounts.get(s.id),
+        pending: onboardingGateOpen(s, myMemberRows.get(s.id), username, questionCounts.get(s.id) || 0, { isBot })
+      },
+      rules: { enabled: !!s.rules_enabled, pending: rulesGateOpen(s, myMemberRows.get(s.id), username, { isBot, isSiteAdmin: admin }) },
+      discoverable: !!s.discoverable,
+      discoveryCategory: s.discovery_category || '',
       roles: customRolesBy.get(s.id) || [],
       categories: categoryRows.filter(c => c.server_id === s.id).map(c => ({ id: c.id, name: c.name, position: c.position })),
       myRoleIds: myRoleRows.filter(r => r.server_id === s.id).map(r => r.role_id),
@@ -1720,7 +1776,7 @@ async function serversForUser(username) {
         kind: ['forum', 'voice'].includes(c.kind) ? c.kind : 'text',
         access: (canManage || permissions.includes('manage_channels')) && c.is_private ? {
           roleIds: accessRows.filter(a => a.channel_id === c.id && a.role_id).map(a => a.role_id),
-          usernames: accessRows.filter(a => a.channel_id === c.id && a.username).map(a => a.username)
+          usernames: accessRows.filter(a => a.channel_id === c.id && a.username && !a.via_onboarding).map(a => a.username)
         } : null
       }))
     };
@@ -1899,6 +1955,8 @@ setInterval(() => {
 // a slowmode slot is claimed immediately, so two quick sends can't both
 // slip through. The owner and admins are exempt from both, like Discord.
 async function channelPostBlock(username, room) {
+  const rules = await rulesBlockForRoom(username, room); // threads too
+  if (rules) return rules;
   const channel = await getChannelByRoom(room);
   if (channel && channel.kind === 'forum') return 'This is a forum - start a new post instead.';
   if (channel) {
@@ -3272,6 +3330,7 @@ async function callJoinProblem(username, key) {
     const channel = await getChannelByRoom(info.room);
     if (!channel || channel.kind !== 'voice') return 'call not found';
     if (await activeTimeout(username, channel.server_id)) return 'You\'re timed out in this server.';
+    if (await rulesPending(username, channel.server_id)) return RULES_BLOCK;
   }
   if (await isMuted(username)) return 'you are muted';
   return null;
@@ -3578,6 +3637,7 @@ app.post('/bots/:name/servers/:serverId/remove', requireAuth, route(async (req, 
   if (!bot) return;
   const serverId = Number(req.params.serverId) || 0;
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, bot.username]);
+  await forgetOnboarding(serverId, bot.username);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, bot.username]);
   await resyncRooms([bot.username]);
   sendToUser(bot.username, 'serversChanged', {});
@@ -4245,6 +4305,8 @@ app.post('/threads', requireAuth, route(async (req, res) => {
     firstText = cleanText(req.body.text, 4000);
     if (!firstText) return res.status(400).json({ error: 'write something for your post' });
   }
+  const rulesBlock = await rulesBlockForRoom(req.username, parentRoom);
+  if (rulesBlock) return res.status(403).json({ error: rulesBlock });
   const thread = await one(
     `INSERT INTO threads (parent_room, starter_message_id, name, created_by) VALUES ($1, $2, $3, $4) RETURNING *`,
     [parentRoom, starter ? starter.id : null, name, req.username]
@@ -4982,6 +5044,7 @@ app.post('/servers/:id/leave', requireAuth, route(async (req, res) => {
   if (srv.is_default) return res.status(400).json({ error: 'you cannot leave the general server' });
   if (srv.owner === req.username) return res.status(400).json({ error: 'the owner cannot leave their own server' });
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  await forgetOnboarding(serverId, req.username);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
   await resyncRooms([req.username]);
   sendToUser(req.username, 'serversChanged', {});
@@ -5009,6 +5072,9 @@ app.post('/servers/:id/delete', requireAuth, route(async (req, res) => {
   await pool.query(`DELETE FROM webhooks WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM server_commands WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM reaction_roles WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM onboarding_options WHERE server_id = $1`, [serverId]);
+  await pool.query(`DELETE FROM onboarding_questions WHERE server_id = $1`, [serverId]);
   await pool.query(`DELETE FROM servers WHERE id = $1`, [serverId]);
   await resyncRooms(members);
   for (const member of members) sendToUser(member, 'serversChanged', {});
@@ -5162,6 +5228,7 @@ app.post('/servers/:id/members/:username/kick', requireAuth, route(async (req, r
     return res.status(403).json({ error: 'you can only kick members whose permissions you have yourself' });
   }
   await pool.query(`DELETE FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, target]);
+  await forgetOnboarding(serverId, target);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
   await resyncRooms([target]);
   sendToUser(target, 'adminNotice', { message: `You were removed from ${srv.name}.` });
@@ -5270,6 +5337,7 @@ app.post('/servers/:id/members/:username/ban', requireAuth, route(async (req, re
     [serverId, target, reason || null, req.username]
   );
   const wasMember = await one(`DELETE FROM server_members WHERE server_id = $1 AND username = $2 RETURNING 1`, [serverId, target]);
+  await forgetOnboarding(serverId, target);
   await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2`, [serverId, target]);
   await pool.query(`DELETE FROM server_timeouts WHERE server_id = $1 AND username = $2`, [serverId, target]);
   await resyncRooms([target]);
@@ -5473,11 +5541,14 @@ app.post('/servers/:id/channels/:channelId/access', requireAuth, route(async (re
   if (!usernames.every(u => members.has(u))) return res.status(400).json({ error: 'one of those people is not in this server' });
 
   await pool.query(`UPDATE server_channels SET is_private = $1 WHERE id = $2`, [isPrivate, channelId]);
-  await pool.query(`DELETE FROM channel_access WHERE channel_id = $1`, [channelId]);
+  // grants made by onboarding answers stay (the answer still unlocks it); they
+  // aren't in the editor's list, so they'd otherwise be wiped on every save
+  await pool.query(`DELETE FROM channel_access WHERE channel_id = $1 AND COALESCE(via_onboarding, 0) = 0`, [channelId]);
   if (isPrivate && roleIds.length) {
     await pool.query(`INSERT INTO channel_access (channel_id, role_id) SELECT $1, unnest($2::int[])`, [channelId, roleIds]);
   }
   if (isPrivate && usernames.length) {
+    await pool.query(`DELETE FROM channel_access WHERE channel_id = $1 AND username = ANY($2::text[])`, [channelId, usernames]); // chosen by hand now
     await pool.query(`INSERT INTO channel_access (channel_id, username) SELECT $1, unnest($2::text[])`, [channelId, usernames]);
   }
   await resyncRooms([...members]);
@@ -5609,7 +5680,8 @@ app.post('/servers/:id/roles/assign', requireAuth, route(async (req, res) => {
   } else {
     await pool.query(
       `INSERT INTO server_member_roles (server_id, role_id, username)
-       SELECT $1, r, u FROM unnest($2::int[]) AS r CROSS JOIN unnest($3::text[]) AS u ON CONFLICT DO NOTHING`,
+       SELECT $1, r, u FROM unnest($2::int[]) AS r CROSS JOIN unnest($3::text[]) AS u
+       ON CONFLICT (role_id, username) DO UPDATE SET via_onboarding = 0`, // given by hand now: an onboarding answer will not take it back
       [serverId, roleIds, usernames]
     );
   }
@@ -5663,6 +5735,362 @@ app.post('/servers/:id/invite/regenerate', requireAuth, route(async (req, res) =
   await pool.query(`UPDATE servers SET invite_code = $1 WHERE id = $2`, [code, serverId]);
   await notifyServerMembers(serverId, 'serversChanged', {});
   res.json({ message: 'ok', inviteCode: code });
+}));
+
+// ---------------- ONBOARDING, RULES SCREEN, DISCOVERY ----------------
+// Onboarding: questions new members answer when they join; each answer can
+// give powerless roles (never ones with permissions - same as auto-roles
+// and reaction roles) and unlock private channels. What it handed out is
+// marked via_onboarding, so changing an answer only takes back its own grants.
+// Rules screen: members who joined after it was turned on can't post, react,
+// start threads, upload or join voice until they accept (rulesPending(),
+// enforced in channelPostBlock() and friends). The owner, server admins,
+// site admins and bots are never asked.
+// Discovery: servers whose OWNER opts in are listed at GET /discovery for
+// every signed-in person, who can join them without an invite.
+const MAX_RULES = 20;
+const MAX_RULE_LENGTH = 300;
+const MAX_ONBOARDING_QUESTIONS = 8;
+const MAX_ONBOARDING_OPTIONS = 12;
+const DISCOVERY_CATEGORIES = ['gaming', 'school', 'study', 'friends', 'creators', 'local', 'other'];
+const DISCOVERY_PAGE = 24;
+const RULES_BLOCK = 'Read and accept this server\'s rules before you take part here.';
+
+function rulesFromText(text) {
+  try {
+    const list = JSON.parse(text || '[]');
+    return Array.isArray(list) ? list.map(r => String(r || '').trim()).filter(Boolean).slice(0, MAX_RULES) : [];
+  } catch (err) { return []; }
+}
+function idList(text) {
+  return [...new Set(String(text || '').split(',').map(Number).filter(n => Number.isInteger(n) && n > 0))];
+}
+function joinedSince(member, since) {
+  return !since || !member.joined_at || new Date(member.joined_at) >= new Date(since);
+}
+// The two gates, worked out from a servers row and the person's server_members
+// row (both from one query, so serversForUser() can do every server at once).
+function rulesGateOpen(srv, member, username, { isBot, isSiteAdmin }) {
+  if (!srv || !member || srv.is_default || !srv.rules_enabled || member.rules_accepted_at) return false;
+  if (isBot || isSiteAdmin || srv.owner === username || member.role === 'admin' || member.role === 'owner') return false;
+  return joinedSince(member, srv.rules_since);
+}
+function onboardingGateOpen(srv, member, username, questionCount, { isBot }) {
+  if (!srv || !member || srv.is_default || !srv.onboarding_enabled || !questionCount || member.onboarded_at) return false;
+  if (isBot || srv.owner === username) return false;
+  return joinedSince(member, srv.onboarding_since);
+}
+
+// True when `username` still has to accept this server's rules.
+async function rulesPending(username, serverId) {
+  if (!serverId) return false;
+  const row = await one(
+    `SELECT s.owner, s.is_default, s.rules_enabled, s.rules_since, m.role, m.joined_at, m.rules_accepted_at
+     FROM servers s JOIN server_members m ON m.server_id = s.id AND m.username = $2 WHERE s.id = $1`,
+    [serverId, username]
+  );
+  if (!row || !row.rules_enabled) return false; // the common case: one query, no more
+  return rulesGateOpen(row, row, username, { isBot: await isBotUser(username), isSiteAdmin: await isAdmin(username) });
+}
+async function rulesBlockForRoom(username, room) {
+  const channel = await channelForRoom(room);
+  return channel && (await rulesPending(username, channel.server_id)) ? RULES_BLOCK : null;
+}
+
+// The onboarding questions of a server, with their options, in order.
+async function onboardingQuestions(serverId) {
+  const [questions, options] = await Promise.all([
+    q(`SELECT * FROM onboarding_questions WHERE server_id = $1 ORDER BY position ASC, id ASC`, [serverId]),
+    q(`SELECT * FROM onboarding_options WHERE server_id = $1 ORDER BY position ASC, id ASC`, [serverId])
+  ]);
+  return questions.map(qn => ({ ...qn, options: options.filter(o => o.question_id === qn.id) }));
+}
+
+// Take back onboarding's grants when someone leaves, is kicked or banned.
+async function forgetOnboarding(serverId, username) {
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1 AND username = $2`, [serverId, username]);
+  await pool.query(
+    `DELETE FROM channel_access WHERE username = $2 AND via_onboarding = 1 AND channel_id IN (SELECT id FROM server_channels WHERE server_id = $1)`,
+    [serverId, username]
+  );
+}
+
+app.get('/servers/:id/onboarding', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv || !(await isServerMember(req.username, serverId))) return res.status(404).json({ error: 'server not found' });
+  const perms = await serverPermissions(req.username, serverId);
+  const manager = perms.has('manage_server');
+  const member = await one(`SELECT * FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  const questions = await onboardingQuestions(serverId);
+  const answers = (await q(`SELECT option_id FROM onboarding_answers WHERE server_id = $1 AND username = $2`, [serverId, req.username])).map(r => r.option_id);
+  const who = { isBot: await isBotUser(req.username), isSiteAdmin: await isAdmin(req.username) };
+  const roles = new Map((await q(`SELECT id, name, color FROM server_roles WHERE server_id = $1 AND COALESCE(permissions, '') = ''`, [serverId])).map(r => [r.id, r]));
+  res.json({
+    enabled: !!srv.onboarding_enabled,
+    pending: onboardingGateOpen(srv, member, req.username, questions.length, who),
+    questions: questions.map(qn => ({
+      id: qn.id, title: qn.title, multiple: !!qn.multiple, required: !!qn.required,
+      options: qn.options.map(o => ({
+        id: o.id, label: o.label, description: o.description || '', emoji: o.emoji || '',
+        // role names are public (every member gets the role list); which
+        // private channels an answer unlocks is only for the people setting it up
+        roles: idList(o.role_ids).filter(id => roles.has(id)).map(id => ({ id, name: roles.get(id).name, color: roles.get(id).color || '' })),
+        channelIds: manager ? idList(o.channel_ids) : undefined
+      }))
+    })),
+    myAnswers: answers,
+    rules: {
+      enabled: !!srv.rules_enabled,
+      list: rulesFromText(srv.rules),
+      accepted: !!(member && member.rules_accepted_at),
+      pending: rulesGateOpen(srv, member, req.username, who)
+    },
+    discovery: manager ? { discoverable: !!srv.discoverable, category: srv.discovery_category || '' } : undefined
+  });
+}));
+
+// Saves the whole onboarding setup. Questions/options sent with their id keep
+// it (so people's answers survive edits); ones left out are deleted.
+app.post('/servers/:id/onboarding', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'the general server has no onboarding' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'set up onboarding'))) return;
+  const input = Array.isArray(req.body.questions) ? req.body.questions : [];
+  if (input.length > MAX_ONBOARDING_QUESTIONS) return res.status(400).json({ error: `up to ${MAX_ONBOARDING_QUESTIONS} questions` });
+  const [roleRows, channelRows, existing] = await Promise.all([
+    q(`SELECT id, permissions FROM server_roles WHERE server_id = $1`, [serverId]),
+    q(`SELECT id, name, is_private FROM server_channels WHERE server_id = $1`, [serverId]),
+    onboardingQuestions(serverId)
+  ]);
+  const roleById = new Map(roleRows.map(r => [r.id, r]));
+  const channelById = new Map(channelRows.map(c => [c.id, c]));
+  const oldQuestions = new Map(existing.map(qn => [qn.id, qn]));
+  const oldOptions = new Map(existing.flatMap(qn => qn.options).map(o => [o.id, o]));
+  const questions = [];
+  let grantsRoles = false, grantsChannels = false;
+  for (const raw of input) {
+    const title = cleanText(raw && raw.title, 120);
+    if (!title) return res.status(400).json({ error: 'every question needs a title' });
+    const opts = Array.isArray(raw.options) ? raw.options : [];
+    if (!opts.length) return res.status(400).json({ error: `"${title}" needs at least one answer` });
+    if (opts.length > MAX_ONBOARDING_OPTIONS) return res.status(400).json({ error: `up to ${MAX_ONBOARDING_OPTIONS} answers per question` });
+    const options = [];
+    for (const o of opts) {
+      const label = cleanText(o && o.label, 80);
+      if (!label) return res.status(400).json({ error: `every answer to "${title}" needs a name` });
+      const roleIds = [...new Set((Array.isArray(o.roleIds) ? o.roleIds : []).map(Number))];
+      const channelIds = [...new Set((Array.isArray(o.channelIds) ? o.channelIds : []).map(Number))];
+      for (const id of roleIds) {
+        const role = roleById.get(id);
+        if (!role) return res.status(400).json({ error: 'one of those roles is not in this server' });
+        if (permissionsFromText(role.permissions).length) return res.status(400).json({ error: 'Onboarding can only give roles without permissions.' });
+      }
+      for (const id of channelIds) {
+        const channel = channelById.get(id);
+        if (!channel) return res.status(400).json({ error: 'one of those channels is not in this server' });
+        if (!channel.is_private) return res.status(400).json({ error: `#${channel.name} isn't private - everyone can already see it. Answers only need to unlock private channels.` });
+      }
+      const keep = oldOptions.get(Number(o.id));
+      const before = keep && keep.question_id === Number(raw.id) ? keep : null;
+      const same = (a, b) => [...a].sort().join() === [...b].sort().join();
+      if (!same(roleIds, before ? idList(before.role_ids) : [])) grantsRoles = true;
+      if (!same(channelIds, before ? idList(before.channel_ids) : [])) grantsChannels = true;
+      options.push({ id: before ? before.id : null, label, description: cleanText(o.description, 120), emoji: cleanText(o.emoji, 64), roleIds, channelIds });
+    }
+    questions.push({ id: oldQuestions.has(Number(raw.id)) ? Number(raw.id) : null, title, multiple: raw.multiple ? 1 : 0, required: raw.required ? 1 : 0, options });
+  }
+  // changing what answers hand out needs the power to hand it out yourself
+  if (grantsRoles && !(await requirePerm(req, res, serverId, 'manage_roles', 'choose which roles answers give'))) return;
+  if (grantsChannels && !(await requirePerm(req, res, serverId, 'manage_channels', 'choose which channels answers unlock'))) return;
+  const enabled = req.body.enabled ? 1 : 0;
+  if (enabled && !questions.length) return res.status(400).json({ error: 'add a question before turning onboarding on' });
+
+  const keptQuestions = questions.filter(qn => qn.id).map(qn => qn.id);
+  const keptOptions = questions.flatMap(qn => qn.options).filter(o => o.id).map(o => o.id);
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1 AND NOT (option_id = ANY($2::int[]))`, [serverId, keptOptions]);
+  await pool.query(`DELETE FROM onboarding_options WHERE server_id = $1 AND NOT (id = ANY($2::int[]))`, [serverId, keptOptions]);
+  await pool.query(`DELETE FROM onboarding_questions WHERE server_id = $1 AND NOT (id = ANY($2::int[]))`, [serverId, keptQuestions]);
+  for (const [qi, qn] of questions.entries()) {
+    const questionId = qn.id
+      ? (await pool.query(`UPDATE onboarding_questions SET title = $1, multiple = $2, required = $3, position = $4 WHERE id = $5`, [qn.title, qn.multiple, qn.required, qi, qn.id]), qn.id)
+      : (await one(`INSERT INTO onboarding_questions (server_id, title, multiple, required, position) VALUES ($1, $2, $3, $4, $5) RETURNING id`, [serverId, qn.title, qn.multiple, qn.required, qi])).id;
+    for (const [oi, o] of qn.options.entries()) {
+      const values = [o.label, o.description || null, o.emoji || null, o.roleIds.join(','), o.channelIds.join(','), oi];
+      if (o.id) await pool.query(`UPDATE onboarding_options SET label = $1, description = $2, emoji = $3, role_ids = $4, channel_ids = $5, position = $6 WHERE id = $7`, [...values, o.id]);
+      else await pool.query(`INSERT INTO onboarding_options (label, description, emoji, role_ids, channel_ids, position, question_id, server_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [...values, questionId, serverId]);
+    }
+  }
+  // turning it on: people already here aren't sent through it (they can still
+  // open Channels & Roles from the server menu)
+  if (enabled && !srv.onboarding_enabled) await pool.query(`UPDATE servers SET onboarding_enabled = 1, onboarding_since = NOW() WHERE id = $1`, [serverId]);
+  else if (!enabled) await pool.query(`UPDATE servers SET onboarding_enabled = 0 WHERE id = $1`, [serverId]);
+  auditLog(serverId, req.username, 'onboarding_update', srv.name, `${questions.length} question(s), ${enabled ? 'on' : 'off'}`);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// A member's answers: gives the roles / unlocks the channels of what they
+// picked, and takes back what onboarding gave for answers they dropped.
+app.post('/servers/:id/onboarding/answers', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv || srv.is_default || !(await one(`SELECT 1 FROM server_members WHERE server_id = $1 AND username = $2`, [serverId, req.username]))) {
+    return res.status(404).json({ error: 'server not found' });
+  }
+  if (!srv.onboarding_enabled) return res.status(400).json({ error: 'this server has no onboarding' });
+  if (rateLimited('onboarding:' + req.username, 20, 60 * 1000)) return res.status(429).json({ error: 'Slow down a little.' });
+  const questions = await onboardingQuestions(serverId);
+  const picked = new Set((Array.isArray(req.body.optionIds) ? req.body.optionIds : []).map(Number));
+  const chosen = [];
+  for (const qn of questions) {
+    const mine = qn.options.filter(o => picked.has(o.id));
+    if (qn.required && !mine.length) return res.status(400).json({ error: `"${qn.title}" needs an answer` });
+    if (!qn.multiple && mine.length > 1) return res.status(400).json({ error: `pick one answer for "${qn.title}"` });
+    chosen.push(...mine);
+  }
+  if (chosen.length !== picked.size) return res.status(400).json({ error: 'one of those answers is not in this server' });
+  const [safeRoles, privateChannels] = await Promise.all([
+    q(`SELECT id FROM server_roles WHERE server_id = $1 AND COALESCE(permissions, '') = ''`, [serverId]),
+    q(`SELECT id FROM server_channels WHERE server_id = $1 AND COALESCE(is_private, 0) = 1`, [serverId])
+  ]);
+  const roleOk = new Set(safeRoles.map(r => r.id));
+  const channelOk = new Set(privateChannels.map(c => c.id));
+  const isBot = await isBotUser(req.username);
+  const roleIds = isBot ? [] : [...new Set(chosen.flatMap(o => idList(o.role_ids)))].filter(id => roleOk.has(id));
+  const channelIds = [...new Set(chosen.flatMap(o => idList(o.channel_ids)))].filter(id => channelOk.has(id));
+  const before = new Set(await readableChannelRooms(req.username));
+
+  await pool.query(`DELETE FROM server_member_roles WHERE server_id = $1 AND username = $2 AND via_onboarding = 1 AND NOT (role_id = ANY($3::int[]))`, [serverId, req.username, roleIds]);
+  if (roleIds.length) {
+    await pool.query(`INSERT INTO server_member_roles (server_id, role_id, username, via_onboarding) SELECT $1, unnest($3::int[]), $2, 1 ON CONFLICT DO NOTHING`, [serverId, req.username, roleIds]);
+  }
+  await pool.query(
+    `DELETE FROM channel_access WHERE username = $2 AND via_onboarding = 1 AND NOT (channel_id = ANY($3::int[]))
+       AND channel_id IN (SELECT id FROM server_channels WHERE server_id = $1)`,
+    [serverId, req.username, channelIds]
+  );
+  if (channelIds.length) {
+    await pool.query(
+      `INSERT INTO channel_access (channel_id, username, via_onboarding)
+       SELECT c, $1, 1 FROM unnest($2::int[]) c
+       WHERE NOT EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c AND a.username = $1)`,
+      [req.username, channelIds]
+    );
+  }
+  await pool.query(`DELETE FROM onboarding_answers WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  if (chosen.length) {
+    await pool.query(`INSERT INTO onboarding_answers (server_id, username, option_id) SELECT $1, $2, unnest($3::int[]) ON CONFLICT DO NOTHING`, [serverId, req.username, chosen.map(o => o.id)]);
+  }
+  await pool.query(`UPDATE server_members SET onboarded_at = NOW() WHERE server_id = $1 AND username = $2`, [serverId, req.username]);
+  await resyncRooms([req.username]);
+  // channels they've just been let into: their history isn't "unread"
+  const fresh = (await readableChannelRooms(req.username)).filter(room => !before.has(room));
+  if (fresh.length) {
+    const threads = (await q(`SELECT 'thread:' || id AS room FROM threads WHERE parent_room = ANY($1)`, [fresh])).map(t => t.room);
+    await markRoomsRead(req.username, fresh.concat(threads)).catch(err => console.error('onboarding read baseline failed:', err.message));
+  }
+  sendToUser(req.username, 'serversChanged', {});
+  await notifyServerMembers(serverId, 'serversChanged', {}); // their roles show in the member list
+  res.json({ message: 'ok', roleIds, unlocked: fresh.length });
+}));
+
+// The rules screen.
+app.post('/servers/:id/rules', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'the general server has no rules screen' });
+  if (!(await requirePerm(req, res, serverId, 'manage_server', 'change the rules'))) return;
+  const raw = Array.isArray(req.body.rules) ? req.body.rules : [];
+  const rules = raw.map(r => cleanText(r, MAX_RULE_LENGTH)).filter(Boolean);
+  if (rules.length > MAX_RULES) return res.status(400).json({ error: `up to ${MAX_RULES} rules` });
+  const enabled = req.body.enabled ? 1 : 0;
+  if (enabled && !rules.length) return res.status(400).json({ error: 'write at least one rule before turning the rules screen on' });
+  await pool.query(`UPDATE servers SET rules = $1, rules_enabled = $2 WHERE id = $3`, [JSON.stringify(rules), enabled, serverId]);
+  if (enabled && req.body.askEveryone) {
+    // everyone (but the owner/admins) has to accept again, e.g. after a big change
+    await pool.query(`UPDATE servers SET rules_since = NULL WHERE id = $1`, [serverId]);
+    await pool.query(`UPDATE server_members SET rules_accepted_at = NULL WHERE server_id = $1`, [serverId]);
+  } else if (enabled && !srv.rules_enabled) {
+    await pool.query(`UPDATE servers SET rules_since = NOW() WHERE id = $1`, [serverId]); // only people who join from now on
+  }
+  auditLog(serverId, req.username, 'rules_update', srv.name, `${rules.length} rule(s), ${enabled ? 'on' : 'off'}${enabled && req.body.askEveryone ? ', everyone asked again' : ''}`);
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok', rules });
+}));
+
+app.post('/servers/:id/rules/accept', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT rules_enabled, is_default FROM servers WHERE id = $1`, [serverId]);
+  const updated = srv && !srv.is_default ? await one(
+    `UPDATE server_members SET rules_accepted_at = COALESCE(rules_accepted_at, NOW()) WHERE server_id = $1 AND username = $2 RETURNING 1`,
+    [serverId, req.username]
+  ) : null;
+  if (!updated) return res.status(404).json({ error: 'server not found' });
+  sendToUser(req.username, 'serversChanged', {});
+  res.json({ message: 'ok' });
+}));
+
+// Listing a server in Discovery publishes it to everyone, so it's the
+// owner's call (like deleting it), not something a role can do.
+app.post('/servers/:id/discovery', requireAuth, route(async (req, res) => {
+  const serverId = Number(req.params.id);
+  const srv = await one(`SELECT * FROM servers WHERE id = $1`, [serverId]);
+  if (!srv) return res.status(404).json({ error: 'server not found' });
+  if (srv.is_default) return res.status(400).json({ error: 'everyone is already in the general server' });
+  if (!(await isServerOwnerLevel(req.username, serverId))) return res.status(403).json({ error: 'only the server owner can list it in Discovery' });
+  const discoverable = req.body.discoverable ? 1 : 0;
+  const category = DISCOVERY_CATEGORIES.includes(req.body.category) ? req.body.category : (srv.discovery_category || 'other');
+  if (discoverable && !String(srv.description || '').trim()) return res.status(400).json({ error: 'Add a description in Overview first, so people know what the server is about.' });
+  await pool.query(`UPDATE servers SET discoverable = $1, discovery_category = $2 WHERE id = $3`, [discoverable, category, serverId]);
+  auditLog(serverId, req.username, 'discovery_update', srv.name, discoverable ? 'listed (' + category + ')' : 'not listed');
+  await notifyServerMembers(serverId, 'serversChanged', {});
+  res.json({ message: 'ok', discoverable: !!discoverable, category });
+}));
+
+// Public servers, biggest first. Signed-in people only (it's a list to join
+// from, not a public directory for crawlers). Nothing about who's in them.
+app.get('/discovery', requireAuth, route(async (req, res) => {
+  const text = cleanText(req.query.q, 60);
+  const like = text ? '%' + text.replace(/[\\%_]/g, m => '\\' + m) + '%' : '';
+  const category = DISCOVERY_CATEGORIES.includes(req.query.category) ? req.query.category : '';
+  const offset = Math.max(0, Math.min(10000, Number(req.query.offset) || 0));
+  const rows = await q(
+    `SELECT s.id, s.name, s.description, s.discovery_category, s.icon_version, s.banner_color, s.banner_version, s.banner_pos,
+            CASE WHEN left(s.icon_url, 5) = 'data:' THEN 'data:' ELSE s.icon_url END AS icon_url,
+            CASE WHEN s.banner_url IS NULL OR s.banner_url = '' THEN '' WHEN left(s.banner_url, 8) = '/assets/' THEN s.banner_url ELSE 'data:' END AS banner_url,
+            (SELECT COUNT(*)::int FROM server_members m WHERE m.server_id = s.id) AS members,
+            EXISTS (SELECT 1 FROM server_members m WHERE m.server_id = s.id AND m.username = $1) AS joined
+     FROM servers s JOIN users u ON u.username = s.owner
+     WHERE s.discoverable = 1 AND COALESCE(s.is_default, 0) = 0 AND COALESCE(u.banned, 0) = 0
+       AND ($2 = '' OR s.name ILIKE $2 OR s.description ILIKE $2)
+       AND ($3 = '' OR s.discovery_category = $3)
+     ORDER BY members DESC, s.id DESC
+     LIMIT ${DISCOVERY_PAGE + 1} OFFSET $4`,
+    [req.username, like, category, offset]
+  );
+  res.json({
+    servers: rows.slice(0, DISCOVERY_PAGE).map(s => ({
+      id: s.id, name: s.name, description: s.description || '', category: s.discovery_category || 'other',
+      iconUrl: serverIconUrlOf(s), bannerUrl: serverBannerUrlOf(s), bannerColor: s.banner_color || '', bannerPos: s.banner_pos || '',
+      members: s.members, joined: !!s.joined
+    })),
+    more: rows.length > DISCOVERY_PAGE,
+    categories: DISCOVERY_CATEGORIES
+  });
+}));
+
+app.post('/discovery/:id/join', requireAuth, route(async (req, res) => {
+  if (await isBotUser(req.username)) return res.status(403).json({ error: 'Bots join servers when their owner adds them (Settings > My Bots).' });
+  const srv = await one(`SELECT * FROM servers WHERE id = $1 AND discoverable = 1 AND COALESCE(is_default, 0) = 0`, [Number(req.params.id)]);
+  if (!srv) return res.status(404).json({ error: 'That server isn\'t in Discovery any more.' });
+  if (await isServerBanned(req.username, srv.id)) return res.status(403).json({ error: 'You are banned from this server.' });
+  if (rateLimited('discoverjoin:' + req.username, 20, 60 * 60 * 1000)) return res.status(429).json({ error: 'You\'ve joined a lot of servers - try again in a while.' });
+  await addServerMember(srv, req.username);
+  res.json({ id: srv.id, name: srv.name });
 }));
 
 // ---------------- FRIENDS + BLOCKING ----------------
@@ -5971,6 +6399,7 @@ app.post('/upload', requireAuth, route(async (req, res) => {
       const channel = await channelForRoom(finalRoom);
       const timeout = channel ? await activeTimeout(req.username, channel.server_id) : null;
       if (timeout) return res.status(403).json({ error: 'You\'re timed out in this server.' });
+      if (channel && await rulesPending(req.username, channel.server_id)) return res.status(403).json({ error: RULES_BLOCK });
     } else {
       const blocked = await channelPostBlock(req.username, finalRoom);
       if (blocked) return res.status(403).json({ error: blocked });
@@ -6498,6 +6927,11 @@ io.on('connection', (socket) => {
     const row = await getMessageById(id);
     if (!row || row.deleted_at || !(await isAllowedRoom(socket.username, row.room)) || !(await validReaction(emoji, row.room))) {
       if (typeof ack === 'function') ack({ error: 'invalid reaction' });
+      return;
+    }
+    const rulesBlock = await rulesBlockForRoom(socket.username, row.room);
+    if (rulesBlock) {
+      if (typeof ack === 'function') ack({ error: rulesBlock });
       return;
     }
     // a reaction role: reacting gives the role, un-reacting takes it away

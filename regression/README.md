@@ -46,6 +46,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
 | `backups` | scheduled backups, restore (incl. into an empty database and a newer schema), backup download, "Download my data", "Export channel", owner-only checks |
+| `onboarding` / `onboarding_ui` | onboarding questions (roles + private channels), the rules screen gate, Discovery listing and joining |
 
 `notifier_ui` drives the desktop notifier (desktop/) with Playwright's
 Electron support against its own server on port 4102. It needs `npm install`

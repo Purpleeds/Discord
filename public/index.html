@@ -1954,6 +1954,87 @@ img.customEmoji{width:1.375em;height:1.375em;object-fit:contain;vertical-align:-
   @keyframes notiOut{to{opacity:0;transform:translateY(-18px);}}
 }
 html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !important;}
+
+/* ---- onboarding, rules screen and Discover ---- */
+.obSpring{flex:1;}
+.obHead .obKicker{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--brand);margin-bottom:6px;}
+.obHead h2{font-family:var(--font-display);}
+.obBody{display:flex;flex-direction:column;gap:8px;max-height:58vh;overflow-y:auto;}
+.obOption{
+  display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 14px;border-radius:12px;
+  border:1px solid var(--line-strong);background:var(--raised);color:var(--text);
+  transition:background-color .14s ease,border-color .14s ease,transform .14s var(--ease-out);
+}
+.obOption:hover{border-color:var(--border-strong);background:var(--raised-2);}
+.obOption.on{border-color:var(--brand);background:color-mix(in srgb, var(--brand) 12%, var(--raised));}
+.obOption:focus-visible{outline:2px solid var(--brand);outline-offset:2px;}
+.obEmoji{font-size:22px;width:40px;height:40px;flex:0 0 40px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--bg-tertiary);}
+.obText{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.obText b{font-size:15px;font-weight:600;color:var(--text-bright);overflow-wrap:anywhere;}
+.obText small{font-size:13px;color:var(--text-muted);line-height:1.35;overflow-wrap:anywhere;}
+.obGives{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;}
+.obRole{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--bg-tertiary);color:var(--text);}
+.obRole i,.obChip i{width:9px;height:9px;border-radius:50%;flex:0 0 9px;}
+.obTick{width:22px;height:22px;flex:0 0 22px;border-radius:50%;border:2px solid var(--border-strong);}
+.obOption.on .obTick{border-color:var(--brand);background:var(--brand) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 12.5l4 4 8-9' fill='none' stroke='%23000' stroke-opacity='.75' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/16px no-repeat;}
+.obRules{margin:0;padding:0;list-style:none;counter-reset:rule;display:flex;flex-direction:column;gap:8px;}
+.obRules li{counter-increment:rule;display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border-radius:12px;background:var(--raised);color:var(--text);line-height:1.45;overflow-wrap:anywhere;}
+.obRules li::before{content:counter(rule);flex:0 0 26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:var(--brand);color:var(--on-brand);}
+.obAgree{display:flex;align-items:center;gap:10px;margin-top:10px;padding:12px 14px;border-radius:12px;border:1px dashed var(--border-strong);cursor:pointer;color:var(--text-bright);font-weight:500;}
+.obAgree input{width:18px;height:18px;accent-color:var(--brand);}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+
+/* Server Settings > Onboarding */
+.obEdQ{border:1px solid var(--line-strong);border-radius:var(--r-card);padding:14px;margin-bottom:12px;background:var(--bg-secondary);max-width:760px;}
+.obEdHead,.obEdLine{display:flex;align-items:center;gap:8px;}
+.obEdNum{flex:0 0 26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:var(--brand);color:var(--on-brand);}
+.obEdHead .settingsInput,.obEdLine .settingsInput{margin:0;min-width:0;}
+.obEdTitle{flex:1;font-weight:600;}
+.obEdEmoji{flex:0 0 52px;width:52px;text-align:center;}
+.obEdLabel{flex:1 1 150px;}
+.obEdDesc{flex:2 1 200px;}
+.obIconBtn{flex:0 0 34px;width:34px;height:34px;border-radius:var(--r-ctl);background:var(--btn-grey);color:var(--text);font-size:14px;}
+.obIconBtn:hover:not(:disabled){background:var(--btn-grey-hover);}
+.obIconBtn.danger:hover:not(:disabled){background:var(--red);color:#fff;}
+.obIconBtn:disabled{opacity:.35;cursor:default;}
+.obEdFlags{display:flex;flex-wrap:wrap;gap:18px;margin:10px 0 6px 34px;color:var(--text-muted);font-size:13.5px;}
+.obEdFlags label{display:flex;align-items:center;gap:6px;cursor:pointer;}
+.obEdFlags input{accent-color:var(--brand);}
+.obEdOpt{margin:8px 0 0 34px;padding:10px;border-radius:12px;background:var(--bg-tertiary);}
+.obEdGrants{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px;}
+.obEdGrantLabel{font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text-muted);margin-right:4px;}
+.obChip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line-strong);background:transparent;color:var(--text-muted);font-size:13px;}
+.obChip.on{border-color:var(--brand);color:var(--text-bright);background:color-mix(in srgb, var(--brand) 14%, transparent);}
+.obChip:disabled{opacity:.5;cursor:default;}
+.obEdAdd{margin:10px 0 0 34px;padding:6px 12px;}
+.obEmpty{max-width:760px;margin-bottom:12px;}
+
+/* Discover */
+.modal.dsModal{width:880px;}
+.dsCats{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 14px;}
+.dsCat{padding:6px 12px;border-radius:999px;background:var(--raised);color:var(--text-muted);font-size:13.5px;border:1px solid transparent;}
+.dsCat:hover{color:var(--text-bright);}
+.dsCat.on{background:color-mix(in srgb, var(--brand) 16%, var(--raised));border-color:var(--brand);color:var(--text-bright);}
+.dsGrid{display:grid;grid-template-columns:repeat(auto-fill, minmax(230px, 1fr));gap:12px;}
+.dsGrid > .panelEmpty{grid-column:1 / -1;}
+.dsCard{position:relative;display:flex;flex-direction:column;border-radius:var(--r-card);overflow:hidden;background:var(--raised);border:1px solid var(--line);transition:transform .14s var(--ease-out),border-color .14s ease;}
+@media (hover:hover) and (pointer:fine){ .dsCard:hover{transform:translateY(-2px);border-color:var(--line-strong);} }
+.dsBanner{position:relative;overflow:hidden;height:96px;background-size:cover;background-position:center;}
+.dsCard .dsIcon{position:absolute;top:66px;left:14px;width:52px;height:52px;border-radius:16px;border:4px solid var(--raised);font-size:17px;overflow:hidden;}
+.dsCard .dsIcon img{width:100%;height:100%;object-fit:cover;}
+.dsBody{padding:30px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1;}
+.dsName{font-family:var(--font-display);font-weight:700;font-size:16px;color:var(--text-bright);overflow-wrap:anywhere;}
+.dsDesc{font-size:13.5px;line-height:1.4;color:var(--text-muted);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;flex:1;}
+.dsMeta{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:6px;font-size:12.5px;color:var(--text-muted);}
+.dsMeta .btn{padding:6px 16px;}
+.dsMoreRow{display:flex;justify-content:center;margin-top:12px;}
+@media (max-width:640px){
+  .obEdOpt,.obEdAdd{margin-left:0;}
+  .obEdFlags{margin-left:0;}
+  .obEdLine{flex-wrap:wrap;}
+  .obEdDesc{flex-basis:100%;}
+  .dsGrid{grid-template-columns:1fr;}
+}
 </style>
 </head>
 
@@ -2007,6 +2088,11 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
       <div class="railPill"></div>
       <div class="railIcon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.7"/><path d="M15.3 8.7l-2 5-5 2 2-5 5-2z" fill="currentColor"/></svg></div>
       <div class="railTip">Join a Server</div>
+    </div>
+    <div class="railWrap action" id="discoverRail" onclick="openDiscovery()">
+      <div class="railPill"></div>
+      <div class="railIcon"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.8 3.9 5.8 3.9 9s-1.3 6.2-3.9 9c-2.6-2.8-3.9-5.8-3.9-9s1.3-6.2 3.9-9z"/></svg></div>
+      <div class="railTip">Discover Servers</div>
     </div>
     <div class="railSpring"></div>
     <div id="userPanel">
@@ -3748,6 +3834,7 @@ function switchServer(serverId, silent){
   const keep = channels.find(c => c.room === currentRoom);
   const target = keep || channels[0];
   if(target) openChannel(target.room, silent);
+  maybeShowServerGates(server);
 }
 
 function openHome(){
@@ -6391,6 +6478,8 @@ function showServerMenu(event, server){
   ];
   if(serverUnreadCount(server)) items.push({ label:'Mark as read', action:() => markServerRead(server) });
   if(!server.isDefault) items.push({ label:'Edit in-server profile', action:() => editMyProfile(server) });
+  if(server.onboarding && server.onboarding.enabled) items.push({ label:'Channels & Roles', action:() => openOnboarding(server.id, 'answers') });
+  if(server.rules && server.rules.enabled) items.push({ label:'Server rules', action:() => openOnboarding(server.id, 'rules') });
   items.push(...levelMenuItems('server:' + server.id, 'Server notifications'));
   if(canManageAnything(server)){
     items.push({ sep:true });
@@ -7317,13 +7406,18 @@ function updateBlockedBar(){
   const blocked = !friendsOpen && !!activeDMUser && isBlocked(activeDMUser);
   const found = !friendsOpen && view === 'server' && currentRoom ? channelByRoom(currentRoom) : null;
   const readOnly = !!(found && !found.thread && found.channel.adminsOnly && !can(found.server, 'manage_messages'));
+  // the server's rules screen: no posting until they're accepted (the server enforces it)
+  const rulesFirst = !blocked && !!(found && found.server.rules && found.server.rules.pending);
   $('composerNoticeText').textContent = blocked
     ? 'You can\'t send messages to a user you have blocked.'
+    : rulesFirst ? 'Accept this server\'s rules to start chatting.'
     : 'This is an announcement channel - only admins can post here.';
-  $('composerNoticeBtn').style.display = blocked ? '' : 'none';
+  $('composerNoticeBtn').style.display = blocked || rulesFirst ? '' : 'none';
+  $('composerNoticeBtn').textContent = rulesFirst ? 'Read the rules' : 'Unblock';
+  $('composerNoticeBtn').onclick = rulesFirst ? () => openOnboarding(found.server.id, 'rules') : () => unblockUser(activeDMUser);
   $('threadsBtn').style.display = found && (found.thread || found.channel.kind === 'text') ? '' : 'none'; // threads live in text channels
-  $('blockedBar').classList.toggle('show', blocked || readOnly);
-  if(currentRoom) setComposerEnabled(!(blocked || readOnly));
+  $('blockedBar').classList.toggle('show', blocked || readOnly || rulesFirst);
+  if(currentRoom) setComposerEnabled(!(blocked || readOnly || rulesFirst));
 }
 
 const ICON_ANNOUNCE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M18 3.5a1 1 0 0 1 1.5.86v13.28A1 1 0 0 1 18 18.5L13 15.5H7l1.3 4.1a1 1 0 0 1-.95 1.3H6a1 1 0 0 1-.95-.68L3.4 15.2A3.5 3.5 0 0 1 4.5 8.5H13zM21 8a3 3 0 0 1 0 6z"/></svg>';
@@ -10595,6 +10689,9 @@ function openServerSettings(serverId, sectionKey){
       { key:'roles', label:'Roles', render:c => renderServerRoles(c, sid) },
       { key:'members', label:'Members', render:c => renderServerMembers(c, sid) },
       { key:'integrations', label:'Integrations', render:c => renderServerIntegrations(c, sid), hidden:!can(server, 'manage_integrations') },
+      { key:'onboarding', label:'Onboarding', render:c => renderServerOnboarding(c, sid), hidden:server.isDefault || !can(server, 'manage_server') },
+      { key:'rules', label:'Rules Screen', render:c => renderServerRules(c, sid), hidden:server.isDefault || !can(server, 'manage_server') },
+      { key:'discovery', label:'Discovery', render:c => renderServerDiscovery(c, sid), hidden:server.isDefault || !can(server, 'manage_server') },
       { key:'emoji', label:'Emoji & Stickers', render:c => renderServerEmoji(c, sid), hidden:!can(server, 'manage_emoji') && server.isDefault },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'invites', label:'Invites', render:c => renderServerInvites(c, sid), hidden:server.isDefault }
@@ -11919,22 +12016,452 @@ function openJoinServer(){
   openModal(
     '<div class="modalHead"><h2>Join a server</h2><p>Enter an invite code below to join an existing server.</p></div>' +
     '<div class="modalBody"><label class="formLabel">Invite code</label>' +
-    '<input class="formInput" id="joinCode" placeholder="e.g. 4f9a2b1c"><div class="modalMsg" id="modalMsg"></div></div>' +
+    '<input class="formInput" id="joinCode" placeholder="e.g. 4f9a2b1c"><div class="modalMsg" id="modalMsg"></div>' +
+    '<div class="modalNote">No invite? <a href="#" id="joinDiscover">Browse public servers</a></div></div>' +
     '<div class="modalFoot"><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn" id="joinServerBtn">Join Server</button></div>'
   );
+  $('joinDiscover').onclick = e => { e.preventDefault(); openDiscovery(); };
   $('joinServerBtn').onclick = async () => {
     const code = $('joinCode').value.trim();
     try{
       const response = await fetch('/servers/join', { method:'POST', headers:authHeaders(), body:JSON.stringify({ code }) });
       const data = await response.json();
       if(!response.ok) throw new Error(data.error || 'could not join');
-      await loadServers();
-      renderRail();
-      switchServer(data.id);
-      closeModal();
-      toast('Joined ' + data.name);
+      await afterJoiningServer(data);
     }catch(err){ modalMessage(err.message, true); }
   };
+}
+
+/* ============================ onboarding, rules screen, Discovery ============================ */
+// The server decides everything (rulesPending() / onboardingGateOpen() in
+// server.js): it blocks posting until the rules are accepted, and only ever
+// gives roles without powers. This just walks people through it.
+const gatesShown = new Set(); // servers whose welcome screen already opened this session
+
+function maybeShowServerGates(server){
+  if(!server || server.isDefault || gatesShown.has(server.id)) return;
+  if(!(server.onboarding && server.onboarding.pending) && !(server.rules && server.rules.pending)) return;
+  if($('overlay').classList.contains('open')) return; // never cover another dialog
+  gatesShown.add(server.id);
+  openOnboarding(server.id, 'join');
+}
+
+async function fetchOnboarding(sid){
+  const response = await fetch('/servers/' + sid + '/onboarding', { headers:bearer() });
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok) throw new Error(data.error || 'could not load this server\'s onboarding');
+  return data;
+}
+
+// mode 'join': the questions (if not answered yet), then the rules (if you
+// still have to accept them). 'answers': Channels & Roles, to change your
+// answers any time. 'rules': just the rules.
+async function openOnboarding(sid, mode){
+  let info;
+  try{ info = await fetchOnboarding(sid); }catch(err){ toast(err.message); return; }
+  const server = serverById(sid);
+  if(!server) return;
+  const askQuestions = info.enabled && info.questions.length && (mode === 'answers' || (mode === 'join' && info.pending));
+  const showRules = info.rules.enabled && info.rules.list.length && (mode === 'rules' || (mode === 'join' && info.rules.pending));
+  const steps = (askQuestions ? info.questions.map(qn => ({ qn })) : []).concat(showRules ? [{ rules:true }] : []);
+  if(!steps.length){ if(mode !== 'join') toast('There\'s nothing to set up here yet.'); return; }
+  const picked = new Set(info.myAnswers);
+  let step = 0, agreed = false, saved = !askQuestions;
+
+  const dots = () => steps.length > 1 ? '<div class="wzDots">' + steps.map((s, i) => '<i class="' + (i <= step ? 'on' : '') + '"></i>').join('') + '</div>' : '';
+  const kicker = () => '<div class="obKicker">' + (mode === 'join' ? 'Welcome to ' : '') + escapeHtml(server.name) + '</div>';
+  async function saveAnswers(){
+    const response = await fetch('/servers/' + sid + '/onboarding/answers', { method:'POST', headers:authHeaders(), body:JSON.stringify({ optionIds:[...picked] }) });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || 'could not save your answers');
+    saved = true;
+    return data;
+  }
+  async function finish(note){
+    closeModal();
+    await refreshServers();
+    updateBlockedBar();
+    if(note) toast(note);
+  }
+  function paint(){
+    const current = steps[step];
+    const last = step === steps.length - 1;
+    if(current.qn){
+      const qn = current.qn;
+      const chosen = qn.options.filter(o => picked.has(o.id)).length;
+      openModal(
+        '<div class="modalHead obHead">' + dots() + kicker() + '<h2>' + escapeHtml(qn.title) + '</h2>' +
+          '<p>' + (qn.multiple ? 'Pick as many as you like.' : 'Pick one.') + (qn.required ? ' This one needs an answer.' : '') + '</p></div>' +
+        '<div class="modalBody obBody" id="obOptions"></div><div class="modalMsg" id="modalMsg" style="padding:0 24px"></div>' +
+        '<div class="modalFoot"><button class="btn ghost" id="obBack">' + (step ? 'Back' : 'Cancel') + '</button><span class="obSpring"></span>' +
+          (!qn.required && !chosen ? '<button class="btn grey" id="obSkip">Skip</button>' : '') +
+          '<button class="btn" id="obNext"' + (qn.required && !chosen ? ' disabled' : '') + '>' + (last ? 'Finish' : 'Next') + '</button></div>', true);
+      const holder = $('obOptions');
+      qn.options.forEach(o => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'obOption' + (picked.has(o.id) ? ' on' : '');
+        b.setAttribute('aria-pressed', picked.has(o.id) ? 'true' : 'false');
+        b.innerHTML = (o.emoji ? '<span class="obEmoji">' + escapeHtml(o.emoji) + '</span>' : '') +
+          '<span class="obText"><b></b>' + (o.description ? '<small></small>' : '') +
+          (o.roles.length ? '<span class="obGives">' + o.roles.map(r => '<span class="obRole"><i style="background:' + (r.color || 'var(--text-muted)') + '"></i>' + escapeHtml(r.name) + '</span>').join('') + '</span>' : '') +
+          '</span><span class="obTick" aria-hidden="true"></span>';
+        b.querySelector('b').textContent = o.label;
+        if(o.description) b.querySelector('small').textContent = o.description;
+        b.onclick = () => {
+          if(picked.has(o.id)) picked.delete(o.id);
+          else{
+            if(!qn.multiple) qn.options.forEach(x => picked.delete(x.id));
+            picked.add(o.id);
+          }
+          saved = false;
+          paint();
+        };
+        holder.appendChild(b);
+      });
+      $('obBack').onclick = () => { if(step){ step--; paint(); } else closeModal(); };
+      if($('obSkip')) $('obSkip').onclick = () => next();
+      $('obNext').onclick = () => next();
+    }else{
+      const accepted = info.rules.accepted;
+      openModal(
+        '<div class="modalHead obHead">' + dots() + kicker() + '<h2>Server rules</h2>' +
+          '<p>' + (accepted ? 'You\'ve accepted these.' : 'Read these before you take part. You can still look around until you accept.') + '</p></div>' +
+        '<div class="modalBody obBody"><ol class="obRules" id="obRules"></ol>' +
+          (accepted ? '' : '<label class="obAgree"><input type="checkbox" id="obAgree"' + (agreed ? ' checked' : '') + '><span>I\'ve read and agree to these rules</span></label>') +
+          '<div class="modalMsg" id="modalMsg"></div></div>' +
+        '<div class="modalFoot">' + (step ? '<button class="btn ghost" id="obBack">Back</button>' : '<button class="btn ghost" id="obBack">' + (accepted ? 'Close' : 'Not now') + '</button>') +
+          '<span class="obSpring"></span>' + (accepted ? '' : '<button class="btn" id="obAccept"' + (agreed ? '' : ' disabled') + '>Accept and continue</button>') + '</div>', true);
+      info.rules.list.forEach(rule => { const li = document.createElement('li'); li.textContent = rule; $('obRules').appendChild(li); });
+      $('obBack').onclick = () => { if(step){ step--; paint(); } else finish(saved && askQuestions ? 'Saved your answers' : ''); };
+      if($('obAgree')) $('obAgree').onchange = e => { agreed = e.target.checked; $('obAccept').disabled = !agreed; };
+      if($('obAccept')) $('obAccept').onclick = async () => {
+        $('obAccept').disabled = true;
+        try{
+          if(!saved) await saveAnswers();
+          const response = await fetch('/servers/' + sid + '/rules/accept', { method:'POST', headers:authHeaders(), body:'{}' });
+          const data = await response.json().catch(() => ({}));
+          if(!response.ok) throw new Error(data.error || 'could not accept the rules');
+          await finish('You\'re all set - say hi!');
+        }catch(err){ modalMessage(err.message, true); $('obAccept').disabled = false; }
+      };
+    }
+  }
+  async function next(){
+    const nextIsQuestion = steps[step + 1] && steps[step + 1].qn;
+    if(!nextIsQuestion && askQuestions && !saved){
+      const btn = $('obNext'); if(btn) btn.disabled = true;
+      try{
+        const result = await saveAnswers();
+        if(step === steps.length - 1){
+          await finish(result.unlocked ? 'Saved - ' + result.unlocked + ' new channel' + (result.unlocked === 1 ? '' : 's') + ' unlocked' : 'Saved your answers');
+          return;
+        }
+      }catch(err){ modalMessage(err.message, true); if(btn) btn.disabled = false; return; }
+    }else if(step === steps.length - 1){ await finish(''); return; }
+    step++;
+    paint();
+  }
+  paint();
+}
+
+/* ---- Discover: servers whose owners listed them ---- */
+const DISCOVERY_LABELS = { other:{ emoji:'🌐', label:'Other' } };
+SERVER_TEMPLATE_CHOICES.forEach(t => DISCOVERY_LABELS[t.key] = { emoji:t.emoji, label:t.label });
+
+function openDiscovery(){
+  const state = { q:'', category:'', offset:0, loading:false, seq:0 };
+  openModal(
+    '<div class="modalHead"><h2>Discover servers</h2><p>Public communities anyone here can join, no invite needed.</p></div>' +
+    '<div class="modalBody"><input class="formInput" id="dsSearch" type="search" placeholder="Search by name or description" maxlength="60" aria-label="Search servers">' +
+      '<div class="dsCats" id="dsCats" role="group" aria-label="Categories"></div>' +
+      '<div class="dsGrid" id="dsGrid"></div><div class="dsMoreRow"><button class="btn grey" id="dsMore" style="display:none">Show more</button></div></div>' +
+    '<div class="modalFoot"><button class="btn ghost" onclick="openJoinServer()">I have an invite</button><span class="obSpring"></span><button class="btn grey" onclick="closeModal()">Close</button></div>', true);
+  $('modal').classList.add('dsModal');
+  const cats = $('dsCats');
+  [['', '✨', 'All']].concat(['gaming', 'school', 'study', 'friends', 'creators', 'local', 'other'].map(k => [k, DISCOVERY_LABELS[k].emoji, DISCOVERY_LABELS[k].label])).forEach(([key, emoji, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'dsCat' + (key === state.category ? ' on' : '');
+    b.textContent = emoji + ' ' + label;
+    b.onclick = () => { state.category = key; cats.querySelectorAll('.dsCat').forEach(x => x.classList.toggle('on', x === b)); load(true); };
+    cats.appendChild(b);
+  });
+  let timer = null;
+  $('dsSearch').oninput = e => { clearTimeout(timer); timer = setTimeout(() => { state.q = e.target.value.trim(); load(true); }, 250); };
+  $('dsMore').onclick = () => load(false);
+  async function load(reset){
+    if(reset) state.offset = 0;
+    const seq = ++state.seq;
+    const grid = $('dsGrid');
+    if(!grid) return;
+    if(reset) grid.innerHTML = '<div class="panelEmpty">Looking…</div>';
+    try{
+      const params = new URLSearchParams({ q:state.q, category:state.category, offset:String(state.offset) });
+      const response = await fetch('/discovery?' + params, { headers:bearer() });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'could not load Discovery');
+      if(seq !== state.seq || !$('dsGrid')) return; // a newer search started, or the dialog closed
+      if(reset) grid.innerHTML = '';
+      data.servers.forEach(s => grid.appendChild(discoveryCard(s)));
+      state.offset += data.servers.length;
+      $('dsMore').style.display = data.more ? '' : 'none';
+      if(!grid.children.length){
+        grid.innerHTML = '<div class="panelEmpty">' + (state.q || state.category ? 'No public servers match that yet.' : 'No servers are listed yet. Owners can list theirs in Server Settings > Discovery.') + '</div>';
+      }
+    }catch(err){ if(seq === state.seq && $('dsGrid')) grid.innerHTML = '<div class="panelEmpty">' + escapeHtml(err.message) + '</div>'; }
+  }
+  load(true);
+  setTimeout(() => { const s = $('dsSearch'); if(s && window.matchMedia('(pointer:fine)').matches) s.focus(); }, 50);
+}
+
+function discoveryCard(s){
+  const card = document.createElement('div');
+  card.className = 'dsCard';
+  card.dataset.serverId = s.id;
+  const banner = document.createElement('div');
+  banner.className = 'dsBanner';
+  card.appendChild(banner);
+  paintMediaBanner(banner, s.bannerUrl, s.bannerColor || 'var(--raised-2)', s.bannerUrl ? 'linear-gradient(to top, rgba(0,0,0,.35), rgba(0,0,0,0) 60%)' : '', s.bannerPos);
+  const icon = serverIconEl(s.name, s.iconUrl);
+  icon.classList.add('dsIcon');
+  card.appendChild(icon);
+  const body = document.createElement('div');
+  body.className = 'dsBody';
+  const cat = DISCOVERY_LABELS[s.category] || DISCOVERY_LABELS.other;
+  body.innerHTML = '<div class="dsName"></div><div class="dsDesc"></div><div class="dsMeta"><span></span><button class="btn"></button></div>';
+  body.querySelector('.dsName').textContent = s.name;
+  body.querySelector('.dsDesc').textContent = s.description;
+  body.querySelector('.dsMeta span').textContent = s.members + (s.members === 1 ? ' member' : ' members') + ' · ' + cat.label;
+  const btn = body.querySelector('.btn');
+  btn.textContent = s.joined ? 'Open' : 'Join';
+  if(s.joined) btn.classList.add('grey');
+  btn.onclick = async () => {
+    if(s.joined){ closeModal(); switchServer(s.id); return; }
+    btn.disabled = true;
+    try{
+      const response = await fetch('/discovery/' + s.id + '/join', { method:'POST', headers:authHeaders(), body:'{}' });
+      const data = await response.json();
+      if(!response.ok) throw new Error(data.error || 'could not join');
+      await afterJoiningServer(data);
+    }catch(err){ toast(err.message); btn.disabled = false; }
+  };
+  card.appendChild(body);
+  return card;
+}
+
+// After an invite or Discovery join: open the server, then its welcome screen.
+async function afterJoiningServer(data){
+  await loadServers();
+  renderRail();
+  closeModal();
+  switchServer(data.id);
+  toast('Joined ' + data.name);
+}
+
+/* ---- Server Settings: Onboarding, Rules Screen, Discovery ---- */
+async function renderServerRules(c, sid){
+  const ticket = c._ticket = {};
+  c.innerHTML = '<h2 class="settingsTitle">Rules Screen</h2><div class="panelEmpty">Loading…</div>';
+  let info;
+  try{ info = await fetchOnboarding(sid); }catch(err){ c.innerHTML = '<div class="panelEmpty">' + escapeHtml(err.message) + '</div>'; return; }
+  if(c._ticket !== ticket) return; // another page opened meanwhile
+  const original = { enabled:info.rules.enabled, text:info.rules.list.join('\n') };
+  let draft = Object.assign({}, original);
+  c.innerHTML = '<h2 class="settingsTitle">Rules Screen</h2>' +
+    section('', switchRow('ruOn', 'New members must accept the rules', 'They can look around, but can\'t post, react, upload or join voice until they accept. People who are already here aren\'t asked - unless you ask everyone below.', draft.enabled)) +
+    section('Rules', '<textarea class="settingsInput" id="ruText" style="max-width:640px;min-height:190px" placeholder="Be kind - no harassment, hate speech or bullying.&#10;No spam or self-promotion without asking.&#10;Keep things in the right channels."></textarea>' +
+      '<div class="switchDesc">One rule per line, up to 20. They\'re shown as a numbered list when people join, and any time from the server menu.</div><div class="inlineMsg" id="ruMsg"></div>') +
+    section('Ask everyone again', '<div class="switchDesc" style="margin-bottom:12px">Changed the rules a lot? Everyone except the owner and admins has to accept them again before they can post.</div><button class="btn grey" id="ruAgain">Ask everyone to accept again</button>');
+  $('ruText').value = draft.text;
+  const lines = () => draft.text.split('\n').map(l => l.trim()).filter(Boolean);
+  async function send(extra){
+    const response = await fetch('/servers/' + sid + '/rules', { method:'POST', headers:authHeaders(), body:JSON.stringify(Object.assign({ enabled:draft.enabled, rules:lines() }, extra || {})) });
+    const data = await response.json().catch(() => ({}));
+    if(!response.ok) throw new Error(data.error || 'could not save');
+    Object.assign(original, { enabled:draft.enabled, text:data.rules.join('\n') });
+    await refreshServers();
+  }
+  async function save(){
+    try{ await send(); toast('Rules saved'); return true; }
+    catch(err){ inlineMessage($('ruMsg'), err.message, true); return false; }
+  }
+  function reset(){ draft = Object.assign({}, original); $('ruText').value = draft.text; $('ruOn').checked = draft.enabled; }
+  const changed = () => { if(draft.enabled !== original.enabled || draft.text !== original.text) markDirty({ save, reset }); else clearDirty(); };
+  $('ruOn').onchange = e => { draft.enabled = e.target.checked; changed(); };
+  $('ruText').oninput = e => { draft.text = e.target.value; changed(); };
+  $('ruAgain').onclick = async () => {
+    if(!draft.enabled){ inlineMessage($('ruMsg'), 'Turn the rules screen on first.', true); return; }
+    if(!confirm('Everyone except the owner and admins will have to accept the rules again before they can post. Continue?')) return;
+    try{ await send({ askEveryone:true }); clearDirty(); toast('Everyone will be asked to accept the rules again'); }
+    catch(err){ inlineMessage($('ruMsg'), err.message, true); }
+  };
+}
+
+async function renderServerOnboarding(c, sid){
+  const ticket = c._ticket = {};
+  c.innerHTML = '<h2 class="settingsTitle">Onboarding</h2><div class="panelEmpty">Loading…</div>';
+  let info;
+  try{ info = await fetchOnboarding(sid); }catch(err){ c.innerHTML = '<div class="panelEmpty">' + escapeHtml(err.message) + '</div>'; return; }
+  if(c._ticket !== ticket) return;
+  const server = serverById(sid);
+  if(!server) return;
+  const toDraft = data => ({
+    enabled:data.enabled,
+    questions:data.questions.map(qn => ({ id:qn.id, title:qn.title, multiple:qn.multiple, required:qn.required,
+      options:qn.options.map(o => ({ id:o.id, label:o.label, description:o.description, emoji:o.emoji, roleIds:o.roles.map(r => r.id), channelIds:o.channelIds || [] })) }))
+  });
+  let original = JSON.stringify(toDraft(info));
+  let draft = JSON.parse(original);
+  const roles = (server.roles || []).filter(r => !(r.permissions || []).length);
+  const channels = (server.channels || []).filter(ch => ch.isPrivate);
+  const mayRoles = can(server, 'manage_roles'), mayChannels = can(server, 'manage_channels');
+  c.innerHTML = '<h2 class="settingsTitle">Onboarding</h2>' +
+    '<div class="switchDesc" style="margin:-6px 0 16px">A few questions people answer when they join. Each answer can give roles and unlock private channels, so everyone lands in the right places. Members can change their answers any time from the server menu (Channels & Roles).</div>' +
+    section('', switchRow('obOn', 'Ask new members these questions', 'Shown once, right after they join. People already here aren\'t sent through it.', draft.enabled)) +
+    '<div id="obEditor"></div>' +
+    '<div class="rowFlex" style="gap:8px;margin-top:8px"><button class="btn" id="obAddQ">Add a question</button><span class="inlineMsg" id="obMsg"></span></div>' +
+    '<div class="switchDesc" style="margin-top:14px">Answers can only give roles without permissions. ' +
+      (roles.length ? '' : 'Make some roles first (Roles), like "Artist" or "Looking for group". ') +
+      (channels.length ? '' : 'To unlock channels, make them private first (Channels). ') + '</div>';
+  const changed = () => { if(JSON.stringify(draft) !== original) markDirty({ save, reset }); else clearDirty(); };
+  async function save(){
+    try{
+      const response = await fetch('/servers/' + sid + '/onboarding', { method:'POST', headers:authHeaders(), body:JSON.stringify(draft) });
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok) throw new Error(data.error || 'could not save');
+      const fresh = await fetchOnboarding(sid);
+      original = JSON.stringify(toDraft(fresh));
+      draft = JSON.parse(original);
+      paintEditor();
+      await refreshServers();
+      toast('Onboarding saved');
+      return true;
+    }catch(err){ inlineMessage($('obMsg'), err.message, true); return false; }
+  }
+  function reset(){ draft = JSON.parse(original); $('obOn').checked = draft.enabled; paintEditor(); }
+  function chip(label, on, color, disabled, onToggle){
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'obChip' + (on ? ' on' : '');
+    b.disabled = !!disabled;
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.innerHTML = (color !== null ? '<i style="background:' + (color || 'var(--text-muted)') + '"></i>' : '') + escapeHtml(label);
+    b.onclick = () => { const now = !b.classList.contains('on'); b.classList.toggle('on', now); b.setAttribute('aria-pressed', now ? 'true' : 'false'); onToggle(now); changed(); };
+    return b;
+  }
+  const toggleIn = (list, id, on) => { const i = list.indexOf(id); if(on && i < 0) list.push(id); if(!on && i >= 0) list.splice(i, 1); };
+  function input(cls, value, placeholder, max, onInput){
+    const el = document.createElement('input');
+    el.className = 'settingsInput ' + cls;
+    el.value = value || '';
+    el.placeholder = placeholder;
+    el.maxLength = max;
+    el.oninput = () => { onInput(el.value); changed(); };
+    return el;
+  }
+  function paintEditor(){
+    const box = $('obEditor');
+    if(!box) return;
+    box.innerHTML = '';
+    if(!draft.questions.length) box.innerHTML = '<div class="panelEmpty obEmpty">No questions yet. Try "What brings you here?" with answers that give matching roles.</div>';
+    draft.questions.forEach((qn, qi) => {
+      const card = document.createElement('div');
+      card.className = 'obEdQ';
+      const head = document.createElement('div');
+      head.className = 'obEdHead';
+      head.appendChild(Object.assign(document.createElement('span'), { className:'obEdNum', textContent:String(qi + 1) }));
+      head.appendChild(input('obEdTitle', qn.title, 'Question, e.g. What are you here for?', 120, v => qn.title = v));
+      const move = (d, label, disabled) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'obIconBtn'; b.textContent = label; b.title = d < 0 ? 'Move up' : 'Move down'; b.setAttribute('aria-label', b.title); b.disabled = disabled;
+        b.onclick = () => { draft.questions.splice(qi, 1); draft.questions.splice(qi + d, 0, qn); changed(); paintEditor(); }; return b; };
+      head.appendChild(move(-1, '↑', qi === 0));
+      head.appendChild(move(1, '↓', qi === draft.questions.length - 1));
+      const del = document.createElement('button'); del.type = 'button'; del.className = 'obIconBtn danger'; del.textContent = '✕'; del.title = 'Delete question'; del.setAttribute('aria-label', 'Delete question');
+      del.onclick = () => { draft.questions.splice(qi, 1); changed(); paintEditor(); };
+      head.appendChild(del);
+      card.appendChild(head);
+      const flags = document.createElement('div');
+      flags.className = 'obEdFlags';
+      [['multiple', 'People can pick more than one'], ['required', 'Needs an answer']].forEach(([key, label]) => {
+        const l = document.createElement('label');
+        const box2 = document.createElement('input'); box2.type = 'checkbox'; box2.checked = !!qn[key];
+        box2.onchange = () => { qn[key] = box2.checked; changed(); };
+        l.appendChild(box2); l.appendChild(document.createTextNode(' ' + label));
+        flags.appendChild(l);
+      });
+      card.appendChild(flags);
+      qn.options.forEach((o, oi) => {
+        const row = document.createElement('div');
+        row.className = 'obEdOpt';
+        const line = document.createElement('div');
+        line.className = 'obEdLine';
+        line.appendChild(input('obEdEmoji', o.emoji, '🙂', 16, v => o.emoji = v));
+        line.appendChild(input('obEdLabel', o.label, 'Answer', 80, v => o.label = v));
+        line.appendChild(input('obEdDesc', o.description, 'Short description (optional)', 120, v => o.description = v));
+        const x = document.createElement('button'); x.type = 'button'; x.className = 'obIconBtn danger'; x.textContent = '✕'; x.title = 'Remove answer'; x.setAttribute('aria-label', 'Remove answer');
+        x.onclick = () => { qn.options.splice(oi, 1); changed(); paintEditor(); };
+        line.appendChild(x);
+        row.appendChild(line);
+        if(roles.length || o.roleIds.length){
+          const g = document.createElement('div'); g.className = 'obEdGrants';
+          g.appendChild(Object.assign(document.createElement('span'), { className:'obEdGrantLabel', textContent:'Gives roles' }));
+          roles.forEach(r => g.appendChild(chip(r.name, o.roleIds.includes(r.id), r.color, !mayRoles, on => toggleIn(o.roleIds, r.id, on))));
+          row.appendChild(g);
+        }
+        if(channels.length || o.channelIds.length){
+          const g = document.createElement('div'); g.className = 'obEdGrants';
+          g.appendChild(Object.assign(document.createElement('span'), { className:'obEdGrantLabel', textContent:'Unlocks' }));
+          channels.forEach(ch => g.appendChild(chip('#' + ch.name, o.channelIds.includes(ch.id), null, !mayChannels, on => toggleIn(o.channelIds, ch.id, on))));
+          row.appendChild(g);
+        }
+        card.appendChild(row);
+      });
+      const add = document.createElement('button');
+      add.type = 'button'; add.className = 'btn grey obEdAdd'; add.textContent = 'Add an answer';
+      add.disabled = qn.options.length >= 12;
+      add.onclick = () => { qn.options.push({ label:'', description:'', emoji:'', roleIds:[], channelIds:[] }); changed(); paintEditor(); const all = box.querySelectorAll('.obEdQ')[qi]; if(all){ const labels = all.querySelectorAll('.obEdLabel'); labels[labels.length - 1].focus(); } };
+      card.appendChild(add);
+      box.appendChild(card);
+    });
+    $('obAddQ').disabled = draft.questions.length >= 8;
+  }
+  $('obOn').onchange = e => { draft.enabled = e.target.checked; changed(); };
+  $('obAddQ').onclick = () => {
+    draft.questions.push({ title:'', multiple:false, required:false, options:[{ label:'', description:'', emoji:'', roleIds:[], channelIds:[] }] });
+    changed(); paintEditor();
+    const titles = $('obEditor').querySelectorAll('.obEdTitle'); if(titles.length) titles[titles.length - 1].focus();
+  };
+  paintEditor();
+}
+
+function renderServerDiscovery(c, sid){
+  const server = serverById(sid);
+  if(!server){ c.innerHTML = ''; return; }
+  const owner = !!server.canManageOwnerLevel;
+  c.innerHTML = '<h2 class="settingsTitle">Discovery</h2>' +
+    '<div class="switchDesc" style="margin:-6px 0 16px">Discover (the globe on the left) lists public servers. Anyone signed in to this chat can find yours there and join without an invite.</div>' +
+    section('', switchRow('dsOn', 'List this server in Discover', 'Shows its name, icon, banner, description and member count - never who\'s in it or what\'s said.', server.discoverable, !owner)) +
+    section('Category', '<select class="settingsInput" id="dsCategory" style="max-width:320px"' + (owner ? '' : ' disabled') + '></select><div class="switchDesc">Helps people find it.</div>') +
+    '<div class="inlineMsg" id="dsMsg"></div>' +
+    (owner ? '' : '<div class="switchDesc" style="margin-top:12px">Only the server owner can change this.</div>') +
+    (server.description ? '' : '<div class="switchDesc" style="margin-top:12px">Add a description in Overview first, so people know what the server is about.</div>') +
+    '<div class="switchDesc" style="margin-top:12px">Tip: public servers get strangers. Turn on the Rules Screen, and use Onboarding so new people land in the right channels.</div>';
+  const select = $('dsCategory');
+  ['gaming', 'school', 'study', 'friends', 'creators', 'local', 'other'].forEach(k => {
+    const opt = document.createElement('option'); opt.value = k; opt.textContent = DISCOVERY_LABELS[k].emoji + ' ' + DISCOVERY_LABELS[k].label; select.appendChild(opt);
+  });
+  select.value = server.discoveryCategory || 'other';
+  async function send(){
+    try{
+      const response = await fetch('/servers/' + sid + '/discovery', { method:'POST', headers:authHeaders(), body:JSON.stringify({ discoverable:$('dsOn').checked, category:select.value }) });
+      const data = await response.json().catch(() => ({}));
+      if(!response.ok) throw new Error(data.error || 'could not save');
+      await refreshServers();
+      inlineMessage($('dsMsg'), data.discoverable ? 'Listed in Discover.' : 'Not listed.', false);
+    }catch(err){ $('dsOn').checked = !!(serverById(sid) || {}).discoverable; inlineMessage($('dsMsg'), err.message, true); }
+  }
+  $('dsOn').onchange = send;
+  select.onchange = send;
 }
 
 function openCreateChannel(categoryId){

@@ -26,7 +26,10 @@ const server = http.createServer(app);
 // still cut off by headersTimeout.
 server.requestTimeout = 0;
 const io = new Server(server, {
-  maxHttpBufferSize: 1024 * 1024
+  maxHttpBufferSize: 1024 * 1024,
+  // /livekit upgrades (calls' media server) are handled further down; don't
+  // let Socket.IO close them while LiveKit answers
+  destroyUpgrade: false
 });
 
 const PORT = process.env.PORT || 3000;
@@ -3245,7 +3248,7 @@ async function scheduleEventReminders() {
 // call. Calls live in memory - a restart ends them, which is fine.
 // Call keys: 'call:dm:<a>:<b>' (sorted), 'call:group:<id>', 'voice:<channel room>'.
 const calls = new Map(); // key -> { key, kind, room, startedAt, participants: Map, ringing: Set, ringTimer, messageId, everJoined: Set }
-const MAX_CALL_SIZE = 8; // everyone connects to everyone, so keep calls small
+const MAX_CALL_SIZE = 8; // mesh: everyone connects to everyone, so keep calls small (bigger ones need the media server below)
 const RING_MS = 45 * 1000;
 
 function callInfo(key) {
@@ -3291,7 +3294,7 @@ async function callAudience(key) {
 
 function callState(call) {
   return {
-    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt, now: Date.now(),
+    key: call.key, kind: call.kind, room: call.room, startedAt: call.startedAt, now: Date.now(), sfu: !!call.sfu,
     participants: [...call.participants.entries()].map(([username, p]) => ({
       username, muted: p.muted, deafened: p.deafened, video: p.video, screen: p.screen,
       camStream: p.camStream, screenStream: p.screenStream, joinedAt: p.joinedAt
@@ -3341,9 +3344,12 @@ async function leaveCall(key, username, reason) {
   const p = call.participants.get(username);
   call.participants.delete(username);
   if (reason) io.to(p.socketId).emit('voice:forceLeave', { key, reason });
+  // the media server must drop them too, whatever their browser does
+  if (call.sfu && call.participants.size) sfuRemoveParticipant(key, username);
   if (!call.participants.size) {
     stopRinging(call, [...call.ringing]);
     calls.delete(key);
+    if (call.sfu) sfuEndRoom(key);
     await finishCallMessage(call).catch(err => console.error('call message failed:', err.message));
   }
   await broadcastCall(key);
@@ -3394,8 +3400,201 @@ app.get('/voice/ice', requireAuth, route(async (req, res) => {
       iceServers.push({ urls, username: process.env.TURN_USERNAME || '', credential: process.env.TURN_CREDENTIAL || '' });
     }
   }
-  res.json({ iceServers, maxCallSize: MAX_CALL_SIZE });
+  const sfu = !!sfuConfig() && sfuUp;
+  res.json({ iceServers, maxCallSize: sfu ? MAX_SFU_CALL_SIZE : MAX_CALL_SIZE, sfu });
 }));
+
+// ---------------- MEDIA SERVER (SFU) FOR BIGGER CALLS ----------------
+// Mesh calls make every browser send its voice/video to every other one, so
+// they get choppy past about 6 people. With a LiveKit media server set up
+// (LIVEKIT_URL + LIVEKIT_API_KEY and LIVEKIT_API_SECRET, or LIVEKIT_KEY_FILE:
+// LiveKit's own key file, one "key: secret" line - the NAS setup makes one),
+// group calls and voice channels go through it instead: everyone sends once
+// and the server forwards. DM calls stay direct (best for two people).
+// This server still decides who's in a call (callJoinProblem, ringing,
+// voice:state); LiveKit only carries media, and only for people this server
+// gave a short-lived token for that one room. Anyone who leaves or loses
+// access is removed from the LiveKit room too (leaveCall + sweepSfuRooms()).
+// Browsers reach LiveKit at LIVEKIT_PUBLIC_URL, or through this server at
+// /livekit/rtc (proxied below, so it also works through relay.js).
+const MAX_SFU_CALL_SIZE = Math.max(2, Math.min(100, Number(process.env.SFU_MAX_CALL_SIZE) || 25));
+const SFU_TOKEN_SECONDS = 10 * 60; // only needed to connect; LiveKit refreshes it while connected
+function sfuConfig() {
+  const url = String(process.env.LIVEKIT_URL || '').replace(/\/+$/, '');
+  let key = String(process.env.LIVEKIT_API_KEY || '');
+  let secret = String(process.env.LIVEKIT_API_SECRET || '');
+  if (process.env.LIVEKIT_KEY_FILE) {
+    let text = '';
+    try { text = fs.readFileSync(process.env.LIVEKIT_KEY_FILE, 'utf8'); } catch (_) { /* not made yet */ }
+    const m = /^\s*([A-Za-z0-9_-]+)\s*:\s*(\S+)\s*$/m.exec(text);
+    key = m ? m[1] : ''; secret = m ? m[2] : '';
+  }
+  if (!/^https?:\/\//.test(url) || !key || secret.length < 32) return null;
+  return { url, key, secret, publicUrl: String(process.env.LIVEKIT_PUBLIC_URL || '').replace(/\/+$/, '') };
+}
+// Whether LiveKit answered the last check (sweepSfuRooms). While it's down,
+// new calls fall back to direct (mesh) ones instead of failing.
+let sfuUp = true;
+function callUsesSfu(kind) { return kind !== 'dm' && sfuUp && !!sfuConfig(); }
+function maxCallSizeFor(kind) { return callUsesSfu(kind) ? MAX_SFU_CALL_SIZE : MAX_CALL_SIZE; }
+// LiveKit room names: a hash of the call key (call keys contain usernames)
+function sfuRoomName(key) { return 'call-' + sha256Hex('sfu:' + key).slice(0, 40); }
+
+function base64url(input) { return Buffer.from(input).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_'); }
+// LiveKit tokens are plain HS256 JWTs signed with the API secret.
+function sfuJwt(cfg, claims, seconds) {
+  const now = Math.floor(Date.now() / 1000);
+  const body = { iss: cfg.key, nbf: now - 10, exp: now + seconds, ...claims };
+  const unsigned = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' })) + '.' + base64url(JSON.stringify(body));
+  return unsigned + '.' + base64url(crypto.createHmac('sha256', cfg.secret).update(unsigned).digest());
+}
+// A token for one person, for one call's room. Stage channels can later
+// hand listeners canPublish: false.
+function sfuJoinToken(cfg, username, key, { canPublish = true } = {}) {
+  return sfuJwt(cfg, {
+    sub: username, name: username,
+    video: {
+      room: sfuRoomName(key), roomJoin: true, canSubscribe: true, canPublishData: false,
+      canPublish, canPublishSources: canPublish ? ['microphone', 'camera', 'screen_share'] : [],
+      canUpdateOwnMetadata: false
+    }
+  }, SFU_TOKEN_SECONDS);
+}
+// LiveKit's server API (Twirp: POST JSON). Failures are logged, never thrown
+// at the caller - the call bookkeeping here must not depend on it.
+async function sfuApi(method, body, room) {
+  const cfg = sfuConfig();
+  if (!cfg) return null;
+  const grant = room ? { roomAdmin: true, roomCreate: true, room } : { roomList: true };
+  try {
+    const res = await fetch(`${cfg.url}/twirp/livekit.RoomService/${method}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + sfuJwt(cfg, { video: grant }, 60) },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) {
+      if (res.status !== 404) console.error(`livekit ${method}: HTTP ${res.status}`);
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    console.error(`livekit ${method} failed:`, err.message);
+    return null;
+  }
+}
+function sfuRemoveParticipant(key, username) {
+  const room = sfuRoomName(key);
+  return sfuApi('RemoveParticipant', { room, identity: username }, room);
+}
+function sfuEndRoom(key) {
+  const room = sfuRoomName(key);
+  return sfuApi('DeleteRoom', { room }, room);
+}
+// Safety net, every 20s: anyone in a LiveKit room who isn't in that call here
+// (missed removal, a restart, a stale tab) is removed, and rooms with no call
+// behind them are closed. A room gets a minute's grace after a restart so
+// people's apps can rejoin first.
+const sfuStrayRooms = new Map(); // room name -> first seen without a call
+async function sweepSfuRooms() {
+  if (!sfuConfig()) return;
+  const listed = await sfuApi('ListRooms', {});
+  if (!!listed !== sfuUp) console.log(listed ? 'Call media server is back.' : 'Call media server can\'t be reached - new calls are direct (mesh) until it is back.');
+  sfuUp = !!listed;
+  if (!listed) return;
+  const byRoom = new Map();
+  for (const call of calls.values()) if (call.sfu) byRoom.set(sfuRoomName(call.key), call);
+  const seen = new Set();
+  for (const room of listed.rooms || []) {
+    const name = String(room.name || '');
+    if (!name.startsWith('call-')) continue;
+    seen.add(name);
+    const call = byRoom.get(name);
+    if (!call) {
+      if (!sfuStrayRooms.has(name)) sfuStrayRooms.set(name, Date.now());
+      else if (Date.now() - sfuStrayRooms.get(name) > 60 * 1000) { sfuStrayRooms.delete(name); await sfuApi('DeleteRoom', { room: name }, name); }
+      continue;
+    }
+    sfuStrayRooms.delete(name);
+    const people = await sfuApi('ListParticipants', { room: name }, name);
+    for (const p of (people && people.participants) || []) {
+      const who = String(p.identity || '');
+      // joining: the token is handed out just after they're added here
+      if (!call.participants.has(who)) await sfuApi('RemoveParticipant', { room: name, identity: who }, name);
+    }
+  }
+  for (const name of [...sfuStrayRooms.keys()]) if (!seen.has(name)) sfuStrayRooms.delete(name);
+}
+const SFU_SWEEP_MS = Math.max(1, Number(process.env.SFU_SWEEP_SECONDS) || 20) * 1000;
+setInterval(() => { sweepSfuRooms().catch(err => console.error('sfu sweep failed:', err.message)); }, SFU_SWEEP_MS).unref();
+setTimeout(() => { sweepSfuRooms().catch(() => {}); }, 2000).unref();
+
+// The LiveKit browser library, from node_modules (the page's CSP only allows
+// scripts from this origin). Loaded only when someone joins such a call.
+const LIVEKIT_CLIENT_FILE = (() => { const f = path.join(__dirname, 'node_modules', 'livekit-client', 'dist', 'livekit-client.umd.js'); return fs.existsSync(f) ? f : ''; })();
+app.get('/vendor/livekit-client.js', (req, res) => {
+  if (!LIVEKIT_CLIENT_FILE) return res.status(404).end();
+  res.sendFile(LIVEKIT_CLIENT_FILE, { headers: { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' } });
+});
+
+// Browsers' connection to LiveKit (/livekit/rtc..., HTTP and WebSocket),
+// passed through to LIVEKIT_URL so no extra public address is needed. Only
+// the /rtc paths: LiveKit's admin API stays private.
+const SFU_PROXY_RE = /^\/livekit(\/rtc(?:\/[A-Za-z0-9/_-]*)?(?:\?.*)?)$/;
+function sfuProxyTarget(reqUrl) {
+  const cfg = sfuConfig();
+  const m = SFU_PROXY_RE.exec(String(reqUrl || ''));
+  if (!cfg || !m) return null;
+  return { target: new URL(cfg.url), path: (new URL(cfg.url).pathname.replace(/\/+$/, '')) + m[1] };
+}
+function sfuProxyHeaders(req, target) {
+  const skip = new Set(['host', 'connection', 'upgrade', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'cookie', 'authorization']);
+  const headers = {};
+  for (const [name, value] of Object.entries(req.headers)) if (!skip.has(name)) headers[name] = value;
+  headers.host = target.host;
+  return headers;
+}
+app.use('/livekit', (req, res, next) => {
+  const t = sfuProxyTarget(req.originalUrl);
+  if (!t) return res.status(404).json({ error: 'not found' });
+  const lib = t.target.protocol === 'https:' ? require('https') : http;
+  const upstream = lib.request({
+    protocol: t.target.protocol, hostname: t.target.hostname, port: t.target.port || undefined,
+    method: req.method, path: t.path, headers: sfuProxyHeaders(req, t.target)
+  }, upRes => {
+    res.writeHead(upRes.statusCode, { 'content-type': upRes.headers['content-type'] || 'text/plain', 'cache-control': 'no-store' });
+    upRes.pipe(res);
+  });
+  upstream.on('error', () => { if (!res.headersSent) res.status(502).json({ error: 'The call server can\'t be reached.' }); else res.destroy(); });
+  req.pipe(upstream);
+});
+server.on('upgrade', (req, socket, head) => {
+  if (String(req.url || '').startsWith('/socket.io/')) return; // Socket.IO's own
+  const t = sfuProxyTarget(req.url);
+  if (!t) { socket.end('HTTP/1.1 404 Not Found\r\n\r\n'); return; }
+  const lib = t.target.protocol === 'https:' ? require('https') : http;
+  const upstream = lib.request({
+    protocol: t.target.protocol, hostname: t.target.hostname, port: t.target.port || undefined,
+    method: req.method, path: t.path,
+    headers: { ...sfuProxyHeaders(req, t.target), connection: 'Upgrade', upgrade: req.headers.upgrade || 'websocket' }
+  });
+  upstream.on('upgrade', (upRes, upSocket, upHead) => {
+    const lines = [`HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage}`];
+    for (let i = 0; i < upRes.rawHeaders.length; i += 2) lines.push(`${upRes.rawHeaders[i]}: ${upRes.rawHeaders[i + 1]}`);
+    socket.write(lines.join('\r\n') + '\r\n\r\n');
+    if (upHead && upHead.length) socket.write(upHead);
+    if (head && head.length) upSocket.write(head);
+    upSocket.pipe(socket);
+    socket.pipe(upSocket);
+    const close = () => { socket.destroy(); upSocket.destroy(); };
+    upSocket.on('error', close); socket.on('error', close);
+    upSocket.on('close', close); socket.on('close', close);
+  });
+  upstream.on('response', upRes => { socket.end(`HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage}\r\n\r\n`); upRes.resume(); });
+  upstream.on('error', () => socket.destroy());
+  socket.on('error', () => upstream.destroy());
+  upstream.end();
+});
 
 // ---------------- BOT ACCOUNTS ----------------
 // A bot is a users row with is_bot = 1 and bot_owner = the person who made
@@ -6696,10 +6895,11 @@ io.on('connection', (socket) => {
       if (old.socketId !== socket.id) io.to(old.socketId).emit('voice:forceLeave', { key, reason: 'You joined this call from somewhere else.' });
       call.participants.delete(socket.username);
     }
-    if (call && call.participants.size >= MAX_CALL_SIZE) return reply({ error: `This call is full (${MAX_CALL_SIZE} people max).` });
+    const maxSize = call ? (call.sfu ? MAX_SFU_CALL_SIZE : MAX_CALL_SIZE) : maxCallSizeFor(info.kind);
+    if (call && call.participants.size >= maxSize) return reply({ error: `This call is full (${maxSize} people max).` });
     const isNew = !call;
     if (isNew) {
-      call = { key, kind: info.kind, room: info.room, startedAt: Date.now(), participants: new Map(), ringing: new Set(), ringTimer: null, messageId: null, everJoined: new Set() };
+      call = { key, kind: info.kind, room: info.room, startedAt: Date.now(), participants: new Map(), ringing: new Set(), ringTimer: null, messageId: null, everJoined: new Set(), sfu: callUsesSfu(info.kind) };
       calls.set(key, call);
     }
     const others = [...call.participants.keys()];
@@ -6709,7 +6909,16 @@ io.on('connection', (socket) => {
     });
     call.everJoined.add(socket.username);
     stopRinging(call, [socket.username]);
-    reply({ message: 'ok', participants: others });
+    let sfu;
+    if (call.sfu) {
+      const cfg = sfuConfig();
+      if (!cfg) { // the media server was switched off while this call ran
+        await leaveCall(key, socket.username);
+        return reply({ error: 'The call server isn\'t available right now.' });
+      }
+      sfu = { url: cfg.publicUrl, token: sfuJoinToken(cfg, socket.username, key) };
+    }
+    reply({ message: 'ok', participants: others, ...(sfu ? { sfu } : {}) });
     if (isNew && info.kind !== 'voice' && !data.rejoin) {
       // ring everyone else in the DM / group (not when someone's app is just
       // reconnecting to a call the server forgot about in a restart)

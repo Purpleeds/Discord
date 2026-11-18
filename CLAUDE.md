@@ -124,6 +124,13 @@ to do next) - read it before a big upgrade and add an entry after one.
   removes access ends the person's call too. `voice:signal` is relayed
   only between two current participants; never relay to anyone else.
   Ring notifications follow the honest-notification rule above.
+- Bigger calls (SFU): with `LIVEKIT_URL` + key, group calls and voice channels
+  carry media through LiveKit (`call.sfu`); DMs stay mesh. The chat stays the
+  only judge of who's in a call - LiveKit tokens (`sfuJoinToken()`) are
+  10-minute, one-room, issued only from `voice:join` after `callJoinProblem()`;
+  `leaveCall()` also removes them from LiveKit, `sweepSfuRooms()` drops
+  strays. Only `/livekit/rtc...` is proxied to LiveKit, never its API.
+  `regression/sfu_calls.test.js`.
 - Webhook tokens are passwords: store only `sha256Hex(token)`, show the
   token once, compare with `webhookTokenMatches()` (constant time). Webhook
   messages are `"user" = 'webhook:<id>'` (never a real username) with

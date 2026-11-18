@@ -8391,7 +8391,7 @@ const callStates = {}; // key -> latest { key, kind, room, participants:[...], r
 const voice = {
   key:null, joining:false, mic:null, cam:null, screen:null, peers:new Map(),
   muted:false, deafened:false, pttHeld:false, iceServers:null, speaking:new Set(),
-  audioCtx:null, meters:new Map(), meterTimer:null, videoEls:new Map()
+  audioCtx:null, meters:new Map(), meterTimer:null, videoEls:new Map(), sfu:null
 };
 let incomingCall = null;
 let stopRingtone = null;
@@ -8454,7 +8454,8 @@ function publishVoiceState(){
   socket.emit('voice:update', {
     key: voice.key, muted: voice.muted || !voice.mic, deafened: voice.deafened,
     video: !!voice.cam, screen: !!voice.screen,
-    camStream: voice.cam ? voice.cam.id : null, screenStream: voice.screen ? voice.screen.id : null
+    camStream: voice.cam ? (voice.sfu ? 'cam' : voice.cam.id) : null,
+    screenStream: voice.screen ? (voice.sfu ? 'screen' : voice.screen.id) : null
   });
 }
 
@@ -8486,8 +8487,19 @@ async function joinCall(key, opts){
     ensureAudioCtx();
     if(mic) watchLevel(username, mic);
     startMeterLoop();
-    // the newcomer connects to everyone already there
-    (ack.participants || []).forEach(user => ensurePeer(user));
+    if(ack.sfu){
+      // through the media server: placeholders until LiveKit says who's there
+      (ack.participants || []).forEach(user => { sfuPeer(user).state = 'connecting'; });
+      startSfu(ack.sfu).catch(e => {
+        console.warn('media server connection failed', e);
+        if(voice.key !== key) return;
+        toast('Could not connect to the call server. Try again in a moment.');
+        leaveCall();
+      });
+    }else{
+      // the newcomer connects to everyone already there
+      (ack.participants || []).forEach(user => ensurePeer(user));
+    }
     if(opts.video) toggleCamera();
     renderCallUI();
     renderSidebar();
@@ -8500,6 +8512,7 @@ function leaveCall(){
   cleanupCall();
 }
 function cleanupCall(){
+  stopSfu();
   for(const user of [...voice.peers.keys()]) closePeer(user);
   [voice.mic, voice.cam, voice.screen].forEach(s => { if(s) s.getTracks().forEach(t => t.stop()); });
   voice.mic = voice.cam = voice.screen = null;
@@ -8512,6 +8525,114 @@ function cleanupCall(){
   voice.meterTimer = null;
   renderCallUI();
   renderSidebar();
+}
+
+// ---- media server (SFU) calls: group calls and voice channels go through
+// LiveKit when the server has one (the voice:join answer carries `sfu`).
+// Everyone sends once and the media server forwards, so calls stay smooth
+// with 10-25 people. The rest of the call code doesn't change: each person
+// gets a voice.peers entry (no RTCPeerConnection) whose streams are keyed
+// 'cam' / 'screen' - the ids publishVoiceState() sends in this mode.
+let liveKitLoading = null;
+function loadLiveKit(){
+  if(window.LivekitClient) return Promise.resolve(window.LivekitClient);
+  if(!liveKitLoading) liveKitLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/vendor/livekit-client.js';
+    s.onload = () => window.LivekitClient ? resolve(window.LivekitClient) : reject(new Error('no LiveKit'));
+    s.onerror = () => { liveKitLoading = null; reject(new Error('could not load LiveKit')); };
+    document.head.appendChild(s);
+  });
+  return liveKitLoading;
+}
+function sfuUrl(info){
+  if(info && info.url) return info.url;
+  return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/livekit';
+}
+function sfuPeer(user){
+  let peer = voice.peers.get(user);
+  if(!peer){
+    peer = { pc:null, sfu:true, streams:new Map(), state:'connected', audioEl:null, failTimer:null };
+    voice.peers.set(user, peer);
+  }
+  return peer;
+}
+const sfuSources = () => window.LivekitClient.Track.Source;
+async function sfuPublish(track, source){
+  const room = voice.sfu && voice.sfu.room;
+  if(!room || !track) return;
+  const S = sfuSources();
+  const opts = { source };
+  if(source === S.Microphone) Object.assign(opts, { dtx:true, red:true });
+  if(source === S.Camera) Object.assign(opts, { simulcast:true });
+  if(source === S.ScreenShare) Object.assign(opts, { simulcast:false, videoEncoding:{ maxBitrate:2500000, maxFramerate:15 } });
+  try{ voice.sfu.published.set(source, await room.localParticipant.publishTrack(track, opts)); }
+  catch(e){ console.warn('publish failed', e); toast('Could not send ' + (source === S.Microphone ? 'your microphone' : source === S.Camera ? 'your camera' : 'your screen') + ' to the call.'); }
+}
+async function sfuUnpublish(source){
+  const room = voice.sfu && voice.sfu.room;
+  const pub = voice.sfu && voice.sfu.published.get(source);
+  if(!room || !pub) return;
+  voice.sfu.published.delete(source);
+  try{ await room.localParticipant.unpublishTrack(pub.track, false); }catch(e){}
+}
+// With many cameras on, ask for the small versions (simulcast) so nobody's
+// download is swamped; screen shares always come in full.
+function sfuTuneQuality(){
+  const room = voice.sfu && voice.sfu.room;
+  if(!room) return;
+  const LK = window.LivekitClient;
+  const cams = [];
+  room.remoteParticipants.forEach(p => p.trackPublications.forEach(pub => { if(pub.source === LK.Track.Source.Camera) cams.push(pub); }));
+  const quality = cams.length > 6 ? LK.VideoQuality.LOW : cams.length > 2 ? LK.VideoQuality.MEDIUM : LK.VideoQuality.HIGH;
+  cams.forEach(pub => { try{ pub.setVideoQuality(quality); }catch(e){} });
+}
+async function startSfu(info){
+  const LK = await loadLiveKit();
+  const room = new LK.Room({ adaptiveStream:false, dynacast:true, disconnectOnPageLeave:true });
+  const sfu = { room, published:new Map(), leaving:false };
+  voice.sfu = sfu;
+  const S = LK.Track.Source;
+  const E = LK.RoomEvent;
+  room.on(E.ParticipantConnected, p => { sfuPeer(p.identity).state = 'connected'; renderCallUI(); });
+  room.on(E.ParticipantDisconnected, p => { closePeer(p.identity); renderCallUI(); });
+  room.on(E.TrackSubscribed, (track, pub, p) => {
+    if(voice.sfu !== sfu) return;
+    const peer = sfuPeer(p.identity);
+    const stream = new MediaStream([track.mediaStreamTrack]);
+    if(track.kind === 'audio') attachAudio(p.identity, stream);
+    else{ peer.streams.set(pub.source === S.ScreenShare ? 'screen' : 'cam', stream); sfuTuneQuality(); }
+    renderCallUI();
+  });
+  room.on(E.TrackUnsubscribed, (track, pub, p) => {
+    const peer = voice.peers.get(p.identity);
+    if(peer && track.kind === 'video') peer.streams.delete(pub.source === S.ScreenShare ? 'screen' : 'cam');
+    renderCallUI();
+  });
+  room.on(E.TrackMuted, () => renderCallUI());
+  room.on(E.TrackUnmuted, () => renderCallUI());
+  room.on(E.Reconnecting, () => { voice.peers.forEach(p => { p.state = 'connecting'; }); renderCallUI(); });
+  room.on(E.Reconnected, () => { voice.peers.forEach(p => { p.state = 'connected'; }); renderCallUI(); });
+  room.on(E.Disconnected, () => {
+    // removed by the server (kicked, lost access) arrives as voice:forceLeave;
+    // this is the media connection giving up for good
+    if(voice.sfu === sfu && !sfu.leaving && voice.key){ toast('Lost the connection to the call.'); leaveCall(); }
+  });
+  await room.connect(sfuUrl(info), info.token, { autoSubscribe:true, rtcConfig:{ iceServers: voice.iceServers || [] } });
+  if(voice.sfu !== sfu){ sfu.leaving = true; room.disconnect(); return; } // left while connecting
+  room.remoteParticipants.forEach(p => { sfuPeer(p.identity).state = 'connected'; });
+  if(voice.mic) await sfuPublish(micTrack(), S.Microphone);
+  if(voice.cam) await sfuPublish(voice.cam.getVideoTracks()[0], S.Camera);
+  if(voice.screen) await sfuPublish(voice.screen.getVideoTracks()[0], S.ScreenShare);
+  try{ await room.startAudio(); }catch(e){}
+  renderCallUI();
+}
+function stopSfu(){
+  const sfu = voice.sfu;
+  if(!sfu) return;
+  voice.sfu = null;
+  sfu.leaving = true;
+  try{ sfu.room.disconnect(true); }catch(e){}
 }
 
 function sendSignal(to, data){ if(socket && voice.key) socket.emit('voice:signal', { key: voice.key, to, data }); }
@@ -8557,7 +8678,7 @@ function ensurePeer(user){
   return peer;
 }
 async function handleVoiceSignal(msg){
-  if(!msg || msg.key !== voice.key || !msg.data) return;
+  if(!msg || msg.key !== voice.key || !msg.data || voice.sfu) return;
   const peer = ensurePeer(msg.from);
   const pc = peer.pc;
   const data = msg.data;
@@ -8581,7 +8702,7 @@ function closePeer(user){
   const peer = voice.peers.get(user);
   if(!peer) return;
   clearTimeout(peer.failTimer);
-  try{ peer.pc.close(); }catch(e){}
+  if(peer.pc) try{ peer.pc.close(); }catch(e){}
   if(peer.audioEl) peer.audioEl.remove();
   voice.meters.delete(user);
   voice.speaking.delete(user);
@@ -8680,6 +8801,7 @@ function toggleDeafen(){
 async function toggleCamera(){
   if(!voice.key) return;
   if(voice.cam){
+    if(voice.sfu) sfuUnpublish(window.LivekitClient.Track.Source.Camera);
     voice.peers.forEach(p => { if(p.camSender){ try{ p.pc.removeTrack(p.camSender); }catch(e){} p.camSender = null; } });
     voice.cam.getTracks().forEach(t => t.stop());
     voice.cam = null;
@@ -8691,7 +8813,8 @@ async function toggleCamera(){
       } });
     }catch(e){ toast('Could not start the camera - allow it for this site.'); return; }
     const track = voice.cam.getVideoTracks()[0];
-    voice.peers.forEach(p => { p.camSender = p.pc.addTrack(track, voice.cam); });
+    if(voice.sfu) await sfuPublish(track, window.LivekitClient.Track.Source.Camera);
+    else voice.peers.forEach(p => { p.camSender = p.pc.addTrack(track, voice.cam); });
   }
   publishVoiceState();
   renderCallUI();
@@ -8700,6 +8823,7 @@ const canShareScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDi
 async function toggleScreen(){
   if(!voice.key || !canShareScreen) return;
   if(voice.screen){
+    if(voice.sfu) sfuUnpublish(window.LivekitClient.Track.Source.ScreenShare);
     voice.peers.forEach(p => { if(p.screenSender){ try{ p.pc.removeTrack(p.screenSender); }catch(e){} p.screenSender = null; } });
     voice.screen.getTracks().forEach(t => t.stop());
     voice.screen = null;
@@ -8709,7 +8833,8 @@ async function toggleScreen(){
     const track = voice.screen.getVideoTracks()[0];
     track.contentHint = 'detail';
     track.onended = () => { if(voice.screen) toggleScreen(); }; // the browser's own "Stop sharing" button
-    voice.peers.forEach(p => { p.screenSender = p.pc.addTrack(track, voice.screen); });
+    if(voice.sfu) await sfuPublish(track, window.LivekitClient.Track.Source.ScreenShare);
+    else voice.peers.forEach(p => { p.screenSender = p.pc.addTrack(track, voice.screen); });
   }
   publishVoiceState();
   renderCallUI();
@@ -9173,7 +9298,8 @@ async function swapMicrophone(){
   // close the old mic first: while it's open, browsers hand back the same
   // device with its old settings (e.g. noise suppression stays on)
   const senders = [];
-  voice.peers.forEach(p => { const sender = p.pc.getSenders().find(s => s.track && s.track.kind === 'audio'); if(sender) senders.push(sender); });
+  voice.peers.forEach(p => { const sender = p.pc && p.pc.getSenders().find(s => s.track && s.track.kind === 'audio'); if(sender) senders.push(sender); });
+  const sfuMic = voice.sfu && voice.sfu.published.get(window.LivekitClient.Track.Source.Microphone);
   if(voice.mic) voice.mic.getTracks().forEach(t => t.stop());
   let fresh;
   try{ fresh = await navigator.mediaDevices.getUserMedia(micConstraints()); }
@@ -9182,6 +9308,8 @@ async function swapMicrophone(){
   senders.forEach(sender => sender.replaceTrack(track));
   voice.mic = fresh;
   applyMicEnabled();
+  if(sfuMic && sfuMic.track) sfuMic.track.replaceTrack(track, true).catch(e => console.warn('mic swap failed', e));
+  else if(voice.sfu) sfuPublish(track, window.LivekitClient.Track.Source.Microphone);
   watchLevel(username, fresh);
 }
 

@@ -1,8 +1,8 @@
 # The chat on a NAS, in one file
 
 `docker-compose.yml` here runs everything: the chat, its own database, a
-one-time copy of your data from Neon, and (optionally) a public HTTPS
-address through Tailscale Funnel. It works in UGREEN's and Synology's
+one-time copy of your data from Neon, a relay and a media server for calls,
+and (optionally) a public HTTPS address through Tailscale Funnel. It works in UGREEN's and Synology's
 Docker apps, or with `docker compose up -d` anywhere. No SSH needed.
 
 ## Steps
@@ -42,6 +42,33 @@ Docker apps, or with `docker compose up -d` anywhere. No SSH needed.
   `docker exec chat-db pg_dump -U chat chat > chat-backup.sql`
 - The older multi-file setup (building the image yourself, sharing an
   existing Postgres) is in `deploy/synology/`.
+
+## Bigger calls (media server)
+
+Group calls and voice channels go through `chat-livekit` (LiveKit), so they
+hold up to 25 people instead of 8. DM calls stay direct.
+
+**Adding it to a NAS that already runs the chat:** open the project in the
+NAS's Docker app, replace the file with the new `docker-compose.yml` (keep
+your three settings at the top), and redeploy/restart the whole project.
+Nothing else to do: the chat makes the media server's login itself
+(`livekit-keys.yaml` in the shared volume), and callers reach it through the
+call relay you already have (port 8443), so no new ports, Funnel settings
+or router changes. Check: `chat-livekit` is running and its log has no
+errors, then start a call in a voice channel with 3+ people.
+
+Good to know:
+- Everyone's voice and video now goes up from the NAS, so your home
+  internet's **upload** speed sets the limit. Voice is light (a 25-person
+  voice chat is a few Mbit/s); with many cameras on, the app asks for small
+  versions of each camera automatically. Screen shares are capped at
+  2.5 Mbit/s each.
+- If `chat-turn` is restarted on its own, restart `chat-livekit` too (it
+  shares the relay's network).
+- If the media server is down, new calls are direct again (8 people max)
+  until it's back; the chat checks every 20 seconds.
+- To go back to direct calls for good, delete the two `LIVEKIT_` lines from
+  the `chat` service and redeploy the project.
 
 ## Keeping an older address (e.g. Render)
 

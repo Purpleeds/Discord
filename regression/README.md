@@ -42,6 +42,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `batch1` / `batch2` | polls, links, search, mentions, mutuals / private channels, threads, forums, events |
 | `batch4_api` / `batch4_ui` / `ssrf` / `previews_ui` | webhooks, commands, reaction roles, link previews and their SSRF guards |
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
+| `sfu_calls` | bigger calls through LiveKit: tokens, 25-person limit, removal from the media server, browsers with camera + screen share, fallback when it's down. Starts its own LiveKit and chat (port 4103); needs `LIVEKIT_BIN` (or `livekit-server` on PATH), skips itself otherwise. `SFU_VIA_TURN=1` (needs coturn) forces relay-only like the NAS; `SFU_BROWSERS=10` for a 10-browser call |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
 

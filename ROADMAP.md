@@ -82,8 +82,22 @@ large, new system - also split it over several sessions).
   school/office networks need a TURN relay (`TURN_URLS`, see README); told
   William. Found + fixed on the way: people removed from (or leaving) a
   group chat kept getting its live messages until they reloaded.*
-  Next ideas (not planned yet): soundboard, Stage channels, Watch Together,
-  an SFU server if calls ever need more than 8 people.
+  Next ideas (not planned yet): soundboard, Stage channels, Watch Together.
+- [x] **11f. Bigger calls with a media server (SFU)** - *done Nov 2026*
+  *With `LIVEKIT_URL` + a key, group calls and voice channels go through
+  LiveKit (up to 25 people, `SFU_MAX_CALL_SIZE`); DMs stay direct, and new
+  calls fall back to mesh while LiveKit is down (`sfuUp`, checked by
+  `sweepSfuRooms()`). The chat still owns who's in a call; LiveKit gets a
+  10-minute HS256 token for one room (`sfuJoinToken()`, room = hash of the
+  call key), `leaveCall()` removes people there too, and the sweep drops
+  anyone LiveKit has who isn't in the call. Browsers reach it through
+  `/livekit/rtc` on the chat (only those paths). Client: `startSfu()` fills
+  `voice.peers` entries with no `pc`, streams keyed 'cam'/'screen', so the
+  call UI is unchanged. NAS: `chat-livekit` shares coturn's network, so the
+  existing relay on 8443 carries media (coturn may only relay to itself).
+  Stage channels later: hand listeners `canPublish: false` tokens.
+  `regression/sfu_calls.test.js` (needs `LIVEKIT_BIN`; `SFU_VIA_TURN=1`
+  forces relay-only like the NAS).*
 
 ## Batch 4 - automation (done)
 

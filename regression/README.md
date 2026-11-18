@@ -42,6 +42,7 @@ check that people reconnect, so run them on a server only the tests use.
 | `batch1` / `batch2` | polls, links, search, mentions, mutuals / private channels, threads, forums, events |
 | `batch4_api` / `batch4_ui` / `ssrf` / `previews_ui` | webhooks, commands, reaction roles, link previews and their SSRF guards |
 | `calls_api` / `calls_ui` | call signalling and real browser calls, voice channels, screen share, reconnect |
+| `call_looks` | how calls look, from real screenshots: the speaking ring all the way round tiles (camera, screen-share strip, phone) and on the picture in the voice channel list (round or rounded square); video profile pictures in call tiles and the voice list |
 | `bots_api` / `bots_ui` / `bans` | bot accounts, the SDK, bans |
 | `setup_api` / `setup_ui` / `motion` | server setup wizard, banners, animations and reduced motion |
 

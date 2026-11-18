@@ -251,6 +251,17 @@ to do next) - read it before a big upgrade and add an entry after one.
   emoji picker directly. The sticker button is always shown
   (an empty picker offers "Add stickers" to managers); in the open general
   server only site admins can add them.
+- Voice messages are attachments: `/upload` with `X-Attach: 1` plus
+  `X-Voice-Seconds` / `X-Voice-Waveform` (hex, 1 byte per bar) fills
+  `files.voice_seconds` / `waveform` (in `FILE_COLUMNS`); files then carry
+  `voice: { seconds, waveform }` and the client draws `buildVoicePlayer()`.
+  Recording is `startVoiceRecording()` / `finishVoiceRecording()` on `#voiceMsgBtn`.
+- Soundboard: `server_sounds` (`manage_emoji`), clips are audio `/assets`
+  (only via `soundProblem()`, max `SOUND_MAX_BYTES`; `assetProblem()` refuses
+  audio for every picture/video use). `voice:sound` is relayed only to the
+  call's participants, after `callJoinProblem()` + `usableSound()` (voice
+  channel: that server's sounds; DM/group calls: servers the player is in);
+  not while muted/deafened. Clients play it locally, cut at `maxSeconds`.
 - In server channels the client must not cache message names/avatars as
   profiles (`cacheFromPayload()` skips them): they can be nicknames (or old personas).
 - TURN: `/voice/ice` gives coturn time-limited logins from `TURN_SECRET` /

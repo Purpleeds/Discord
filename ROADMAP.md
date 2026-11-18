@@ -240,6 +240,16 @@ large, new system - also split it over several sessions).
   in a server when onboarding/rules are turned on aren't asked. Listing needs a
   description and is owner-only.*
 
+- [x] **Voice messages and a soundboard** (Nov 2026) - hold the mic button in
+  the message bar to record (up to 5 minutes; slide away or Esc cancels); it's
+  sent as a kept attachment with its length and a waveform, and plays in a
+  waveform player (1x/1.5x/2x). Servers get up to 24 soundboard sounds
+  (Manage emoji, stickers & sounds; MP3/OGG/WAV/M4A, 5 seconds, 1 MB, in
+  /assets) that people in a call play to everyone from the call's soundboard
+  button. Each browser plays the clip itself (not mixed into the mic) and cuts
+  it at 6 seconds; Settings > Voice turns them off or down; deafened people
+  don't hear them. `regression/voice_messages.test.js`.
+
 ## Next: desktop app (.exe)
 
 - [x] **Windows notifier** (Option A) - *done Nov 2026*: `desktop/`, a tray

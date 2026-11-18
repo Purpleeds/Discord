@@ -2058,6 +2058,51 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
   .obEdDesc{flex-basis:100%;}
   .dsGrid{grid-template-columns:1fr;}
 }
+
+/* ---------- voice messages + soundboard ---------- */
+#voiceMsgBtn{width:38px;height:38px;flex:0 0 38px;margin:0;padding:0;border:0;border-radius:12px;background:transparent;color:var(--icon);display:flex;align-items:center;justify-content:center;align-self:center;cursor:pointer;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
+#voiceMsgBtn:hover{background:var(--raised-2);color:var(--text-bright);}
+#voiceMsgBtn[hidden]{display:none;}
+#voiceMsgBtn.recording{background:color-mix(in srgb, var(--red) 22%, transparent);color:var(--red);transform:scale(1.08);}
+#composer.recordingVoice > #messageInput,#composer.recordingVoice > #attachBtn,#composer.recordingVoice > #stickerBtn{display:none;}
+.voiceRecorder{display:none;}
+.voiceRecorder.show{display:flex;flex:1;min-width:0;align-items:center;gap:10px;min-height:38px;padding:0 8px;color:var(--text);}
+.vrDot{width:10px;height:10px;border-radius:50%;background:var(--red);flex:0 0 auto;animation:vrPulse 1.1s ease-in-out infinite;}
+@keyframes vrPulse{50%{opacity:.35;}}
+.vrTime{font-variant-numeric:tabular-nums;font-weight:600;color:var(--text-bright);flex:0 0 auto;}
+.vrLevels{flex:1;min-width:0;height:26px;display:flex;align-items:center;justify-content:flex-end;gap:2px;overflow:hidden;}
+.vrLevels i{flex:0 0 3px;border-radius:2px;background:var(--brand);}
+.vrHint{flex:0 1 auto;font-size:12.5px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.voiceRecorder.away .vrHint{color:var(--red);font-weight:600;}
+.voiceRecorder.away .vrLevels i{background:var(--text-muted);}
+@media (max-width:560px){.vrHint{display:none;}}
+.voiceMsg{display:flex;align-items:center;gap:10px;max-width:min(380px,100%);padding:8px 12px 8px 8px;border-radius:999px;background:var(--raised);border:1px solid var(--line-strong);}
+.vmPlay{width:36px;height:36px;flex:0 0 36px;border-radius:50%;border:0;background:var(--brand);color:var(--on-brand);display:flex;align-items:center;justify-content:center;cursor:pointer;}
+.vmPlay:hover{filter:brightness(1.07);}
+.vmWave{flex:1;min-width:60px;height:30px;display:flex;align-items:center;gap:2px;cursor:pointer;touch-action:none;border-radius:6px;}
+.vmWave:focus-visible{outline:2px solid var(--brand);outline-offset:3px;}
+.vmWave i{flex:1;min-width:2px;max-width:4px;border-radius:2px;background:var(--text-muted);opacity:.55;}
+.vmWave i.played{background:var(--brand);opacity:1;}
+.vmTime{font-size:12.5px;font-variant-numeric:tabular-nums;color:var(--text-muted);min-width:34px;text-align:right;}
+.vmSpeed{border:0;background:var(--raised-2);color:var(--text);font:inherit;font-size:11.5px;font-weight:700;border-radius:8px;padding:3px 6px;cursor:pointer;min-width:34px;}
+.vmSpeed:hover{color:var(--text-bright);}
+.vmDl{color:var(--icon);text-decoration:none;font-size:14px;padding:2px 4px;}
+.vmDl:hover{color:var(--text-bright);}
+.soundboardPicker{width:360px;}
+.sbHead{margin-top:0;}
+.sbNote{margin:0 0 8px;color:var(--yellow);}
+.soundGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:6px;margin-bottom:6px;}
+.soundBtn{display:flex;align-items:center;gap:6px;min-width:0;padding:8px 10px;border:1px solid var(--line-strong);border-radius:var(--r-ctl);background:var(--raised-2);color:var(--text);font:inherit;font-size:13px;cursor:pointer;text-align:left;}
+.soundBtn:hover:not(:disabled){background:var(--active);color:var(--text-bright);border-color:var(--brand);}
+.soundBtn:disabled{opacity:.5;cursor:default;}
+.sbEmoji{font-size:17px;flex:0 0 auto;}
+.sbName{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sbAdd{margin-top:6px;}
+.soundCell .soundPreview{width:44px;height:44px;border-radius:12px;border:0;background:var(--raised-2);font-size:22px;cursor:pointer;}
+.soundCell .soundPreview:hover{background:var(--active);}
+.soundBadge{position:absolute;left:50%;top:10px;transform:translateX(-50%);max-width:90%;padding:4px 10px;border-radius:999px;background:var(--brand);color:var(--on-brand);font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none;animation:sbPop 2.6s var(--ease-out) forwards;z-index:3;}
+@keyframes sbPop{0%{opacity:0;transform:translate(-50%,6px);}10%,80%{opacity:1;transform:translate(-50%,0);}100%{opacity:0;}}
+@media (prefers-reduced-motion:reduce){.vrDot,.soundBadge{animation:none;}}
 </style>
 </head>
 
@@ -2189,6 +2234,7 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
         <div id="composer">
           <button id="attachBtn" title="Upload a file or create a poll" aria-label="Upload a file or create a poll" onclick="openAttachMenu(event)">+</button>
           <textarea id="messageInput" rows="1" placeholder="Message #general" maxlength="4000"></textarea>
+          <button id="voiceMsgBtn" type="button" title="Hold to record a voice message" aria-label="Hold to record a voice message"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 2a3.5 3.5 0 0 1 3.5 3.5v6a3.5 3.5 0 0 1-7 0v-6A3.5 3.5 0 0 1 12 2zm-7 9.5a1 1 0 0 1 2 0 5 5 0 0 0 10 0 1 1 0 0 1 2 0 7 7 0 0 1-6 6.9V21h3a1 1 0 0 1 0 2H8a1 1 0 0 1 0-2h3v-2.6a7 7 0 0 1-6-6.9z"/></svg></button>
           <button id="stickerBtn" title="Stickers and emoji" aria-label="Stickers and emoji" onclick="openStickerPicker(event)" hidden><svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 3H7a4 4 0 0 0-4 4v10a4 4 0 0 0 4 4h7.5L21 14.5V7a4 4 0 0 0-4-4z"/><path d="M14 21v-3.5a3.5 3.5 0 0 1 3.5-3.5H21"/><path d="M8.5 10h.01M14.5 10h.01M8.5 14.5c1 .9 2.2 1.3 3.5 1.3"/></svg></button>
           <button id="sendBtn" title="Send (Enter)" aria-label="Send message" onclick="sendMessage()"><svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3.4 20.4 21 12 3.4 3.6l.1 6.5L15 12 3.5 13.9z"/></svg></button>
         </div>
@@ -3179,6 +3225,7 @@ function messageCardParts(msg, kind){
     if(type === 'image/gif' || /\.gif$/i.test(name)) return 'GIF';
     if(type.startsWith('image/') || IMAGE_EXT.test(name)) return 'Image';
     if(type.startsWith('video/')) return 'Video';
+    if(f.voice) return 'Voice message';
     if(type.startsWith('audio/')) return 'Audio';
     return 'File';
   };
@@ -5036,6 +5083,11 @@ function buildAttachment(data){
     return holder;
   }
 
+  if(data.voice && data.voice.seconds){
+    holder.appendChild(buildVoicePlayer(data));
+    return holder;
+  }
+
   const media = mediaKind(data);
   if(media){
     holder.appendChild(buildMediaPlayer(data, media, () => holder.replaceChildren(buildFileCard(data))));
@@ -5332,7 +5384,7 @@ function openStickerPicker(event){
   if(!groups.length){
     const here = channelByRoom(currentRoom);
     const server = here && here.server;
-    pop.insertAdjacentHTML('beforeend', '<div class="switchDesc">No stickers yet. ' + (server && can(server, 'manage_emoji') ? '' : 'Admins add them in Server Settings &gt; Emoji &amp; Stickers.') + '</div>');
+    pop.insertAdjacentHTML('beforeend', '<div class="switchDesc">No stickers yet. ' + (server && can(server, 'manage_emoji') ? '' : 'Admins add them in Server Settings &gt; Emoji, Stickers &amp; Sounds.') + '</div>');
     if(server && can(server, 'manage_emoji')){
       const add = document.createElement('button');
       add.className = 'btn';
@@ -5535,13 +5587,15 @@ async function sendMessage(){
 
 // Uploads one file for a message that's about to be sent (it isn't posted
 // on its own). Resolves with the file, or rejects with a readable error.
-function uploadAttachment(file, room, toUser, index, total){
+// `extra` adds headers (a voice message's X-Voice-Seconds / X-Voice-Waveform).
+function uploadAttachment(file, room, toUser, index, total, extra){
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/upload');
     xhr.setRequestHeader('Authorization', 'Bearer ' + token);
     xhr.setRequestHeader('X-Room', room);
     xhr.setRequestHeader('X-Attach', '1');
+    Object.entries(extra || {}).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
     xhr.setRequestHeader('X-File-Type', file.type || 'application/octet-stream');
     if(toUser) xhr.setRequestHeader('X-To-User', toUser);
@@ -6364,7 +6418,7 @@ document.addEventListener('contextmenu', e => {
     const t = e.touches[0];
     start = { x:t.clientX, y:t.clientY };
     target = e.target;
-    if(target.closest && target.closest('a, img, video, input, textarea, select, #contextMenu, #emojiPicker')) return;
+    if(target.closest && target.closest('a, img, video, input, textarea, select, #contextMenu, #emojiPicker, #voiceMsgBtn, .vmWave')) return;
     timer = setTimeout(() => {
       timer = null;
       if(!target || !target.isConnected) return;
@@ -8525,12 +8579,448 @@ function buildEventMessageEl(item){
   return wrap;
 }
 
+/* ============================ voice messages ============================ */
+// Hold the mic button in the message bar to record; let go to send, slide
+// away (or press Escape) to cancel. A voice message is an ordinary
+// attachment (X-Attach) that also carries its length and a waveform
+// (X-Voice-Seconds / X-Voice-Waveform); the player draws the waveform.
+const VOICE_MAX_SECONDS = 300; // same as the server
+const VOICE_BARS = 48;
+const ICON_PLAY_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8 5.1v13.8a1 1 0 0 0 1.5.9l11-6.9a1 1 0 0 0 0-1.7l-11-6.9A1 1 0 0 0 8 5.1z"/></svg>';
+const ICON_PAUSE_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M7 4h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm7 0h3a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/></svg>';
+const vrec = { state:'idle', stream:null, recorder:null, chunks:[], ctx:null, meter:null, levels:[], started:0, timer:null, away:false, releasedEarly:false, startX:0, startY:0 };
+
+// The best format this browser records in ('' = its default), or null if it can't record at all.
+function voiceRecordingType(){
+  if(typeof MediaRecorder === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return null;
+  for(const t of ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm']){
+    try{ if(MediaRecorder.isTypeSupported(t)) return t; }catch(e){}
+  }
+  return '';
+}
+function voiceFileExt(type){ return /ogg/.test(type) ? 'ogg' : (/mp4|aac|m4a/.test(type) ? 'm4a' : 'webm'); }
+function formatVoiceTime(secs){
+  const t = Math.max(0, Math.round(Number(secs) || 0));
+  return Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+}
+
+async function startVoiceRecording(){
+  if(vrec.state !== 'idle') return;
+  const type = voiceRecordingType();
+  if(type === null){ toast('This browser can\'t record voice messages.'); return; }
+  if(!socket || !(activeDMUser || currentRoom)) return;
+  vrec.state = 'starting';
+  vrec.releasedEarly = false;
+  let stream;
+  try{ stream = await navigator.mediaDevices.getUserMedia(micConstraints()); }
+  catch(e){ vrec.state = 'idle'; toast('The microphone is blocked - allow it for this site to record voice messages.'); return; }
+  if(vrec.state !== 'starting'){
+    // let go before the mic was ready (often: while answering the permission prompt)
+    stream.getTracks().forEach(t => t.stop());
+    if(vrec.releasedEarly) toast('Hold the mic button while you talk, then let go to send.');
+    vrec.state = 'idle';
+    return;
+  }
+  let recorder;
+  try{ recorder = new MediaRecorder(stream, type ? { mimeType:type, audioBitsPerSecond:48000 } : undefined); }
+  catch(e){ stream.getTracks().forEach(t => t.stop()); vrec.state = 'idle'; toast('This browser can\'t record voice messages.'); return; }
+  Object.assign(vrec, { stream, recorder, chunks:[], levels:[], meter:null, ctx:null });
+  recorder.ondataavailable = e => { if(e.data && e.data.size) vrec.chunks.push(e.data); };
+  try{
+    vrec.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const analyser = vrec.ctx.createAnalyser(); analyser.fftSize = 512;
+    vrec.ctx.createMediaStreamSource(stream).connect(analyser);
+    vrec.meter = { analyser, data:new Uint8Array(512) };
+  }catch(e){ vrec.meter = null; }
+  recorder.start(250);
+  vrec.state = 'recording';
+  vrec.started = performance.now();
+  showVoiceRecorder();
+  vrec.timer = setInterval(() => {
+    const level = vrec.meter ? levelOf(vrec.meter) : 0;
+    vrec.levels.push(level);
+    paintVoiceRecorder(level);
+    if((performance.now() - vrec.started) / 1000 >= VOICE_MAX_SECONDS) finishVoiceRecording(true);
+  }, 50);
+}
+
+// send = false cancels. Stops the mic either way.
+async function finishVoiceRecording(send){
+  if(vrec.state === 'starting'){ vrec.state = 'idle'; vrec.releasedEarly = send; return; }
+  if(vrec.state !== 'recording') return;
+  vrec.state = 'stopping';
+  clearInterval(vrec.timer);
+  const seconds = Math.min(VOICE_MAX_SECONDS, (performance.now() - vrec.started) / 1000);
+  const { recorder, stream, ctx, levels } = vrec;
+  await new Promise(done => {
+    const t = setTimeout(done, 2000);
+    recorder.onstop = () => { clearTimeout(t); done(); };
+    try{ recorder.stop(); }catch(e){ clearTimeout(t); done(); }
+  });
+  stream.getTracks().forEach(t => t.stop());
+  if(ctx) ctx.close().catch(() => {});
+  const chunks = vrec.chunks;
+  Object.assign(vrec, { state:'idle', stream:null, recorder:null, chunks:[], ctx:null, meter:null, levels:[], away:false });
+  hideVoiceRecorder();
+  if(!send) return;
+  if(seconds < 0.6){ toast('Hold the mic button while you talk, then let go to send.'); return; }
+  let type = String(recorder.mimeType || (chunks[0] && chunks[0].type) || 'audio/webm').split(';')[0];
+  if(!type.startsWith('audio/')) type = 'audio/' + voiceFileExt(type).replace('m4a', 'mp4');
+  const blob = new Blob(chunks, { type });
+  if(!blob.size){ toast('Nothing was recorded - check your microphone.'); return; }
+  sendVoiceMessage(blob, type, seconds, voiceWaveform(levels));
+}
+
+// Loudness samples -> VOICE_BARS bytes (hex), scaled so the loudest bar is full height.
+function voiceWaveform(levels){
+  const out = [];
+  const n = Math.max(1, levels.length);
+  for(let i = 0; i < VOICE_BARS; i++){
+    const a = Math.floor(i * n / VOICE_BARS), b = Math.max(a + 1, Math.floor((i + 1) * n / VOICE_BARS));
+    let peak = 0;
+    for(let j = a; j < b && j < levels.length; j++) peak = Math.max(peak, levels[j]);
+    out.push(peak);
+  }
+  const top = Math.max(0.02, ...out);
+  return out.map(v => Math.round(Math.sqrt(Math.min(1, v / top)) * 255).toString(16).padStart(2, '0')).join('');
+}
+
+async function sendVoiceMessage(blob, type, seconds, waveform){
+  const dmUser = activeDMUser;
+  const room = dmUser ? roomNameForDM(username, dmUser) : currentRoom;
+  const reply = replyTo;
+  const file = new File([blob], 'voice-message.' + voiceFileExt(type), { type });
+  let uploaded;
+  try{
+    uploaded = await uploadAttachment(file, room, dmUser, 0, 1, { 'X-Voice-Seconds': seconds.toFixed(1), 'X-Voice-Waveform': waveform });
+  }catch(err){ showError(err.message); return; }
+  if(room !== (activeDMUser ? roomNameForDM(username, activeDMUser) : currentRoom)){
+    toast('The voice message wasn\'t sent because you switched conversations.');
+    return;
+  }
+  postChatMessage('', reply, [uploaded]);
+  cancelReply();
+}
+
+function showVoiceRecorder(){
+  let bar = $('voiceRecorder');
+  if(!bar){
+    bar = document.createElement('div');
+    bar.id = 'voiceRecorder';
+    bar.className = 'voiceRecorder';
+    bar.setAttribute('role', 'status');
+    bar.innerHTML = '<span class="vrDot" aria-hidden="true"></span><span class="vrTime">0:00</span><span class="vrLevels" aria-hidden="true"></span><span class="vrHint"></span>';
+    $('composer').insertBefore(bar, $('voiceMsgBtn'));
+  }
+  bar.querySelector('.vrLevels').innerHTML = '';
+  $('voiceMsgBtn').classList.add('recording');
+  $('composer').classList.add('recordingVoice');
+  bar.classList.add('show');
+  paintVoiceRecorder(0);
+}
+function paintVoiceRecorder(level){
+  const bar = $('voiceRecorder');
+  if(!bar) return;
+  const secs = (performance.now() - vrec.started) / 1000;
+  bar.querySelector('.vrTime').textContent = formatVoiceTime(Math.floor(secs));
+  bar.classList.toggle('away', vrec.away);
+  bar.querySelector('.vrHint').textContent = vrec.away ? 'Let go to cancel' : (matchMedia('(pointer: coarse)').matches ? 'Let go to send · slide away to cancel' : 'Let go to send · slide away or Esc to cancel');
+  const levels = bar.querySelector('.vrLevels');
+  if(level || levels.childElementCount < 40){
+    const i = document.createElement('i');
+    i.style.height = Math.round(12 + Math.min(1, level * 4) * 88) + '%';
+    levels.appendChild(i);
+    while(levels.childElementCount > 40) levels.firstChild.remove();
+  }
+}
+function hideVoiceRecorder(){
+  const bar = $('voiceRecorder');
+  if(bar) bar.classList.remove('show', 'away');
+  const btn = $('voiceMsgBtn');
+  if(btn) btn.classList.remove('recording');
+  $('composer').classList.remove('recordingVoice');
+}
+
+function setupVoiceMessageButton(){
+  const b = $('voiceMsgBtn');
+  if(!b) return;
+  if(voiceRecordingType() === null){ b.hidden = true; return; }
+  b.addEventListener('pointerdown', e => {
+    if(e.button !== 0) return;
+    e.preventDefault();
+    try{ b.setPointerCapture(e.pointerId); }catch(_){}
+    vrec.startX = e.clientX; vrec.startY = e.clientY; vrec.away = false; vrec.viaKey = false;
+    startVoiceRecording();
+  });
+  b.addEventListener('pointermove', e => {
+    if(vrec.state === 'idle') return;
+    const away = Math.hypot(e.clientX - vrec.startX, e.clientY - vrec.startY) > 80;
+    if(away !== vrec.away){ vrec.away = away; paintVoiceRecorder(0); }
+  });
+  b.addEventListener('pointerup', () => finishVoiceRecording(!vrec.away));
+  b.addEventListener('pointercancel', () => finishVoiceRecording(false));
+  b.addEventListener('contextmenu', e => e.preventDefault()); // a long press is the whole point here
+  b.addEventListener('keydown', e => {
+    if(e.key !== ' ' && e.key !== 'Enter') return;
+    e.preventDefault();
+    if(!e.repeat){ vrec.away = false; vrec.viaKey = true; startVoiceRecording(); }
+  });
+  b.addEventListener('keyup', e => { if(e.key === ' ' || e.key === 'Enter'){ e.preventDefault(); finishVoiceRecording(true); } });
+  b.addEventListener('blur', () => { if(vrec.viaKey && vrec.state !== 'idle') finishVoiceRecording(false); });
+  window.addEventListener('keydown', e => { if(e.key === 'Escape' && vrec.state !== 'idle'){ vrec.away = true; finishVoiceRecording(false); } }, true);
+}
+
+setupVoiceMessageButton();
+
+// The player for a voice message: play/pause, the waveform (click or drag
+// to jump), the time, and a speed button. One plays at a time.
+let voicePlaying = null;
+function buildVoicePlayer(data){
+  const v = data.voice;
+  const wrap = document.createElement('div');
+  wrap.className = 'voiceMsg';
+  const play = document.createElement('button');
+  play.className = 'vmPlay';
+  play.innerHTML = ICON_PLAY_SVG;
+  play.setAttribute('aria-label', 'Play voice message');
+  const wave = document.createElement('div');
+  wave.className = 'vmWave';
+  wave.tabIndex = 0;
+  wave.setAttribute('role', 'slider');
+  wave.setAttribute('aria-label', 'Voice message position');
+  const hex = String(v.waveform || '');
+  const values = [];
+  for(let i = 0; i + 1 < hex.length; i += 2) values.push(parseInt(hex.slice(i, i + 2), 16) / 255);
+  if(!values.length) for(let i = 0; i < VOICE_BARS; i++) values.push(0.4);
+  const bars = values.map(val => {
+    const bar = document.createElement('i');
+    bar.style.height = Math.round(14 + val * 86) + '%';
+    wave.appendChild(bar);
+    return bar;
+  });
+  const time = document.createElement('span');
+  time.className = 'vmTime';
+  time.textContent = formatVoiceTime(v.seconds);
+  const speed = document.createElement('button');
+  speed.className = 'vmSpeed';
+  speed.textContent = '1×';
+  speed.title = 'Playback speed';
+  speed.setAttribute('aria-label', 'Playback speed 1×');
+  const dl = document.createElement('a');
+  dl.className = 'vmDl';
+  dl.href = data.fileUrl;
+  dl.download = data.fileName || 'voice-message';
+  dl.title = 'Download';
+  dl.setAttribute('aria-label', 'Download voice message');
+  dl.textContent = '⬇';
+  wrap.append(play, wave, time, speed, dl);
+
+  let audio = null, rate = 1, raf = 0;
+  const total = () => (audio && isFinite(audio.duration) && audio.duration > 0 ? audio.duration : Number(v.seconds) || 1);
+  const paint = () => {
+    const t = audio ? audio.currentTime : 0;
+    const f = Math.max(0, Math.min(1, t / total()));
+    bars.forEach((b, i) => b.classList.toggle('played', (i + 0.5) / bars.length <= f));
+    wave.setAttribute('aria-valuenow', String(Math.round(f * 100)));
+    wave.setAttribute('aria-valuetext', formatVoiceTime(t) + ' of ' + formatVoiceTime(total()));
+    time.textContent = audio && (t > 0 || !audio.paused) ? formatVoiceTime(t) : formatVoiceTime(v.seconds);
+  };
+  const loop = () => { paint(); if(audio && !audio.paused) raf = requestAnimationFrame(loop); };
+  const ensure = () => {
+    if(audio) return audio;
+    audio = new Audio();
+    audio.preload = 'auto';
+    audio.src = data.fileUrl;
+    audio.playbackRate = rate;
+    if(voicePrefs.outputId && audio.setSinkId) audio.setSinkId(voicePrefs.outputId).catch(() => {});
+    audio.onplay = () => { wrap.classList.add('playing'); play.innerHTML = ICON_PAUSE_SVG; play.setAttribute('aria-label', 'Pause voice message'); cancelAnimationFrame(raf); loop(); };
+    audio.onpause = () => { wrap.classList.remove('playing'); play.innerHTML = ICON_PLAY_SVG; play.setAttribute('aria-label', 'Play voice message'); cancelAnimationFrame(raf); paint(); };
+    audio.onended = () => { audio.currentTime = 0; paint(); time.textContent = formatVoiceTime(v.seconds); };
+    audio.onerror = () => { toast('This voice message can\'t be played in this browser - try downloading it.'); };
+    return audio;
+  };
+  const seek = f => {
+    const a = ensure();
+    const go = () => { try{ a.currentTime = Math.max(0, Math.min(1, f)) * total(); }catch(e){} paint(); };
+    if(a.readyState >= 1) go(); else a.addEventListener('loadedmetadata', go, { once:true });
+  };
+  play.onclick = () => {
+    const a = ensure();
+    if(a.paused){
+      if(voicePlaying && voicePlaying !== a) voicePlaying.pause();
+      voicePlaying = a;
+      a.play().catch(() => {});
+    }else a.pause();
+  };
+  speed.onclick = () => {
+    rate = rate === 1 ? 1.5 : (rate === 1.5 ? 2 : 1);
+    speed.textContent = rate + '×';
+    speed.setAttribute('aria-label', 'Playback speed ' + rate + '×');
+    if(audio) audio.playbackRate = rate;
+  };
+  const fromEvent = e => { const r = wave.getBoundingClientRect(); return (e.clientX - r.left) / Math.max(1, r.width); };
+  wave.addEventListener('pointerdown', e => {
+    if(e.button !== 0) return;
+    e.preventDefault();
+    try{ wave.setPointerCapture(e.pointerId); }catch(_){}
+    seek(fromEvent(e));
+    const move = ev => seek(fromEvent(ev));
+    const up = () => { wave.removeEventListener('pointermove', move); wave.removeEventListener('pointerup', up); wave.removeEventListener('pointercancel', up); };
+    wave.addEventListener('pointermove', move);
+    wave.addEventListener('pointerup', up);
+    wave.addEventListener('pointercancel', up);
+  });
+  wave.addEventListener('keydown', e => {
+    if(e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const now = audio ? audio.currentTime : 0;
+    seek((now + (e.key === 'ArrowRight' ? 5 : -5)) / total());
+  });
+  return wrap;
+}
+
+/* ============================ soundboard ============================ */
+// A server's short clips, played to everyone in a call: the server checks
+// and relays 'voice:sound', and each browser plays the clip itself (not
+// mixed into anyone's mic), stopping it after maxSeconds.
+const ICON_SOUNDBOARD_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2 3a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1H7zm7 0a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1V7a1 1 0 0 0-1-1h-3zm-7 7a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1H7zm7 0a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-3a1 1 0 0 0-1-1h-3z"/></svg>';
+const SOUND_MAX_SECONDS = 5.2;      // longest clip that can be added
+const SOUND_MAX_BYTES = 1024 * 1024; // same as the server
+
+// [{ server, list }] of the sounds usable in a call: a voice channel's own
+// server, or (DM/group calls) every server you're in.
+function soundsForCall(key){
+  if(String(key || '').startsWith('voice:')){
+    const found = channelByRoom(callRoomOf(key));
+    return found && (found.server.sounds || []).length ? [{ server:found.server, list:found.server.sounds }] : [];
+  }
+  return servers.filter(s => (s.sounds || []).length).map(s => ({ server:s, list:s.sounds }));
+}
+function soundboardManageServer(key){
+  if(!String(key || '').startsWith('voice:')) return null;
+  const found = channelByRoom(callRoomOf(key));
+  return found && can(found.server, 'manage_emoji') ? found.server : null;
+}
+function showSoundboardButton(key){ return soundsForCall(key).length > 0 || !!soundboardManageServer(key); }
+
+function playSoundLocally(sound, maxSeconds){
+  const a = new Audio(sound.url);
+  const mine = voicePrefs.soundVolume === undefined ? 0.8 : Number(voicePrefs.soundVolume);
+  a.volume = Math.max(0, Math.min(1, (Number(sound.volume) || 1) * mine));
+  if(voicePrefs.outputId && a.setSinkId) a.setSinkId(voicePrefs.outputId).catch(() => {});
+  const stop = setTimeout(() => a.pause(), Math.max(0.5, maxSeconds || 6) * 1000);
+  a.onended = () => clearTimeout(stop);
+  a.play().catch(() => clearTimeout(stop));
+  return a;
+}
+function playSoundboard(sound){
+  if(!voice.key || !socket) return;
+  socket.emit('voice:sound', { key: voice.key, soundId: sound.id }, res => { if(res && res.error) toast(res.error); });
+}
+function onVoiceSound(data){
+  if(!data || data.key !== voice.key || !data.sound) return;
+  if(isBlocked(data.by)) return;
+  flashSoundOnTile(data.by, data.sound);
+  if(voice.deafened || voicePrefs.soundboard === false || mutedForMe(data.by)) return;
+  playSoundLocally(data.sound, Math.min(6, Number(data.maxSeconds) || 6));
+}
+// "🔊 airhorn" over the tile of whoever played it, for a moment.
+function flashSoundOnTile(user, sound){
+  document.querySelectorAll('.callTile[data-speaker="' + CSS.escape(user) + '"]').forEach(tile => {
+    tile.querySelectorAll('.soundBadge').forEach(b => b.remove());
+    const badge = Object.assign(document.createElement('div'), { className:'soundBadge', textContent:(sound.emoji || '🔊') + ' ' + sound.name });
+    tile.appendChild(badge);
+    setTimeout(() => badge.remove(), 2600);
+  });
+}
+
+function openSoundboard(event){
+  event.stopPropagation();
+  let pop = $('soundboardPicker');
+  if(pop && pop.classList.contains('open')){ pop.classList.remove('open'); return; }
+  closePopouts();
+  if(!pop){
+    pop = document.createElement('div');
+    pop.id = 'soundboardPicker';
+    pop.className = 'stickerPicker soundboardPicker';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Soundboard');
+    pop.addEventListener('click', e => e.stopPropagation());
+    document.body.appendChild(pop);
+    document.addEventListener('click', () => pop.classList.remove('open'));
+  }
+  pop.innerHTML = '';
+  const anchor = event.currentTarget && event.currentTarget.getBoundingClientRect ? event.currentTarget : null;
+  pop.appendChild(Object.assign(document.createElement('div'), { className:'pickerTitle sbHead', textContent:'Soundboard' }));
+  if(voice.muted || voice.deafened) pop.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc sbNote', textContent:'Unmute to play sounds.' }));
+  const groups = soundsForCall(voice.key);
+  const manager = soundboardManageServer(voice.key);
+  if(!groups.length){
+    pop.insertAdjacentHTML('beforeend', '<div class="switchDesc">No sounds yet.' + (manager ? '' : ' Admins add them in Server Settings &gt; Emoji, Stickers &amp; Sounds.') + '</div>');
+  }
+  groups.forEach(g => {
+    if(groups.length > 1) pop.appendChild(Object.assign(document.createElement('div'), { className:'pickerTitle', textContent:g.server.name }));
+    const grid = document.createElement('div');
+    grid.className = 'soundGrid';
+    g.list.forEach(sound => {
+      const b = document.createElement('button');
+      b.className = 'soundBtn';
+      b.disabled = voice.muted || voice.deafened;
+      b.title = sound.name + ' - everyone in the call hears it (right-click to preview)';
+      b.setAttribute('aria-label', 'Play ' + sound.name + ' to the call');
+      b.append(Object.assign(document.createElement('span'), { className:'sbEmoji', textContent:sound.emoji || '🔊' }), Object.assign(document.createElement('span'), { className:'sbName', textContent:sound.name }));
+      b.onclick = () => playSoundboard(sound);
+      b.oncontextmenu = e => { e.preventDefault(); showMenu(e, [{ label:'Preview (only you hear it)', action:() => playSoundLocally(sound, 6) }]); };
+      grid.appendChild(b);
+    });
+    pop.appendChild(grid);
+  });
+  if(manager){
+    const add = Object.assign(document.createElement('button'), { className:'linkBtn sbAdd', textContent: groups.length ? 'Add or remove sounds' : 'Add sounds' });
+    add.onclick = () => { pop.classList.remove('open'); openServerSettings(manager.id, 'emoji'); };
+    pop.appendChild(add);
+  }
+  pop.classList.add('open');
+  const r = anchor ? anchor.getBoundingClientRect() : { left:innerWidth / 2, right:innerWidth / 2, top:innerHeight / 2 };
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  pop.style.left = Math.max(12, Math.min((r.left + r.right) / 2 - w / 2, innerWidth - w - 12)) + 'px';
+  pop.style.top = Math.max(12, r.top - h - 10) + 'px';
+}
+
+// The browser's type for a sound file (what /assets accepts), or ''.
+function soundFileType(file){
+  const t = String(file.type || '').toLowerCase(), n = String(file.name || '').toLowerCase();
+  if(t === 'audio/mpeg' || t === 'audio/mp3' || /\.mp3$/.test(n)) return 'audio/mpeg';
+  if(/ogg|opus/.test(t) || /\.(ogg|oga|opus)$/.test(n)) return 'audio/ogg';
+  if(/wav/.test(t) || /\.wav$/.test(n)) return 'audio/wav';
+  if(/mp4|m4a|aac/.test(t) || /\.(m4a|aac)$/.test(n)) return 'audio/mp4';
+  if(/webm/.test(t) || /\.weba$/.test(n)) return 'audio/webm';
+  return '';
+}
+// How long a sound file plays, in seconds (rejects if the browser can't read it).
+function soundDuration(file){
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const a = new Audio();
+    const done = fn => { URL.revokeObjectURL(url); fn(); };
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => {
+      if(isFinite(a.duration)) return done(() => resolve(a.duration));
+      // some recordings only know their length once read to the end
+      a.ondurationchange = () => { if(isFinite(a.duration)) done(() => resolve(a.duration)); };
+      a.currentTime = 1e6;
+    };
+    a.onerror = () => done(() => reject(new Error('That file can\'t be played as a sound - try an MP3, OGG or WAV.')));
+    a.src = url;
+  });
+}
+
 /* ============================ voice + video calls ============================ */
 // Audio/video goes straight between browsers (WebRTC); the server only
 // relays the connection setup and says who is in which call. One engine
 // for DM calls ('call:dm:a:b'), group calls ('call:group:N') and voice
 // channels ('voice:<room>').
-const DEFAULT_VOICE_PREFS = { inputId:'', outputId:'', cameraId:'', noiseSuppression:true, echoCancellation:true, autoGain:true, mode:'voice', pttKey:'', pttLabel:'' };
+const DEFAULT_VOICE_PREFS = { inputId:'', outputId:'', cameraId:'', noiseSuppression:true, echoCancellation:true, autoGain:true, mode:'voice', pttKey:'', pttLabel:'', soundboard:true, soundVolume:0.8 };
 let voicePrefs = Object.assign({}, DEFAULT_VOICE_PREFS);
 try{ voicePrefs = Object.assign({}, DEFAULT_VOICE_PREFS, JSON.parse(localStorage.getItem('voicePrefs') || '{}')); }catch(e){}
 function saveVoicePrefs(){ try{ localStorage.setItem('voicePrefs', JSON.stringify(voicePrefs)); }catch(e){} }
@@ -9118,6 +9608,7 @@ function applyCallState(state){
 function setupVoiceSocket(){
   socket.on('voice:state', applyCallState);
   socket.on('voice:signal', handleVoiceSignal);
+  socket.on('voice:sound', onVoiceSound);
   socket.on('voice:ring', data => { if(data && !isBlocked(data.from) && voice.key !== data.key) showIncomingCall(data); });
   socket.on('voice:ringStop', data => stopIncomingCall(data && data.key));
   socket.on('voice:declined', data => { if(data && data.key === voice.key) toast(displayNameFor(data.by) + ' declined the call.'); });
@@ -9324,6 +9815,7 @@ function renderCallPanel(){
       callButton(ICON_CAMERA_SVG, voice.cam ? 'Turn camera off' : 'Turn camera on', toggleCamera, voice.cam ? 'on' : '', !!voice.cam)
     );
     if(canShareScreen) controls.appendChild(callButton(ICON_SCREEN_SVG, voice.screen ? 'Stop sharing' : 'Share your screen', toggleScreen, voice.screen ? 'on' : '', !!voice.screen));
+    if(showSoundboardButton(key)){ const sb = callButton(ICON_SOUNDBOARD_SVG, 'Soundboard', openSoundboard); sb.id = 'soundboardBtn'; controls.appendChild(sb); }
     controls.appendChild(callButton(ICON_HANGUP_SVG, 'Leave call', leaveCall, 'hangup'));
   }else{
     const join = document.createElement('button');
@@ -9425,6 +9917,9 @@ async function renderVoiceSection(c){
       switchRow('vNoise', 'Noise suppression', 'Filters out background noise like keyboards and fans.', voicePrefs.noiseSuppression) +
       switchRow('vEcho', 'Echo cancellation', 'Stops others hearing themselves through your speakers.', voicePrefs.echoCancellation) +
       switchRow('vGain', 'Automatic gain control', 'Keeps your volume steady.', voicePrefs.autoGain)) +
+    section('Soundboard',
+      switchRow('vSounds', 'Play soundboard sounds', 'Hear the sounds people play in calls. Deafening also silences them.', voicePrefs.soundboard !== false) +
+      '<div class="rowFlex" style="margin-top:10px"><label class="switchDesc" for="vSoundVol" style="margin:0">Soundboard volume</label><input type="range" id="vSoundVol" min="0" max="100" step="5" style="max-width:220px"><span class="switchDesc" id="vSoundVolLabel" style="margin:0"></span></div>') +
     section('If calls don\'t connect', '<div class="switchDesc">Calls connect straight between devices. Some school or office networks block that; if people show as "can\'t connect", try another network (like mobile data). The site owner can add a TURN relay server to fix this for everyone.</div>');
   let testStream = null, camStream = null;
   const stopTests = () => {
@@ -9508,6 +10003,11 @@ async function renderVoiceSection(c){
     window.addEventListener('keydown', grab, true);
     if(globalPtt) setTimeout(() => window.addEventListener('mousedown', grabMouse, true), 0);
   };
+  $('vSounds').onchange = e => { voicePrefs.soundboard = e.target.checked; saveVoicePrefs(); };
+  const vol = $('vSoundVol');
+  vol.value = Math.round((voicePrefs.soundVolume === undefined ? 0.8 : voicePrefs.soundVolume) * 100);
+  $('vSoundVolLabel').textContent = vol.value + '%';
+  vol.oninput = () => { voicePrefs.soundVolume = Number(vol.value) / 100; $('vSoundVolLabel').textContent = vol.value + '%'; saveVoicePrefs(); };
   const processing = { vNoise:'noiseSuppression', vEcho:'echoCancellation', vGain:'autoGain' };
   Object.entries(processing).forEach(([id, prop]) => {
     $(id).onchange = e => {
@@ -10815,7 +11315,7 @@ const PERMISSION_INFO = [
   { key:'manage_events', label:'Manage events', desc:'Create, edit and cancel events.' },
   { key:'mention_everyone', label:'Mention @everyone', desc:'Use @everyone, and mention roles that aren\'t open to everyone.' },
   { key:'ban_members', label:'Ban & time out members', desc:'Ban people from this server (they can\'t rejoin until unbanned) and time members out so they can\'t post for a while.' },
-  { key:'manage_emoji', label:'Manage emoji & stickers', desc:'Add and remove this server\'s custom emoji and stickers.' }
+  { key:'manage_emoji', label:'Manage emoji, stickers & sounds', desc:'Add and remove this server\'s custom emoji, stickers and soundboard sounds.' }
 ];
 const PERMISSION_PRESETS = [
   { key:'moderator', label:'Moderator', color:'#2ecc71', perms:['manage_messages', 'kick_members', 'ban_members', 'mention_everyone', 'manage_emoji'] },
@@ -10852,7 +11352,7 @@ function openServerSettings(serverId, sectionKey){
       { key:'onboarding', label:'Onboarding', render:c => renderServerOnboarding(c, sid), hidden:server.isDefault || !can(server, 'manage_server') },
       { key:'rules', label:'Rules Screen', render:c => renderServerRules(c, sid), hidden:server.isDefault || !can(server, 'manage_server') },
       { key:'discovery', label:'Discovery', render:c => renderServerDiscovery(c, sid), hidden:server.isDefault || !can(server, 'manage_server') },
-      { key:'emoji', label:'Emoji & Stickers', render:c => renderServerEmoji(c, sid), hidden:!can(server, 'manage_emoji') && server.isDefault },
+      { key:'emoji', label:'Emoji, Stickers & Sounds', render:c => renderServerEmoji(c, sid), hidden:!can(server, 'manage_emoji') && server.isDefault },
       { key:'moderation', label:'Moderation', render:c => renderServerModeration(c, sid) },
       { key:'automod', label:'AutoMod', render:c => renderServerAutomod(c, sid), hidden:!can(server, 'manage_server') && !can(server, 'manage_messages') },
       { key:'review', label:reviewNavLabel(sid), render:c => renderServerReview(c, sid), hidden:!can(server, 'manage_messages') },
@@ -11702,7 +12202,8 @@ const AUDIT_LABELS = {
   server_update:'changed the server settings', webhook_delete:'deleted the webhook', emoji_add:'added the emoji', emoji_remove:'removed the emoji',
   persona_post:'posted as the persona (old)', sticker_add:'added the sticker', sticker_remove:'removed the sticker',
   automod_block:'blocked a message from', automod_flag:'flagged a message from', automod_update:'changed an AutoMod rule', raid_update:'changed raid protection',
-  lockdown_start:'locked the server to new members', lockdown_end:'ended the lockdown'
+  lockdown_start:'locked the server to new members', lockdown_end:'ended the lockdown',
+  sound_add:'added the sound', sound_remove:'removed the sound'
 };
 async function loadModerationLists(sid){
   const listRow = (main, sub, button) => {
@@ -11755,7 +12256,8 @@ function renderServerEmoji(c, sid){
   const manage = can(server, 'manage_emoji');
   const list = server.emojis || [];
   const stickers = server.stickers || [];
-  c.innerHTML = '<h2 class="settingsTitle">Emoji & Stickers</h2>' +
+  const sounds = server.sounds || [];
+  c.innerHTML = '<h2 class="settingsTitle">Emoji, Stickers & Sounds</h2>' +
     '<div class="settingsSub">This server\'s own emoji. Type <b>:name:</b> in a message, or pick them from the emoji button. They work as reactions too.</div>' +
     (manage ? section('Add an emoji',
       '<div class="rowFlex"><input class="settingsInput" id="emojiName" maxlength="32" placeholder="name, e.g. party_cat" style="max-width:240px">' +
@@ -11766,7 +12268,64 @@ function renderServerEmoji(c, sid){
       '<div class="rowFlex"><input class="settingsInput" id="stickerName" maxlength="30" placeholder="name, e.g. happy dance" style="max-width:240px">' +
       '<button class="btn" id="stickerUpload">Upload picture, GIF or video</button></div>' +
       '<div class="switchDesc" style="margin-top:8px">Stickers are sent on their own with the sticker button by the message box. A video becomes a looping GIF (up to the first 2 minutes). Up to 30 per server.</div><div class="inlineMsg" id="stickerMsg"></div>') : '') +
-    section('Stickers (' + stickers.length + ')', '<div id="stickerList" class="emojiManageGrid"></div>');
+    section('Stickers (' + stickers.length + ')', '<div id="stickerList" class="emojiManageGrid"></div>') +
+    (manage ? section('Add a sound',
+      '<div class="rowFlex"><input class="settingsInput" id="soundEmoji" maxlength="8" placeholder="🔊" aria-label="Emoji for the sound" style="max-width:64px;text-align:center">' +
+      '<input class="settingsInput" id="soundName" maxlength="30" placeholder="name, e.g. airhorn" style="max-width:220px">' +
+      '<label class="switchDesc" for="soundVolume" style="margin:0">Volume</label><input type="range" id="soundVolume" min="5" max="100" step="5" value="100" style="max-width:120px">' +
+      '<button class="btn" id="soundUpload">Upload sound</button></div>' +
+      '<div class="switchDesc" style="margin-top:8px">For the soundboard in this server\'s voice channels (and DM calls of its members). MP3, OGG, WAV or M4A, up to 5 seconds and 1 MB. Up to 24 per server.</div><div class="inlineMsg" id="soundMsg"></div>') : '') +
+    section('Soundboard (' + sounds.length + ')', '<div id="soundList" class="emojiManageGrid"></div>');
+  const soundGrid = $('soundList');
+  if(!sounds.length) soundGrid.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: manage ? 'No sounds yet - add the first one above.' : 'No sounds yet.' }));
+  sounds.forEach(sd => {
+    const cell = document.createElement('div');
+    cell.className = 'emojiCell soundCell';
+    const preview = Object.assign(document.createElement('button'), { className:'soundPreview', textContent: sd.emoji || '🔊', title:'Preview' });
+    preview.setAttribute('aria-label', 'Preview ' + sd.name);
+    preview.onclick = () => playSoundLocally(sd, 6);
+    cell.appendChild(preview);
+    cell.appendChild(Object.assign(document.createElement('span'), { textContent: sd.name + (sd.volume < 1 ? ' · ' + Math.round(sd.volume * 100) + '%' : '') }));
+    if(manage){
+      const del = Object.assign(document.createElement('button'), { className:'linkBtn', textContent:'Remove' });
+      del.onclick = async () => {
+        if(!confirm('Remove the "' + sd.name + '" sound?')) return;
+        const response = await fetch('/servers/' + sid + '/sounds/' + sd.id + '/delete', { method:'POST', headers:authHeaders(), body:'{}' });
+        if(response.ok){ await refreshServers(); rerenderSettingsSection(); } else toast('Could not remove it.');
+      };
+      cell.appendChild(del);
+    }
+    soundGrid.appendChild(cell);
+  });
+  if(manage) $('soundUpload').onclick = () => {
+    const name = $('soundName').value.trim();
+    const emoji = $('soundEmoji').value.trim();
+    const volume = Number($('soundVolume').value) / 100;
+    if(name.length < 2){ inlineMessage($('soundMsg'), 'Name it first (2-30 characters).', true); return; }
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = 'audio/mpeg,audio/ogg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/aac,audio/webm,.mp3,.ogg,.oga,.opus,.wav,.m4a,.aac,.weba';
+    picker.onchange = async () => {
+      const file = picker.files && picker.files[0];
+      if(!file) return;
+      try{
+        const type = soundFileType(file);
+        if(!type) throw new Error('Use an MP3, OGG, WAV or M4A sound file.');
+        if(file.size > SOUND_MAX_BYTES) throw new Error('That file is over 1 MB - pick a shorter or smaller sound.');
+        const secs = await soundDuration(file);
+        if(secs > SOUND_MAX_SECONDS) throw new Error('Sounds can be up to 5 seconds long - this one is ' + Math.round(secs) + ' seconds. Trim it first.');
+        inlineMessage($('soundMsg'), 'Uploading…');
+        const url = await uploadAsset(new File([file], file.name, { type }));
+        const response = await fetch('/servers/' + sid + '/sounds', { method:'POST', headers:authHeaders(), body:JSON.stringify({ name, emoji, url, volume }) });
+        const data = await response.json();
+        if(!response.ok) throw new Error(capitalise(data.error || 'Could not add it.'));
+        await refreshServers();
+        rerenderSettingsSection();
+        toast('Added the "' + name + '" sound');
+      }catch(err){ inlineMessage($('soundMsg'), err.message, true); }
+    };
+    picker.click();
+  };
   const grid = $('emojiList');
   if(!list.length) grid.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent: manage ? 'No custom emoji yet - add the first one above.' : 'No custom emoji yet.' }));
   list.forEach(e => {

@@ -126,6 +126,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   removes access ends the person's call too. `voice:signal` is relayed
   only between two current participants; never relay to anyone else.
   Ring notifications follow the honest-notification rule above.
+  The speaking ring is drawn inside the tile (`.callTile::after`, inset) and on the
+  picture itself in the voice channel list; `regression/call_looks.test.js` checks
+  both (and video profile pictures in calls) on real screenshots.
 - Webhook tokens are passwords: store only `sha256Hex(token)`, show the
   token once, compare with `webhookTokenMatches()` (constant time). Webhook
   messages are `"user" = 'webhook:<id>'` (never a real username) with

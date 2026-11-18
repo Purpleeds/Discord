@@ -98,7 +98,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   first frame, made in the browser by `videoPoster()`) because push, the notifier and
   `/avatars/` need an image. A new still without `avatarVideo` clears the video.
   `removeUnusedAssets()` must count `avatar_video` as in use. Client: `addAvatarVideo()`
-  - profile cards autoplay, small avatars play while their row is pointed at.
+  - profile cards and call tiles (`callAvatar()`, in-server picture in voice channels) autoplay, small
+  avatars play while their row is pointed at. Reduce motion is checked live (`motionReduced()`,
+  `syncMotionVideos()`); a video the browser can't play falls back to the still.
   Profile card banners are 17:6 and server banners 6:5 of the sidebar width (`cqw`) -
   each the same shape as its Arrange frame and settings preview. `regression/video_avatars.test.js`.
 - **Who can read a room** is decided in ONE place: `isAllowedRoom()` ->

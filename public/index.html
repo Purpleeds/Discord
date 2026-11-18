@@ -2316,6 +2316,7 @@ function applyAppearance(){
   else delete root.dataset.theme;
   root.classList.toggle('compact', !!appearance.compact);
   root.classList.toggle('reduce-motion', !!appearance.reduceMotion);
+  if(typeof syncMotionVideos === 'function') syncMotionVideos();
   root.classList.toggle('underline-links', !!appearance.underlineLinks);
   const accent = /^#[0-9a-f]{6}$/i.test(appearance.accent) ? appearance.accent : DEFAULT_APPEARANCE.accent;
   root.style.setProperty('--brand', accent);
@@ -3305,7 +3306,7 @@ function paintAvatar(avatar, user){
     img.onerror = () => { avatar.innerHTML = ''; avatar.textContent = userInitial(user); };
     avatar.appendChild(img);
     const p = profiles[user];
-    if(p && p.avatarVideo) addAvatarVideo(avatar, p.avatarVideo, url, false);
+    if(p && p.avatarVideo) addAvatarVideo(avatar, p.avatarVideo, url, avatar.dataset.autoplay === '1');
   }else{
     avatar.textContent = userInitial(user);
   }
@@ -3315,7 +3316,7 @@ function paintAvatar(avatar, user){
 // (messages, member list) play while you point at that row, so a busy
 // channel isn't dozens of videos at once. Reduce motion: never by itself.
 function addAvatarVideo(avatar, videoUrl, poster, autoplay){
-  if(!videoUrl || !isVideoUrl(videoUrl)) return;
+  if(!videoUrl || !isVideoUrl(videoUrl) || !canPlayVideoUrl(videoUrl)) return;
   avatar.querySelectorAll('video').forEach(v => v.remove());
   const video = document.createElement('video');
   video.className = 'avatarVideo';
@@ -3325,11 +3326,27 @@ function addAvatarVideo(avatar, videoUrl, poster, autoplay){
   video.setAttribute('muted', ''); video.setAttribute('playsinline', '');
   video.preload = autoplay ? 'auto' : 'none';
   video.setAttribute('aria-hidden', 'true');
+  // can't play it here (unsupported codec, gone, network): just the still picture
+  video.addEventListener('error', () => { video.remove(); if(!avatar.querySelector('video')) avatar.classList.remove('hasVideo'); });
   avatar.appendChild(video);
   avatar.classList.add('hasVideo');
-  const still = appearance.reduceMotion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches && appearance.reduceMotion !== false);
-  if(autoplay && !still){ video.autoplay = true; video.play().catch(() => {}); }
+  if(autoplay){ video.dataset.autoplay = '1'; if(!motionReduced()){ video.autoplay = true; video.play().catch(() => {}); } }
 }
+// Reduce motion (the app's switch, or the device's setting until that's been
+// changed here). Checked live, so turning it on stops videos already playing.
+function motionReduced(){
+  return !!(appearance.reduceMotion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches && appearance.reduceMotion !== false));
+}
+// After reduce motion changes: stop (or restart) the videos that play by
+// themselves - big video avatars and video banners. Pointed-at ones are left alone.
+function syncMotionVideos(){
+  const still = motionReduced();
+  document.querySelectorAll('video.avatarVideo[data-autoplay], video.bannerMedia').forEach(v => {
+    v.autoplay = !still;
+    if(still) v.pause(); else v.play().catch(() => {});
+  });
+}
+if(window.matchMedia){ try{ matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => syncMotionVideos()); }catch(e){} }
 // play small video avatars while their row is pointed at
 document.addEventListener('mouseover', e => {
   const row = e.target.closest && e.target.closest('.message, .member, .manageRow, .friendRow, .dmItem, .avatarWrap');
@@ -3349,6 +3366,11 @@ function refreshAvatars(user){
 
 /* ---- banners and uploads for them ---- */
 function isVideoUrl(url){ return /\.(mp4|webm)(\?|$)/i.test(String(url || '')); }
+// Some browsers (older iPhones) can't play WebM at all - show the still instead of a blank box.
+function canPlayVideoUrl(url){
+  const type = /\.webm(\?|$)/i.test(String(url || '')) ? 'video/webm' : 'video/mp4';
+  try{ return document.createElement('video').canPlayType(type) !== ''; }catch(e){ return true; }
+}
 // Fills `el` with a banner: a picture/GIF, or a short looping muted video,
 // over `color`. `shade` is an optional gradient laid over the top (for names
 // written on the banner). Videos stay still when reduced motion is on.
@@ -3384,7 +3406,7 @@ function bannerMediaElement(url){
     media = document.createElement('video');
     media.src = url; media.muted = true; media.loop = true; media.playsInline = true;
     media.setAttribute('muted', ''); media.setAttribute('playsinline', '');
-    const still = appearance.reduceMotion || (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches && appearance.reduceMotion !== false);
+    const still = motionReduced();
     media.autoplay = !still;
     if(!still) media.play().catch(() => {});
   }else{
@@ -3560,7 +3582,8 @@ function createAvatar(user, size, options){
   wrap.className = 'avatarWrap' + (options.wrapClass ? ' ' + options.wrapClass : '') + (size === 'sm' ? ' sm' : '');
   const avatar = document.createElement('div');
   avatar.className = 'avatar' + (size ? ' ' + size : '');
-  if(options.url){ paintAvatarFrom(avatar, user, options.url, options.video); avatar.dataset.fixedUrl = '1'; }
+  if(options.autoplay) avatar.dataset.autoplay = '1'; // video pictures play by themselves (calls)
+  if(options.url){ paintAvatarFrom(avatar, user, options.url, options.video, !!options.autoplay); avatar.dataset.fixedUrl = '1'; }
   else { avatar.dataset.user = user || ''; paintAvatar(avatar, user); }
   wrap.appendChild(avatar);
   if(options.presence){
@@ -5944,7 +5967,7 @@ function memberRow(member, owner, offline, room){
   const row = document.createElement('div');
   row.className = 'memberRow' + (offline ? ' offline' : '');
   const sp = member.serverProfile || null;
-  row.appendChild(createAvatar(member.username, 'sm', { presence:true, url: sp && sp.avatarUrl ? sp.avatarUrl : '' }));
+  row.appendChild(createAvatar(member.username, 'sm', { presence:true, url: sp && sp.avatarUrl ? sp.avatarUrl : '', video: sp && sp.avatarUrl ? (sp.avatarVideo || '') : '' }));
   const info = document.createElement('div');
   info.className = 'memberInfo';
   const line = document.createElement('div');
@@ -8872,6 +8895,13 @@ function videoFor(stream, mirror){
   el.play().catch(() => {});
   return el;
 }
+// A call tile's picture: in a server voice channel their in-server picture
+// wins, and a video picture plays by itself (unless reduce motion is on).
+function callAvatar(user){
+  const sp = serverProfileOf(user, currentRoom);
+  return sp && sp.avatarUrl ? createAvatar(user, '', { url: sp.avatarUrl, video: sp.avatarVideo || '', autoplay: true })
+    : createAvatar(user, '', { autoplay: true });
+}
 function participantTile(p, inCall){
   const mine = p.username === username;
   const peer = voice.peers.get(p.username);
@@ -8881,10 +8911,10 @@ function participantTile(p, inCall){
   if(voice.speaking.has(p.username)) tile.classList.add('speaking');
   const camStream = mine ? voice.cam : (p.video && peer ? peer.streams.get(p.camStream) : null);
   if(camStream && camStream.getVideoTracks().length){ tile.classList.add('hasVideo'); tile.appendChild(videoFor(camStream, mine)); }
-  else tile.appendChild(createAvatar(p.username, ''));
+  else tile.appendChild(callAvatar(p.username));
   const label = document.createElement('div');
   label.className = 'callTileName';
-  label.textContent = displayNameFor(p.username);
+  label.textContent = nameIn(p.username, currentRoom);
   if(p.deafened) label.insertAdjacentHTML('afterbegin', ICON_DEAF_SVG);
   else if(p.muted) label.insertAdjacentHTML('afterbegin', ICON_MIC_OFF_SVG);
   if(!mine && mutedForMe(p.username)) label.appendChild(Object.assign(document.createElement('span'), { className:'mutedForMe', textContent:' · muted for you' }));
@@ -8963,8 +8993,8 @@ function renderCallPanel(){
   (state ? state.ringing : []).forEach(user => {
     const tile = document.createElement('div');
     tile.className = 'callTile ringing';
-    tile.appendChild(createAvatar(user, ''));
-    tile.appendChild(Object.assign(document.createElement('div'), { className:'callTileName', textContent: displayNameFor(user) }));
+    tile.appendChild(callAvatar(user));
+    tile.appendChild(Object.assign(document.createElement('div'), { className:'callTileName', textContent: nameIn(user, currentRoom) }));
     tile.appendChild(Object.assign(document.createElement('div'), { className:'callTileStatus', textContent:'Calling…' }));
     grid.appendChild(tile);
   });

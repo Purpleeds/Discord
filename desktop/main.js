@@ -424,9 +424,12 @@ async function signIn(details) {
   const username = String((details && details.username) || '').trim();
   const password = String((details && details.password) || '');
   if (!username || !password) return { error: 'Enter your username and password.' };
+  const code = String((details && details.code) || '').trim();
   let res;
-  try { res = await request(origin + '/login', { method: 'POST', body: { username, password, create: false }, auth: false }); }
+  try { res = await request(origin + '/login', { method: 'POST', body: { username, password, create: false, ...(code ? { code } : {}) }, auth: false }); }
   catch (_) { return { error: 'Couldn\'t reach the chat at that address. Check it and your internet connection.' }; }
+  // two-step login is on for this account: the code goes with the password
+  if (res.ok && res.data.mfaRequired) return { needCode: true, error: 'Enter the code from your authenticator app (or a backup code).' };
   if (!res.ok || !res.data.token) {
     const why = String(res.data.error || 'Sign-in failed.');
     return { error: why.charAt(0).toUpperCase() + why.slice(1) };

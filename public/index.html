@@ -1791,6 +1791,23 @@ html[data-theme="light"] #overlay{background:rgba(30,36,70,.28);}
 .failRetry{font-size:12.5px;margin-right:12px;}
 #loginCard #status{text-align:left;}
 
+/* ---- two-step login and passkeys ---- */
+.passkeyBtn{margin-top:10px;background:var(--raised);color:var(--text-bright);box-shadow:inset 0 0 0 1px var(--line-strong);}
+.passkeyBtn:hover{background:var(--raised-2);}
+.passkeyBtn[hidden]{display:none;}
+#loginCard.twoStep > :not(#twoStepView){display:none;}
+#twoStepView[hidden]{display:none;}
+#twoStepCode{font-family:ui-monospace,monospace;font-size:20px;letter-spacing:.2em;}
+#twoStepStatus{margin-top:14px;min-height:20px;color:#fa777c;font-size:14px;}
+.twoStepNote{padding:12px 14px;border-radius:12px;background:color-mix(in srgb,var(--yellow) 14%,transparent);border:1px solid color-mix(in srgb,var(--yellow) 40%,transparent);color:var(--text-bright);font-size:14px;line-height:1.45;margin-bottom:12px;}
+.twoStepState{display:inline-block;margin-left:8px;padding:1px 9px;border-radius:999px;font-size:12px;font-weight:700;background:var(--raised-2);color:var(--text-muted);vertical-align:1px;}
+.twoStepState.on{background:color-mix(in srgb,var(--green) 22%,transparent);color:var(--green);}
+.twoStepQr{display:flex;gap:18px;align-items:flex-start;flex-wrap:wrap;margin:6px 0 14px;}
+.twoStepQr img{width:180px;height:180px;border-radius:12px;background:#fff;padding:6px;flex:none;}
+.twoStepSecret{font-family:ui-monospace,monospace;font-size:14px;color:var(--text-bright);word-break:break-all;user-select:all;}
+.twoStepForm{display:flex;flex-direction:column;gap:10px;max-width:420px;margin-top:12px;}
+.backupCodes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;padding:14px 16px;border-radius:12px;background:var(--bg-input);border:1px solid var(--line-strong);font-family:ui-monospace,monospace;font-size:15px;color:var(--text-bright);max-width:360px;margin:8px 0 12px;user-select:all;}
+
 /* ---- role permissions ---- */
 .presetRow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
 .presetBtn{display:inline-flex;align-items:center;gap:8px;}
@@ -2132,8 +2149,19 @@ html.reduce-motion .notiTimer{animation:notiTimer 6.5s linear forwards !importan
     </div>
     <label class="rememberRow"><input type="checkbox" id="rememberMe" checked> Keep me signed in on this device</label>
     <button class="bigBtn" id="loginSubmit" onclick="submitLogin()">Log in</button>
+    <button class="bigBtn passkeyBtn" id="passkeyLoginBtn" onclick="loginWithPasskey()" hidden>Log in with a passkey</button>
     <div id="status" role="status" aria-live="polite"></div>
     <div class="loginFooter"><span id="loginSwitchText">New here?</span> <button class="linkBtn" id="loginSwitch" onclick="setLoginMode(loginMode === 'login' ? 'signup' : 'login')">Create an account</button></div>
+    <div id="twoStepView" hidden>
+      <h2>Two-step login</h2>
+      <div class="sub" id="twoStepSub">Enter the 6-digit code from your authenticator app.</div>
+      <label class="formLabel" for="twoStepCode">Code</label>
+      <input class="formInput" id="twoStepCode" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" placeholder="123456" maxlength="20">
+      <button class="bigBtn" id="twoStepSubmit" onclick="submitTwoStep()">Continue</button>
+      <button class="bigBtn passkeyBtn" id="twoStepPasskey" onclick="twoStepWithPasskey()" hidden>Use a passkey instead</button>
+      <div id="twoStepStatus" role="status" aria-live="polite"></div>
+      <div class="loginFooter">No phone? Type one of your backup codes instead. <button class="linkBtn" id="twoStepBack" onclick="hideTwoStep()">Back</button></div>
+    </div>
   </div>
 </div>
 
@@ -2644,6 +2672,7 @@ function setLoginMode(mode, keepStatus){
   $('signupOnly').hidden = !signup;
   $('password').autocomplete = signup ? 'new-password' : 'current-password';
   $('loginSubmit').textContent = signup ? 'Create account' : 'Log in';
+  $('passkeyLoginBtn').hidden = signup || !passkeysSupported();
   $('loginSwitchText').textContent = signup ? 'Already have an account?' : 'New here?';
   $('loginSwitch').textContent = signup ? 'Log in' : 'Create an account';
   if(!signup) $('passwordAgain').value = '';
@@ -2684,6 +2713,7 @@ async function login(){
   setStatus('Logging in…');
   try{
     const data = await postAuth('/login', { username:name, password, create:false });
+    if(data.mfaRequired){ setStatus(''); showTwoStep(data); return; }
     notifierOfferPending = true;
     completeLogin(data.username, data.token, data.profile);
   }catch(err){
@@ -2692,6 +2722,101 @@ async function login(){
     else setStatus(capitalise(err.message));
   }
 }
+/* ---- two-step login and passkeys (server: /login/2fa, /passkeys/login) ---- */
+// After a right password on an account with two-step login, the server
+// sends a short ticket instead of a session; the code (or a passkey) turns
+// it into one. Passkeys can also log in on their own, with no password.
+let twoStepTicket = '';
+function passkeysSupported(){ return !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create && window.isSecureContext); }
+function b64uToBuf(text){ text = String(text || '').replace(/-/g, '+').replace(/_/g, '/'); while(text.length % 4) text += '='; return Uint8Array.from(atob(text), c => c.charCodeAt(0)).buffer; }
+function bufToB64u(buf){ let out = ''; new Uint8Array(buf).forEach(b => { out += String.fromCharCode(b); }); return btoa(out).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function passkeyIds(list){ return (list || []).map(c => Object.assign({}, c, { id: b64uToBuf(c.id) })); }
+async function passkeyGet(publicKey){
+  const options = Object.assign({}, publicKey, { challenge: b64uToBuf(publicKey.challenge) });
+  if(publicKey.allowCredentials) options.allowCredentials = passkeyIds(publicKey.allowCredentials);
+  const cred = await navigator.credentials.get({ publicKey: options });
+  return { id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type, response: {
+    clientDataJSON: bufToB64u(cred.response.clientDataJSON), authenticatorData: bufToB64u(cred.response.authenticatorData),
+    signature: bufToB64u(cred.response.signature), userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : '' } };
+}
+async function passkeyCreate(publicKey){
+  const options = Object.assign({}, publicKey, {
+    challenge: b64uToBuf(publicKey.challenge),
+    user: Object.assign({}, publicKey.user, { id: b64uToBuf(publicKey.user.id) }),
+    excludeCredentials: passkeyIds(publicKey.excludeCredentials)
+  });
+  const cred = await navigator.credentials.create({ publicKey: options });
+  return {
+    credential: { id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type, response: { clientDataJSON: bufToB64u(cred.response.clientDataJSON), attestationObject: bufToB64u(cred.response.attestationObject) } },
+    transports: cred.response.getTransports ? cred.response.getTransports() : []
+  };
+}
+function passkeyProblem(err){
+  if(err && err.name === 'NotAllowedError') return 'The passkey was cancelled or timed out.';
+  if(err && err.name === 'InvalidStateError') return 'This device already has a passkey for your account.';
+  if(err && err.name === 'SecurityError') return 'Passkeys only work on the chat\'s own address.';
+  return capitalise((err && err.message) || 'The passkey didn\'t work.');
+}
+function setTwoStepStatus(text){ $('twoStepStatus').textContent = text || ''; }
+function showTwoStep(data){
+  twoStepTicket = data.ticket;
+  $('loginCard').classList.add('twoStep');
+  $('twoStepView').hidden = false;
+  $('twoStepPasskey').hidden = !(data.passkeys && passkeysSupported());
+  $('twoStepCode').value = '';
+  setTwoStepStatus('');
+  $('twoStepCode').focus();
+}
+function hideTwoStep(){
+  twoStepTicket = '';
+  $('loginCard').classList.remove('twoStep');
+  $('twoStepView').hidden = true;
+  $('twoStepCode').value = '';
+  setTwoStepStatus('');
+}
+function twoStepFailed(err){
+  if(err.code === 'ticket_expired'){ hideTwoStep(); setStatus(capitalise(err.message)); $('password').focus(); }
+  else setTwoStepStatus(capitalise(err.message));
+}
+function finishTwoStep(data){
+  hideTwoStep();
+  notifierOfferPending = true;
+  completeLogin(data.username, data.token, data.profile);
+  if(typeof data.backupCodesLeft === 'number') setTimeout(() => toast('Backup code used. You have ' + data.backupCodesLeft + ' left' + (data.backupCodesLeft < 3 ? ' - make new ones in Settings > My Account.' : '.')), 600);
+}
+async function submitTwoStep(){
+  const code = $('twoStepCode').value.trim();
+  if(!code){ setTwoStepStatus('Enter the code from your app, or a backup code.'); return; }
+  setTwoStepStatus('Checking…');
+  try{ finishTwoStep(await postAuth('/login/2fa', { ticket:twoStepTicket, code })); }
+  catch(err){ twoStepFailed(err); }
+}
+async function twoStepWithPasskey(){
+  setTwoStepStatus('Waiting for your passkey…');
+  let options;
+  try{ options = await postAuth('/login/2fa/passkey/options', { ticket:twoStepTicket }); }
+  catch(err){ twoStepFailed(err); return; }
+  let credential;
+  try{ credential = await passkeyGet(options.publicKey); }
+  catch(err){ setTwoStepStatus(passkeyProblem(err)); return; }
+  try{ finishTwoStep(await postAuth('/login/2fa/passkey', { ticket:twoStepTicket, challengeId:options.challengeId, credential })); }
+  catch(err){ twoStepFailed(err); }
+}
+async function loginWithPasskey(){
+  setStatus('Waiting for your passkey…');
+  let options, credential;
+  try{ options = await postAuth('/passkeys/login/options', {}); }
+  catch(err){ setStatus(capitalise(err.message)); return; }
+  try{ credential = await passkeyGet(options.publicKey); }
+  catch(err){ setStatus(passkeyProblem(err)); return; }
+  try{
+    const data = await postAuth('/passkeys/login', { challengeId:options.challengeId, credential });
+    setStatus('');
+    notifierOfferPending = true;
+    completeLogin(data.username, data.token, data.profile);
+  }catch(err){ setStatus(capitalise(err.message)); }
+}
+
 function capitalise(text){ text = String(text || ''); return text ? text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?…]$/.test(text) ? '' : '.') : ''; }
 
 function completeLogin(returnedUsername, returnedToken, profile){
@@ -2706,6 +2831,7 @@ function completeLogin(returnedUsername, returnedToken, profile){
   rememberSession();
   renderUserPanel();
   connectSocket();
+  if(myProfile.adminNeeds2fa) setTimeout(() => toast('Turn on two-step login (Settings > My Account) to use your site admin powers.'), 1500);
 }
 
 async function logout(){
@@ -2717,6 +2843,7 @@ async function logout(){
 // Shared by a normal logout and by sessionExpired() below - clears local
 // state and shows the login screen with whatever message applies.
 function resetToLoginScreen(message){
+  hideTwoStep();
   leaveCall();
   stopIncomingCall();
   if(socket) socket.disconnect();
@@ -10414,7 +10541,7 @@ function openSettings(sectionKey){
       { key:'notifications', label:'Notifications', render:renderNotificationsSection },
       { key:'keybinds', label:'Keybinds', render:renderKeybindsSection }
     ]},
-    myProfile.isAdmin ? { title:'Site Admin', items:[{ key:'site', label:'Admins & moderation', render:renderSiteSection }, username === 'Purple' ? { key:'backups', label:'Backups', render:renderBackupsSection } : null] } : null,
+    (myProfile.isAdmin || myProfile.adminNeeds2fa) ? { title:'Site Admin', items:[{ key:'site', label:'Admins & moderation', render:renderSiteSection }, username === 'Purple' ? { key:'backups', label:'Backups', render:renderBackupsSection } : null] } : null,
     { sep:true },
     { items:[{ label:'Log Out', danger:true, action:() => { closeSettings(true); logout(); } }], foot:'Signed in as ' + username }
   ].filter(Boolean), sectionKey || 'account');
@@ -10448,6 +10575,8 @@ function renderAccountSection(c){
       '<button class="btn" id="pwSave" style="margin-top:14px">Change Password</button>' +
       '<div class="inlineMsg" id="pwMsg"></div>' +
       '<div class="switchDesc">Changing your password signs you out on every other device.</div>') +
+    section('Two-step login', '<div id="twoStepBox"><div class="switchDesc">Loading…</div></div>') +
+    section('Passkeys', '<div id="passkeyBox"><div class="switchDesc">Loading…</div></div>') +
     section('Sign Out', '<div class="switchDesc" style="margin-bottom:12px">This device stays signed in until you log out, or until it has gone 90 days without being used. <button class="linkBtn" id="accDevices">See every device</button></div><button class="btn danger" id="accLogout">Log Out</button>');
 
   $('accBanner').style.background = myProfile.bannerColor || avatarColour(username);
@@ -10460,6 +10589,7 @@ function renderAccountSection(c){
   $('accEditName').onclick = () => { showSettingsSection('profile'); setTimeout(() => { const i = $('profDisplayName'); if(i) i.focus(); }, 50); };
   $('accLogout').onclick = () => { closeSettings(true); logout(); };
   $('accDevices').onclick = () => showSettingsSection('devices');
+  paintTwoStepSettings();
   $('pwSave').onclick = async () => {
     const current = $('pwCurrent').value, next = $('pwNew').value, confirmValue = $('pwConfirm').value;
     if(!current || !next){ inlineMessage($('pwMsg'), 'Fill in your current and new password.', true); return; }
@@ -10473,6 +10603,201 @@ function renderAccountSection(c){
       inlineMessage($('pwMsg'), 'Password changed' + (data.signedOutSessions ? ' — signed out ' + data.signedOutSessions + ' other session' + (data.signedOutSessions === 1 ? '' : 's') : '') + '.');
     }catch(err){ inlineMessage($('pwMsg'), err.message, true); }
   };
+}
+
+// Settings > My Account > Two-step login and Passkeys. Turning two-step
+// login on is three steps (password, scan + type a code, save the backup
+// codes) and it only counts as on once the code was right, so a mistyped
+// setup can never lock anyone out. Site admins need it for their powers.
+async function twoStepPost(path, body){
+  const response = await fetch(path, { method:'POST', headers:authHeaders(), body:JSON.stringify(body || {}) });
+  const data = await response.json().catch(() => ({}));
+  if(!response.ok) throw new Error(capitalise(data.error || 'Something went wrong. Try again.'));
+  return data;
+}
+function applyTwoStepProfile(profile){
+  if(!profile) return;
+  const wasAdmin = !!myProfile.isAdmin;
+  myProfile = Object.assign({}, myProfile, profile);
+  renderUserPanel();
+  if(wasAdmin !== !!myProfile.isAdmin){ siteAdminNames = null; if(myProfile.isAdmin) loadSiteAdminList(); }
+}
+// A small "type your password (and maybe a code)" form inside a settings box.
+function twoStepAskForm(box, opts){
+  const form = document.createElement('div');
+  form.className = 'twoStepForm';
+  form.innerHTML =
+    (opts.text ? '<div class="switchDesc">' + escapeHtml(opts.text) + '</div>' : '') +
+    '<input class="settingsInput tsPassword" type="password" placeholder="Your password" autocomplete="current-password">' +
+    (opts.code ? '<input class="settingsInput tsCode" placeholder="Code from your app, or a backup code" autocomplete="one-time-code" inputmode="numeric" spellcheck="false">' : '') +
+    '<div class="rowFlex"><button class="btn tsGo' + (opts.danger ? ' danger' : '') + '">' + escapeHtml(opts.button) + '</button><button class="btn grey tsCancel">Cancel</button></div>' +
+    '<div class="inlineMsg tsMsg"></div>';
+  box.appendChild(form);
+  const msg = form.querySelector('.tsMsg'); // (inlineMessage() replaces its classes)
+  const el = cls => cls === 'tsMsg' ? msg : form.querySelector('.' + cls);
+  const go = async () => {
+    const password = el('tsPassword').value, code = opts.code ? el('tsCode').value.trim() : '';
+    if(!password || (opts.code && !code)){ inlineMessage(el('tsMsg'), opts.code ? 'Type your password and a code.' : 'Type your password.', true); return; }
+    el('tsGo').disabled = true;
+    try{ await opts.onSubmit(password, code); }
+    catch(err){ if(form.isConnected){ el('tsGo').disabled = false; inlineMessage(el('tsMsg'), err.message, true); } }
+  };
+  el('tsGo').onclick = go;
+  form.querySelectorAll('input').forEach(i => i.onkeydown = e => { if(e.key === 'Enter') go(); });
+  el('tsCancel').onclick = () => paintTwoStepSettings();
+  el('tsPassword').focus();
+}
+function showBackupCodes(box, codes, intro){
+  box.innerHTML = '';
+  box.appendChild(Object.assign(document.createElement('div'), { className:'twoStepNote', textContent: intro + ' Each one works once, in place of a code from your app. They won\'t be shown again.' }));
+  const list = document.createElement('div');
+  list.className = 'backupCodes';
+  list.id = 'backupCodeList';
+  codes.forEach(c => list.appendChild(Object.assign(document.createElement('span'), { textContent:c })));
+  box.appendChild(list);
+  const row = document.createElement('div');
+  row.className = 'rowFlex';
+  const text = 'Backup codes for ' + username + ' on ' + location.host + '\n\n' + codes.join('\n') + '\n';
+  const copy = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Copy' });
+  copy.onclick = async () => { try{ await navigator.clipboard.writeText(text); toast('Backup codes copied'); }catch(e){ toast('Select the codes and copy them'); } };
+  const save = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Download' });
+  save.onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type:'text/plain' }));
+    a.download = 'backup-codes-' + username + '.txt';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  };
+  const doneBtn = Object.assign(document.createElement('button'), { className:'btn', id:'backupCodesDone', textContent:'I\'ve saved them' });
+  doneBtn.onclick = () => paintTwoStepSettings();
+  row.appendChild(copy); row.appendChild(save); row.appendChild(doneBtn);
+  box.appendChild(row);
+}
+async function paintTwoStepSettings(){
+  const box = $('twoStepBox'), keys = $('passkeyBox');
+  if(!box) return;
+  let st;
+  try{
+    const response = await fetch('/settings/2fa', { headers: bearer() });
+    st = await response.json();
+    if(!response.ok) throw new Error(st.error);
+  }catch(err){ box.innerHTML = '<div class="switchDesc">Couldn\'t load your login settings. Try again in a moment.</div>'; keys.innerHTML = ''; return; }
+  if(!$('twoStepBox')) return;
+  box.innerHTML = '';
+  if(st.adminRequires && !st.enabled) box.appendChild(Object.assign(document.createElement('div'), { className:'twoStepNote', id:'twoStepAdminNote', textContent:'Site admins need two-step login. Your admin powers are paused until you turn it on.' }));
+  const desc = document.createElement('div');
+  desc.className = 'switchDesc';
+  desc.style.marginBottom = '12px';
+  desc.id = 'twoStepDesc';
+  desc.innerHTML = st.enabled
+    ? 'Logging in asks for a code from your authenticator app as well as your password.<span class="twoStepState on">On</span><br>Backup codes left: <b>' + st.backupCodesLeft + '</b>' + (st.backupCodesLeft < 3 ? ' - make new ones so you can\'t get locked out.' : '')
+    : 'Ask for a 6-digit code from an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy and others) as well as your password, so a leaked password isn\'t enough to get in.<span class="twoStepState">Off</span>';
+  box.appendChild(desc);
+  const row = document.createElement('div');
+  row.className = 'rowFlex';
+  box.appendChild(row);
+  const button = (label, cls, onClick, id) => { const b = Object.assign(document.createElement('button'), { className:'btn' + (cls ? ' ' + cls : ''), textContent:label }); if(id) b.id = id; b.onclick = onClick; row.appendChild(b); return b; };
+  if(!st.enabled){
+    button('Turn on two-step login', '', () => {
+      row.remove();
+      twoStepAskForm(box, { text:'First, your password.', button:'Continue', onSubmit: async password => {
+        const setup = await twoStepPost('/settings/2fa/setup', { password });
+        box.innerHTML =
+          '<div class="switchDesc">Scan this with your authenticator app, or type the key into it. Then type the 6-digit code it shows.</div>' +
+          '<div class="twoStepQr"><img id="twoStepQr" alt="QR code for your authenticator app"><div><div class="fieldLabel">Key</div><div class="twoStepSecret" id="twoStepSecret"></div>' +
+          '<div class="switchDesc" style="margin-top:10px">On this phone? <a id="twoStepLink" class="linkBtn">Open in your authenticator app</a></div></div></div>' +
+          '<div class="twoStepForm"><input class="settingsInput" id="twoStepSetupCode" placeholder="6-digit code" inputmode="numeric" autocomplete="one-time-code" maxlength="10">' +
+          '<div class="rowFlex"><button class="btn" id="twoStepEnable">Turn on</button><button class="btn grey" id="twoStepCancel">Cancel</button></div><div class="inlineMsg" id="twoStepMsg"></div></div>';
+        $('twoStepQr').src = 'data:image/svg+xml;base64,' + btoa(setup.qrSvg);
+        $('twoStepSecret').textContent = setup.secret;
+        $('twoStepLink').href = setup.uri;
+        $('twoStepCancel').onclick = () => paintTwoStepSettings();
+        const enable = async () => {
+          const code = $('twoStepSetupCode').value.trim();
+          if(!code){ inlineMessage($('twoStepMsg'), 'Type the code your app shows.', true); return; }
+          $('twoStepEnable').disabled = true;
+          try{
+            const data = await twoStepPost('/settings/2fa/enable', { code });
+            applyTwoStepProfile(data.profile);
+            showBackupCodes(box, data.backupCodes, 'Two-step login is on. Save these backup codes somewhere safe (a password manager, or printed out) - they get you in if you lose your phone.');
+            toast('Two-step login is on');
+          }catch(err){ $('twoStepEnable').disabled = false; inlineMessage($('twoStepMsg'), err.message, true); }
+        };
+        $('twoStepEnable').onclick = enable;
+        $('twoStepSetupCode').onkeydown = e => { if(e.key === 'Enter') enable(); };
+        $('twoStepSetupCode').focus();
+      } });
+    }, 'twoStepOn');
+  } else {
+    button('New backup codes', 'grey', () => {
+      row.remove();
+      twoStepAskForm(box, { text:'New codes replace your old ones.', button:'Make new codes', onSubmit: async password => {
+        const data = await twoStepPost('/settings/2fa/backup-codes', { password });
+        showBackupCodes(box, data.backupCodes, 'Your new backup codes - the old ones no longer work.');
+      } });
+    }, 'twoStepNewCodes');
+    button('Turn off', 'danger', () => {
+      row.remove();
+      twoStepAskForm(box, { text: st.adminRequires ? 'Turning it off pauses your site admin powers.' : 'Your password alone will log in again.', code:true, danger:true, button:'Turn off two-step login', onSubmit: async (password, code) => {
+        const data = await twoStepPost('/settings/2fa/disable', { password, code });
+        applyTwoStepProfile(data.profile);
+        toast('Two-step login is off');
+        paintTwoStepSettings();
+      } });
+    }, 'twoStepOff');
+  }
+  paintPasskeys(keys, st);
+}
+function paintPasskeys(box, st){
+  box.innerHTML = '';
+  box.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'Log in with your fingerprint, face or screen lock instead of your password. A passkey is kept by your phone, computer or password manager and only works on this chat\'s own address' + (location.host ? ' (' + location.host + ')' : '') + '.' }));
+  const list = document.createElement('div');
+  list.className = 'deviceList';
+  list.id = 'passkeyList';
+  list.style.margin = '12px 0';
+  st.passkeys.forEach(k => {
+    const item = document.createElement('div');
+    item.className = 'deviceRow';
+    item.innerHTML = '<div class="deviceIcon"><svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4"/><path d="M2 21c0-3.3 2.7-6 6-6 1.2 0 2.3.3 3.2.9M16 11a3 3 0 1 0 0 .01M16 14v7l2-1.5M16 17h2"/></svg></div>';
+    const info = document.createElement('div');
+    info.className = 'deviceInfo';
+    info.appendChild(Object.assign(document.createElement('div'), { className:'deviceName', textContent:k.name }));
+    info.appendChild(Object.assign(document.createElement('div'), { className:'deviceSub', textContent:'Added ' + parseTime(k.createdAt).toLocaleDateString([], { day:'numeric', month:'short', year:'numeric' }) + ' · ' + (k.lastUsedAt ? 'last used ' + timeAgo(k.lastUsedAt) : 'not used yet') + (k.site !== location.hostname ? ' · for ' + k.site : '') }));
+    item.appendChild(info);
+    const rename = Object.assign(document.createElement('button'), { className:'btn grey', textContent:'Rename' });
+    rename.onclick = async () => {
+      const name = prompt('Name this passkey', k.name);
+      if(!name || !name.trim()) return;
+      try{ paintPasskeys(box, (await twoStepPost('/settings/passkeys/' + k.id + '/rename', { name:name.trim() })).status); }catch(err){ toast(err.message); }
+    };
+    const remove = Object.assign(document.createElement('button'), { className:'btn danger', textContent:'Remove' });
+    remove.onclick = async () => {
+      if(!confirm('Remove the passkey "' + k.name + '"? It won\'t log in here any more. (Also delete it from the device or password manager that keeps it.)')) return;
+      try{ paintPasskeys(box, (await twoStepPost('/settings/passkeys/' + k.id + '/delete', {})).status); }catch(err){ toast(err.message); }
+    };
+    const actions = document.createElement('div');
+    actions.className = 'rowFlex';
+    actions.style.gap = '8px';
+    actions.appendChild(rename); actions.appendChild(remove);
+    item.appendChild(actions);
+    list.appendChild(item);
+  });
+  box.appendChild(list);
+  if(!passkeysSupported()){ box.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'This browser can\'t make passkeys here.' })); return; }
+  const add = Object.assign(document.createElement('button'), { className:'btn', id:'passkeyAdd', textContent:'Add a passkey' });
+  add.onclick = () => {
+    add.remove();
+    twoStepAskForm(box, { text:'Your password, then your device asks to save a passkey.', button:'Continue', onSubmit: async password => {
+      const options = await twoStepPost('/settings/passkeys/options', { password });
+      let made;
+      try{ made = await passkeyCreate(options.publicKey); }
+      catch(err){ throw new Error(passkeyProblem(err)); }
+      const data = await twoStepPost('/settings/passkeys', { challengeId:options.challengeId, credential:made.credential, transports:made.transports });
+      toast('Passkey added');
+      paintPasskeys(box, data.status);
+    } });
+  };
+  box.appendChild(add);
 }
 
 // Settings > Devices: everywhere this account is logged in, with a way to
@@ -11161,6 +11486,13 @@ async function restoreBackup(s, label){
 // Site Admin page (every site admin sees it): the admins, adding one, bans,
 // mutes and the site-wide swear filter. The server checks every action.
 async function renderSiteSection(c){
+  if(myProfile.adminNeeds2fa){
+    c.innerHTML = '<div id="siteAdminPage"><h2 class="settingsTitle">Site Admin</h2>' +
+      '<div class="twoStepNote">Site admins need two-step login. Your admin powers are paused until you turn it on - it takes a minute with an authenticator app on your phone.</div>' +
+      '<button class="btn" id="siteAdminSetup2fa">Set up two-step login</button></div>';
+    $('siteAdminSetup2fa').onclick = () => { showSettingsSection('account'); setTimeout(() => { const b = $('twoStepBox'); if(b) b.scrollIntoView({ block:'center' }); }, 80); };
+    return;
+  }
   c.innerHTML =
     '<div id="siteAdminPage"><h2 class="settingsTitle">Site Admin</h2>' +
     '<div class="settingsSub">Site admins can moderate everyone and act as an admin in every server. Only site admins see this page.</div>' +
@@ -11213,6 +11545,8 @@ function paintSiteAdminPage(data){
       '<div class="rowFlex" style="margin-top:12px"><input type="text" class="settingsInput" id="siteAdminAdd" placeholder="Username" maxlength="30" spellcheck="false" autocomplete="off" style="flex:1;max-width:280px"><button class="btn" id="siteAdminAddBtn">Make site admin</button></div>' +
       '<div class="switchDesc" style="margin-top:8px">' + (data.canManageAdmins ? 'You can add and remove site admins.' : 'Any site admin can add one. Only Purple can remove a site admin, or mute, kick or ban one.') + '</div>') +
     section('Banned', '<div class="deviceList" id="siteBannedList"></div>') +
+    section('Two-step login reset', '<div class="switchDesc" style="margin-bottom:10px">For someone who lost their phone and their backup codes: turns their two-step login off and removes their passkeys, so their password works on its own again. Check it\'s really them first.' + (data.canManageAdmins ? '' : ' Only Purple can do this for a site admin.') + '</div>' +
+      '<div class="rowFlex"><input type="text" class="settingsInput" id="siteReset2fa" placeholder="Username" maxlength="30" spellcheck="false" autocomplete="off" style="flex:1;max-width:280px"><button class="btn danger" id="siteReset2faBtn">Reset two-step login</button></div>') +
     section('Muted', '<div class="deviceList" id="siteMutedList"></div>') +
     section('Discord bridge', '<div id="bridgeBox"><div class="switchDesc">Loading…</div></div>') +
     section('Content filter', switchRow('globalCensorToggle', 'Censor swear words everywhere, for everyone', 'Overrides every server and personal setting while it\'s on.', data.globalCensor)) +
@@ -11220,7 +11554,7 @@ function paintSiteAdminPage(data){
   const admins = $('siteAdminList');
   data.admins.forEach(a => {
     const tag = a.permanent ? 'Owner' : (a.username === data.me ? 'You' : '');
-    const sub = a.permanent ? 'Always a site admin' : (a.hidden ? 'Hides the Site Admin badge' : 'Site admin');
+    const sub = (a.permanent ? 'Always a site admin' : (a.hidden ? 'Hides the Site Admin badge' : 'Site admin')) + (data.adminRequires2fa && !a.twoStep ? ' · No two-step login yet, so no admin powers' : '');
     const canRemove = data.canManageAdmins && !a.permanent && a.username !== data.me;
     admins.appendChild(siteAdminRow(a.username, sub, tag, canRemove ? siteAdminButton('Remove', true, async () => {
       if(!confirm('Remove site admin from ' + a.username + '?')) return;
@@ -11234,6 +11568,13 @@ function paintSiteAdminPage(data){
     if(await siteAdminEmit('setAdmin', { username:name, isAdmin:true })) $('siteAdminAdd').value = '';
   };
   $('siteAdminAddBtn').onclick = add;
+  $('siteReset2faBtn').onclick = async () => {
+    const name = $('siteReset2fa').value.trim();
+    if(!name) return;
+    if(!confirm('Turn off two-step login for ' + name + ' and remove their passkeys? Only do this if you\'re sure it\'s really them asking.')) return;
+    try{ await twoStepPost('/admin/users/' + encodeURIComponent(name) + '/reset-2fa', {}); $('siteReset2fa').value = ''; inlineMessage($('siteAdminMsg'), 'Two-step login reset for ' + name + '.'); }
+    catch(err){ inlineMessage($('siteAdminMsg'), err.message, true); }
+  };
   $('siteAdminAdd').onkeydown = e => { if(e.key === 'Enter') add(); };
   const banned = $('siteBannedList');
   if(!data.banned.length) banned.appendChild(Object.assign(document.createElement('div'), { className:'switchDesc', textContent:'Nobody is banned.' }));
@@ -14186,6 +14527,8 @@ $('switcherInput').addEventListener('input', renderSwitcher);
 $('password').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); if(loginMode === 'signup') $('passwordAgain').focus(); else login(); } });
 $('passwordAgain').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); registerUser(); } });
 $('username').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('password').focus(); } });
+$('twoStepCode').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); submitTwoStep(); } });
+$('passkeyLoginBtn').hidden = !passkeysSupported();
 
 // The service worker is needed for the app to be installable (and for
 // push); registering it again when it already is costs nothing.

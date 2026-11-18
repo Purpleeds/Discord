@@ -519,15 +519,17 @@ module.exports = function setupBackups(deps) {
   }
 
   // ---------------- owner routes ----------------
-  function ownerOnly(req, res) {
+  // the owner, with their admin powers on (two-step login, unless ADMIN_2FA=off)
+  async function ownerOnly(req, res) {
     if (req.username !== OWNER) { res.status(403).json({ error: 'only the site owner can manage backups' }); return false; }
+    if (deps.isAdmin && !(await deps.isAdmin(req.username))) { res.status(403).json({ error: 'turn on two-step login (Settings > My Account) to manage backups' }); return false; }
     return true;
   }
   async function freeSpace() {
     try { const s = await fsp.statfs(BACKUP_DIR); return { free: s.bavail * s.bsize, total: s.blocks * s.bsize }; } catch (_) { return null; }
   }
   app.get('/admin/backups', requireAuth, route(async (req, res) => {
-    if (!ownerOnly(req, res)) return;
+    if (!(await ownerOnly(req, res))) return;
     const snaps = await listSnapshots();
     res.json({
       enabled: !!BACKUP_DIR,
@@ -552,7 +554,7 @@ module.exports = function setupBackups(deps) {
     return bytes;
   }
   app.post('/admin/backups', requireAuth, route(async (req, res) => {
-    if (!ownerOnly(req, res)) return;
+    if (!(await ownerOnly(req, res))) return;
     if (!BACKUP_DIR) return res.status(400).json({ error: 'backups are off: set BACKUP_DIR (see BACKUPS.md)' });
     try {
       const m = await exclusive('backup', () => createSnapshot('manual', req.username));
@@ -561,13 +563,13 @@ module.exports = function setupBackups(deps) {
     } catch (err) { res.status(err.status || 500).json({ error: err.message }); }
   }));
   app.post('/admin/backups/:id/download', requireAuth, route(async (req, res) => {
-    if (!ownerOnly(req, res)) return;
+    if (!(await ownerOnly(req, res))) return;
     const m = await readManifest(req.params.id);
     if (!m) return res.status(404).json({ error: 'no such backup' });
     res.json({ url: makeDownload(req.username, `chat-backup-${m.id}.tar`, 'application/x-tar', r => sendSnapshotTar(m, r)) });
   }));
   app.post('/admin/backups/:id/restore', requireAuth, route(async (req, res) => {
-    if (!ownerOnly(req, res)) return;
+    if (!(await ownerOnly(req, res))) return;
     if (req.body.confirm !== 'RESTORE') return res.status(400).json({ error: 'type RESTORE to confirm' });
     const m = await readManifest(req.params.id);
     if (!m) return res.status(404).json({ error: 'no such backup' });

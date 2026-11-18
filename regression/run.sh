@@ -6,6 +6,9 @@
 cd "$(dirname "$0")/.." || exit 1
 export DB=${DB:-postgresql://chat:chat@localhost/chat_test}
 export BASE=${BASE:-http://localhost:4100}
+# the other suites make site admins straight in the database, without two-step
+# login; two_step and two_step_ui start their own servers with it required
+export ADMIN_2FA=${ADMIN_2FA:-off}
 PORT=$(node -e "console.log(new URL(process.env.BASE).port || 80)")
 LOG=regression/shots/server.log; mkdir -p regression/shots
 start() {
@@ -14,7 +17,7 @@ start() {
   echo "server did not start - see $LOG"; exit 1
 }
 stop() { pkill -x -f '(\S*/)?node server\.js' 2>/dev/null; sleep 1; }
-SUITES=${*:-v3_sessions v3_unread v3_files permissions profiles batch5_api batch4_api ssrf bots_api bans setup_api calls_api batch1 batch2 batch4_ui previews_ui bots_ui setup_ui motion calls_ui call_looks v3_ui roles_ui batch5_ui stickers big_assets popups notifier_ui notifier_store notifier_offer phone_ui hide_roles site_admins roles_banners read_receipts video_avatars discord_bridge notifier_tls backups desktop_app onboarding onboarding_ui automod automod_ui sfu_calls voice_messages}
+SUITES=${*:-v3_sessions v3_unread v3_files permissions profiles batch5_api batch4_api ssrf bots_api bans setup_api calls_api batch1 batch2 batch4_ui previews_ui bots_ui setup_ui motion calls_ui call_looks v3_ui roles_ui batch5_ui stickers big_assets popups notifier_ui notifier_store notifier_offer phone_ui hide_roles site_admins roles_banners read_receipts video_avatars discord_bridge notifier_tls backups desktop_app onboarding onboarding_ui automod automod_ui sfu_calls voice_messages two_step two_step_ui}
 FAILED=0
 # always test a server started here, on $DB - never one that happens to be running already
 stop

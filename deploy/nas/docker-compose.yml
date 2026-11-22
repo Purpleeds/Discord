@@ -8,6 +8,9 @@ x-settings:
   db-password: &db_password "CHANGE-ME-letters-and-numbers"
   neon-url: &neon_url ""
   tailscale-key: &ts_key "tskey-auth-PASTE-YOURS"
+  # Discord bridge (optional, DISCORD_BRIDGE.md): leave empty to keep it off
+  discord-bot-token: &discord_token ""
+  discords-bridge-key: &bridge_key ""
 
 services:
   db:
@@ -142,6 +145,42 @@ services:
       interval: 30s
       timeout: 5s
       start_period: 180s
+
+  # The Discord bridge: links #cross-platform here with #cross-platform on
+  # your Discord server (DISCORD_BRIDGE.md). Runs the chat's own code (the
+  # shared code volume, read-only), talks to the chat inside the NAS, and
+  # restarts onto new code when the chat updates. Off while the two settings
+  # at the top are empty. Only run ONE bridge: remove DISCORD_BOT_TOKEN from
+  # Render if it's set there, or messages show up twice.
+  bridge:
+    image: node:22-alpine
+    container_name: chat-bridge
+    restart: unless-stopped
+    depends_on:
+      chat:
+        condition: service_healthy
+    environment:
+      DISCORD_BOT_TOKEN: *discord_token
+      DISCORDS_BRIDGE_KEY: *bridge_key
+      # optional: your Discord server's ID, if the bot is in more than one
+      DISCORD_GUILD_ID: ""
+      CHAT_URL: http://chat:3000
+      # where pictures/files in bridged messages link to (a public address)
+      PUBLIC_URL: https://discords-zf2n.onrender.com
+      VERSION_FILE: /app/.version
+    volumes:
+      - chat-code:/app:ro
+    working_dir: /app
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        if [ -z "$$DISCORD_BOT_TOKEN" ] || [ -z "$$DISCORDS_BRIDGE_KEY" ]; then
+          echo "[bridge] off - fill in discord-bot-token and discords-bridge-key at the top of the file to turn it on"
+          exec sleep 2147483647
+        fi
+        until [ -f /app/bridge.js ]; do echo "[bridge] waiting for the chat's code"; sleep 10; done
+        exec node bridge.js
 
   # TURN relay for calls when two people can't connect directly. Reached
   # through Funnel on port 8443 (TLS ends there), so no router changes. It

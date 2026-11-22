@@ -26,8 +26,11 @@ to do next) - read it before a big upgrade and add an entry after one.
   start (skipped when `.version` already matches) - and with `AUTO_UPDATE_REPO`
   the server polls GitHub and restarts itself after a merge (waits for calls),
   and open pages reload when `serverInfo.version` changes.
-- `discord-bridge.js`: the Discord bridge bot (discord.js), run by `relay.js` on
-  Render when `DISCORD_BOT_TOKEN` + `DISCORDS_BRIDGE_KEY` are set - see DISCORD_BRIDGE.md.
+- `discord-bridge.js`: the Discord bridge bot (discord.js). The NAS runs it on its
+  own as the `bridge` compose service (`bridge.js`, talks to `http://chat:3000`,
+  restarts when `/app/.version` changes); `relay.js` on Render can run it instead
+  when `DISCORD_BOT_TOKEN` + `DISCORDS_BRIDGE_KEY` are set - never both (double
+  posts). See DISCORD_BRIDGE.md.
 - `backup.js`: backups (`BACKUP_DIR`), restore, "Download my data" and
   "Export channel" - see BACKUPS.md. New tables/columns are backed up
   automatically (every table in the schema); routes are owner-only (Purple).

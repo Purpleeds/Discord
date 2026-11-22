@@ -1,6 +1,7 @@
 // The Discord bridge: links #cross-platform in this chat with #cross-platform
-// on real Discord, both ways. It runs inside the Render relay (relay.js), so
-// it needs neither your PC nor the NAS to run it - only these Render settings:
+// on real Discord, both ways. It runs either on its own (bridge.js - the NAS's
+// "bridge" container, deploy/nas/docker-compose.yml) or inside the Render relay
+// (relay.js) - never both at once, or messages show up twice. Settings:
 //   DISCORD_BOT_TOKEN    the bot's token (Discord Developer Portal > your app > Bot)
 //   DISCORDS_BRIDGE_KEY  from the chat: Settings > Site Admin > Discord bridge
 //   DISCORD_GUILD_ID     (optional) only bridge this Discord server
@@ -20,7 +21,7 @@ const WEBHOOK_NAME = 'Discords bridge';
 const MAX_TO_CHAT = 4000;    // the chat's message limit
 const MAX_TO_DISCORD = 2000; // Discord's
 
-function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, log = console }) {
+function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, log = console, onLoginFailed }) {
   const chat = new URL(chatUrl);
   const publicBase = String(publicUrl || chatUrl).replace(/\/$/, '');
   const absolute = path => (/^https?:\/\//.test(path) ? path : publicBase + (path.startsWith('/') ? '' : '/') + path);
@@ -103,7 +104,10 @@ function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, 
     });
   }
 
-  discord.login(botToken).catch(err => log.error(`[bridge] Discord sign-in failed: ${err.message} - check DISCORD_BOT_TOKEN`));
+  discord.login(botToken).catch(err => {
+    log.error(`[bridge] Discord sign-in failed: ${err.message} - check DISCORD_BOT_TOKEN`);
+    if (onLoginFailed) onLoginFailed(err);
+  });
   return {
     stop() { stopped = true; if (chatSocket) chatSocket.close(); discord.destroy(); },
     get linked() { return links.size; }

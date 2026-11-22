@@ -202,7 +202,8 @@ to do next) - read it before a big upgrade and add an entry after one.
   Wrong codes are limited per account even with `RATE_LIMITS=off`.
   `isAdmin()` = admin POWERS (needs two-step unless `ADMIN_2FA=off`);
   `isSiteAdmin()` = the role (badge, "admins can't act against each other").
-  Admins without it are never locked out - only their powers pause.
+  Admins without it are never locked out - only their powers pause. Purple is
+  exempt (`TWO_STEP_EXEMPT_ADMINS`, William's request): powers without two-step.
   `regression/two_step*.test.js`.
 - Unread is server-side: `unreadFor()` counts messages newer than the
   person's read receipt (and their `unread_base_id`). Anything that gives

@@ -11561,7 +11561,7 @@ function paintSiteAdminPage(data){
   const admins = $('siteAdminList');
   data.admins.forEach(a => {
     const tag = a.permanent ? 'Owner' : (a.username === data.me ? 'You' : '');
-    const sub = (a.permanent ? 'Always a site admin' : (a.hidden ? 'Hides the Site Admin badge' : 'Site admin')) + (data.adminRequires2fa && !a.twoStep ? ' · No two-step login yet, so no admin powers' : '');
+    const sub = (a.permanent ? 'Always a site admin' : (a.hidden ? 'Hides the Site Admin badge' : 'Site admin')) + (data.adminRequires2fa && !a.twoStep && !a.twoStepExempt ? ' · No two-step login yet, so no admin powers' : '');
     const canRemove = data.canManageAdmins && !a.permanent && a.username !== data.me;
     admins.appendChild(siteAdminRow(a.username, sub, tag, canRemove ? siteAdminButton('Remove', true, async () => {
       if(!confirm('Remove site admin from ' + a.username + '?')) return;

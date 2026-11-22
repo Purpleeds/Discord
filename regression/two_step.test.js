@@ -148,6 +148,17 @@ function getAssertion(auth, options, { origin = ORIGIN, rpId = options.rpId, fla
     check('then the Site Admin page opens, and shows who has two-step', ov.status === 200 && ov.data.admins.some(x => x.username === adm && x.twoStep) && ov.data.admins.some(x => x.username === adm2 && !x.twoStep), ov.data);
     check('an admin without two-step is still an admin to the others (can\'t be reset by them)', (await post(`/admin/users/${adm2}/reset-2fa`, ADM)).status === 403);
 
+    // ---- Purple (the owner) is exempt: powers without two-step ----
+    let P = (await post('/register', null, { username: 'Purple', password: 'secret123' })).data.token;
+    if (!P) P = (await post('/login', null, { username: 'Purple', password: 'secret123', create: false })).data.token;
+    if (P) {
+      const pp = (await get('/profile', P)).data;
+      check('Purple keeps admin powers without two-step login', pp.isAdmin === true && !pp.adminNeeds2fa, pp);
+      check('...so the Site Admin page opens for Purple', (await get('/admin/overview', P)).status === 200);
+      check('...and Purple\'s settings don\'t say it\'s required', (await get('/settings/2fa', P)).data.adminRequires === false);
+      check('the admin list marks Purple as exempt', (await get('/admin/overview', ADM)).data.admins.some(x => x.username === 'Purple' && x.twoStepExempt));
+    } else check('Purple account usable for the exemption test (fresh database)', false);
+
     // ---- admin reset for someone who lost everything ----
     const sb = (await post('/settings/2fa/setup', B, { password: 'secret123' })).data;
     await post('/settings/2fa/enable', B, { code: totp(sb.secret) });

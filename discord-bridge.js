@@ -1,18 +1,22 @@
-// The Discord bridge: links #cross-platform in this chat with #cross-platform
-// on real Discord, both ways. It runs either on its own (bridge.js - the NAS's
-// "bridge" container, deploy/nas/docker-compose.yml) or inside the Render relay
-// (relay.js) - never both at once, or messages show up twice. Settings:
+// The Discord bridge: links chosen channels in this chat with channels on real
+// Discord, both ways. Which ones is picked in the chat (Settings > Site Admin >
+// Discord bridge): each link is one public text channel here <-> one Discord
+// server + channel (or "a channel with the same name", which the bot finds or
+// makes). It runs either on its own (bridge.js - the NAS's "bridge" container,
+// deploy/nas/docker-compose.yml) or inside the Render relay (relay.js) - never
+// both at once, or messages show up twice. Settings:
 //   DISCORD_BOT_TOKEN    the bot's token (Discord Developer Portal > your app > Bot)
 //   DISCORDS_BRIDGE_KEY  from the chat: Settings > Site Admin > Discord bridge
-//   DISCORD_GUILD_ID     (optional) only bridge this Discord server
+//   DISCORD_GUILD_ID     (optional) never touch any Discord server but this one
 // See DISCORD_BRIDGE.md for setting it up.
 //
-// Chat -> Discord: each message is sent through a webhook in the Discord
+// Chat -> Discord: each message is sent through a webhook in the linked Discord
 // channel, with the sender's name and picture, so it looks like a normal
 // message there (Discord labels webhook messages "APP" itself).
 // Discord -> chat: messages are screened (bots, webhooks and our own echoes are
 // skipped; mentions become plain names; nothing pings anyone; length capped)
-// and posted to the chat, which shows them with a "from Discord" tag.
+// and posted to the linked chat channel, which shows them with a "from Discord" tag.
+// Messages in Discord channels that aren't linked are never read or sent.
 const { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits } = require('discord.js');
 const { io } = require('socket.io-client');
 
@@ -25,43 +29,123 @@ function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, 
   const chat = new URL(chatUrl);
   const publicBase = String(publicUrl || chatUrl).replace(/\/$/, '');
   const absolute = path => (/^https?:\/\//.test(path) ? path : publicBase + (path.startsWith('/') ? '' : '/') + path);
-  const links = new Map(); // Discord channel id -> webhook
+  let links = [];                 // from the chat: [{ id, channelName, serverName, guildId, discordChannelId }]
+  const hooksByLink = new Map();  // link id -> [webhook]
+  const linkByChannel = new Map(); // Discord channel id -> link id
   let chatSocket = null;
+  let ready = false;
   let stopped = false;
 
   /* ---------------- Discord ---------------- */
   const discord = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildWebhooks] });
+  const allowedGuild = guild => !guildId || guild.id === guildId;
+  const textChannels = guild => [...guild.channels.cache.values()].filter(c => c.type === ChannelType.GuildText);
 
-  async function linkGuild(guild) {
-    if (guildId && guild.id !== guildId) return;
-    try {
-      const me = guild.members.me || await guild.members.fetchMe();
-      let channel = guild.channels.cache.find(c => c.type === ChannelType.GuildText && c.name === CHANNEL_NAME);
-      if (!channel) {
-        if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) { log.warn(`[bridge] "${guild.name}": no #${CHANNEL_NAME} and no permission to make it (Manage Channels)`); return; }
-        channel = await guild.channels.create({ name: CHANNEL_NAME, type: ChannelType.GuildText, topic: 'Linked with the Discords chat: messages here appear there, and theirs appear here.' });
-        log.log(`[bridge] made #${CHANNEL_NAME} in "${guild.name}"`);
-      }
-      const hooks = await channel.fetchWebhooks();
-      let hook = hooks.find(h => h.owner && h.owner.id === discord.user.id && h.name === WEBHOOK_NAME);
-      if (!hook) hook = await channel.createWebhook({ name: WEBHOOK_NAME, reason: 'Discords bridge: shows chat messages with each sender\'s name and picture' });
-      links.set(channel.id, hook);
-      log.log(`[bridge] linked #${CHANNEL_NAME} in "${guild.name}"`);
-    } catch (err) {
-      log.warn(`[bridge] couldn't set up "${guild.name}": ${err.message} (the bot needs View Channels, Send Messages, Manage Channels and Manage Webhooks)`);
-    }
+  async function hookFor(channel) {
+    const hooks = await channel.fetchWebhooks();
+    let hook = hooks.find(h => h.owner && h.owner.id === discord.user.id && h.name === WEBHOOK_NAME);
+    if (!hook) hook = await channel.createWebhook({ name: WEBHOOK_NAME, reason: 'Discords bridge: shows chat messages with each sender\'s name and picture' });
+    return hook;
   }
+  // One link -> its Discord channel(s): a chosen channel, or one named like the
+  // chat channel (found or made) in the chosen server - or, for the original
+  // #cross-platform link, in every Discord server the bot is in.
+  async function resolveLink(link, claimed) {
+    const guilds = [...discord.guilds.cache.values()].filter(allowedGuild).filter(g => !link.guildId || g.id === link.guildId);
+    const status = { id: link.id, ok: false, error: '', where: [] };
+    const hooks = [];
+    if (!guilds.length) status.error = link.guildId ? 'the bot isn\'t in that Discord server' : 'the bot isn\'t in any Discord server';
+    for (const guild of guilds) {
+      try {
+        let channel;
+        if (link.discordChannelId) {
+          channel = guild.channels.cache.get(link.discordChannelId);
+          if (!channel || channel.type !== ChannelType.GuildText) { status.error = 'that Discord channel is gone'; continue; }
+        } else {
+          const name = String(link.channelName || CHANNEL_NAME).toLowerCase();
+          channel = textChannels(guild).find(c => c.name === name);
+          if (!channel) {
+            const me = guild.members.me || await guild.members.fetchMe();
+            if (!me.permissions.has(PermissionFlagsBits.ManageChannels)) { status.error = `no #${name} in "${guild.name}" and no permission to make it (Manage Channels)`; continue; }
+            channel = await guild.channels.create({ name, type: ChannelType.GuildText, topic: 'Linked with the Discords chat: messages here appear there, and theirs appear here.' });
+            log.log(`[bridge] made #${name} in "${guild.name}"`);
+          }
+        }
+        if (claimed.has(channel.id)) { status.error = `#${channel.name} in "${guild.name}" is already linked with another channel`; continue; }
+        const hook = await hookFor(channel);
+        claimed.set(channel.id, link.id);
+        hooks.push(hook);
+        status.where.push(`${guild.name} #${channel.name}`);
+      } catch (err) {
+        status.error = `couldn't set up "${guild.name}": ${err.message} (the bot needs View Channels, Send Messages, Manage Webhooks, and Manage Channels to make one)`;
+        log.warn(`[bridge] ${status.error}`);
+      }
+    }
+    status.ok = hooks.length > 0;
+    if (status.ok) status.error = '';
+    return { hooks, status };
+  }
+  let resolving = null, again = false;
+  async function resolveAll() {
+    if (resolving) { again = true; return resolving; }
+    resolving = (async () => {
+      do {
+        again = false;
+        const claimed = new Map();
+        const statuses = [];
+        const nextHooks = new Map();
+        for (const link of links) {
+          const { hooks, status } = await resolveLink(link, claimed);
+          nextHooks.set(link.id, hooks);
+          statuses.push(status);
+          if (status.ok) log.log(`[bridge] linked ${link.serverName ? link.serverName + ' ' : ''}#${link.channelName} with ${status.where.join(', ')}`);
+          else log.warn(`[bridge] #${link.channelName}: ${status.error}`);
+        }
+        hooksByLink.clear(); for (const [k, v] of nextHooks) hooksByLink.set(k, v);
+        linkByChannel.clear(); for (const [k, v] of claimed) linkByChannel.set(k, v);
+        if (chatSocket && chatSocket.connected) chatSocket.emit('linkStatus', statuses);
+      } while (again && !stopped);
+    })().finally(() => { resolving = null; });
+    return resolving;
+  }
+  // What the bot can see, for the chat's link picker (names and ids only).
+  function discordInfo() {
+    return {
+      guilds: [...discord.guilds.cache.values()].filter(allowedGuild).map(g => ({
+        id: g.id, name: g.name,
+        canMakeChannels: !!(g.members.me && g.members.me.permissions.has(PermissionFlagsBits.ManageChannels)),
+        channels: textChannels(g).sort((a, b) => a.rawPosition - b.rawPosition).map(c => ({ id: c.id, name: c.name }))
+      }))
+    };
+  }
+  let infoTimer = null;
+  function sendInfoSoon() {
+    clearTimeout(infoTimer);
+    infoTimer = setTimeout(() => { if (chatSocket && chatSocket.connected) chatSocket.emit('discordInfo', discordInfo()); }, 2000);
+  }
+
   discord.once('clientReady', async () => {
     log.log(`[bridge] signed in to Discord as ${discord.user.tag}`);
-    for (const guild of discord.guilds.cache.values()) await linkGuild(guild);
+    ready = true;
     connectChat();
   });
-  discord.on('guildCreate', linkGuild);
-  discord.on('channelDelete', channel => { if (links.delete(channel.id)) log.log('[bridge] the Discord channel was deleted'); });
+  discord.on('guildCreate', () => { sendInfoSoon(); if (ready) resolveAll(); });
+  discord.on('guildDelete', () => { sendInfoSoon(); if (ready) resolveAll(); });
+  discord.on('channelCreate', sendInfoSoon);
+  discord.on('channelUpdate', sendInfoSoon);
+  discord.on('channelDelete', channel => {
+    sendInfoSoon();
+    const linkId = linkByChannel.get(channel.id);
+    if (linkId === undefined) return;
+    linkByChannel.delete(channel.id);
+    hooksByLink.set(linkId, (hooksByLink.get(linkId) || []).filter(h => h.channelId !== channel.id));
+    log.log(`[bridge] the Discord channel #${channel.name} was deleted`);
+  });
 
   // Discord -> chat
   discord.on('messageCreate', async message => {
-    if (!links.has(message.channelId)) return;
+    const linkId = linkByChannel.get(message.channelId);
+    if (linkId === undefined) return; // not a linked channel: never read
     if (message.webhookId || message.author.bot || message.system) return; // our own echoes, other bots and webhooks
     const text = screenFromDiscord(message);
     if (!text) return;
@@ -71,6 +155,7 @@ function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, 
       avatarUrl: (member || message.author).displayAvatarURL({ extension: 'png', size: 128 }),
       text
     };
+    if (linkId !== null) body.linkId = linkId;
     try {
       const res = await fetch(new URL('/bridge/discord/messages', chat), {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-bridge-key': bridgeKey }, body: JSON.stringify(body)
@@ -80,18 +165,27 @@ function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, 
   });
 
   /* ---------------- the chat ---------------- */
+  function takeLinks(data) {
+    if (data && Array.isArray(data.links)) links = data.links.filter(l => l && l.id != null);
+    // an older chat sends no links: just its one #cross-platform
+    else links = [{ id: null, channelName: (data && data.channel) || CHANNEL_NAME, guildId: guildId || null, discordChannelId: null }];
+    resolveAll();
+  }
   function connectChat() {
     if (chatSocket || stopped) return;
     chatSocket = io(chat.origin + '/bridge', { auth: { key: bridgeKey }, transports: ['websocket', 'polling'], reconnectionDelayMax: 30000 });
-    chatSocket.on('connect', () => log.log('[bridge] connected to the chat'));
-    chatSocket.on('ready', d => log.log(`[bridge] chat channel #${d && d.channel}`));
+    chatSocket.on('connect', () => { log.log('[bridge] connected to the chat'); chatSocket.emit('discordInfo', discordInfo()); });
+    chatSocket.on('ready', d => { log.log(`[bridge] the chat has ${d && Array.isArray(d.links) ? d.links.length + ' link(s)' : 'channel #' + (d && d.channel)}`); takeLinks(d); });
+    chatSocket.on('links', d => { log.log(`[bridge] links changed: ${d && Array.isArray(d.links) ? d.links.length : 0}`); takeLinks(d); });
     chatSocket.on('connect_error', err => log.warn(`[bridge] chat connection: ${err.message}${err.message === 'not authenticated' ? ' - check DISCORDS_BRIDGE_KEY (Settings > Site Admin > Discord bridge)' : ''}`));
     // chat -> Discord
     chatSocket.on('message', async msg => {
-      if (!msg || !links.size) return;
+      if (!msg) return;
+      const hooks = hooksByLink.get(msg.linkId === undefined ? null : msg.linkId) || [];
+      if (!hooks.length) return;
       const content = screenForDiscord(msg, absolute);
       if (!content) return;
-      for (const hook of links.values()) {
+      for (const hook of hooks) {
         try {
           await hook.send({
             content,
@@ -109,8 +203,8 @@ function startDiscordBridge({ chatUrl, publicUrl, botToken, bridgeKey, guildId, 
     if (onLoginFailed) onLoginFailed(err);
   });
   return {
-    stop() { stopped = true; if (chatSocket) chatSocket.close(); discord.destroy(); },
-    get linked() { return links.size; }
+    stop() { stopped = true; clearTimeout(infoTimer); if (chatSocket) chatSocket.close(); discord.destroy(); },
+    get linked() { let n = 0; for (const h of hooksByLink.values()) n += h.length; return n; }
   };
 }
 

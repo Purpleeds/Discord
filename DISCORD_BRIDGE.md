@@ -1,7 +1,11 @@
 # Discord bridge
 
-Links **#cross-platform** in this chat with **#cross-platform** on your real
-Discord server, both ways:
+Links the channels you choose in this chat with channels on your real Discord
+servers, both ways. Each link is one public text channel here (in any server)
+with one Discord server + channel, picked in Settings > Site Admin > Discord
+bridge. To start with, #cross-platform in the original chat is linked with
+#cross-platform on every Discord server the bot is in; change or remove that
+link like any other.
 
 - Something said here shows up on Discord as a normal-looking message, with the
   person's name and picture and the time. Discord marks webhook messages with
@@ -23,7 +27,9 @@ up twice.
 - Long messages are shortened to the other side's limit (2,000 characters on
   Discord, 4,000 here).
 - Discord pictures are only accepted from Discord's own image servers.
-- Only #cross-platform is bridged; nothing else is read or sent.
+- Only linked channels are bridged; nothing else is read or sent, here or on
+  Discord. Private channels can't be linked, and a linked channel that's made
+  private stops being bridged straight away.
 
 Edits, deletions and reactions aren't copied across, only new messages.
 
@@ -45,8 +51,8 @@ Edits, deletions and reactions aren't copied across, only new messages.
 ### 2. Turn it on in the chat
 
 Settings > **Site Admin > Discord bridge > Turn on the Discord bridge**. This
-makes #cross-platform in the original chat and shows a **bridge key** once.
-Copy it.
+makes #cross-platform in the original chat (the first link) and shows a
+**bridge key** once. Copy it.
 
 ### 3. Give both to the NAS
 
@@ -90,6 +96,21 @@ With Node 22 and a copy of this repo (`npm install`), make a `bridge.env` with
 optionally `DISCORD_GUILD_ID`, then run `node --env-file=bridge.env bridge.js`.
 </details>
 
+### 4. Pick what's linked
+
+Back in Settings > Site Admin > Discord bridge (once the bot is running, step 3),
+under **Bridged channels**:
+
+- **Add a link:** pick a channel here, a Discord server, and a channel there
+  (or "Make a new #name", which makes a Discord channel with the same name),
+  then **Link them**. The Discord list comes from the bot, so it only shows
+  servers the bot has been added to.
+- **Remove** stops bridging that channel; both channels stay.
+- Each link says whether it's working, or what's wrong (for example the bot
+  missing a permission in that Discord server).
+- One channel here goes with one Discord channel. Linking a channel again
+  moves its link.
+
 ## If something's wrong
 
 - **Site Admin says "On, but not connected":** check both values. The
@@ -113,10 +134,17 @@ optionally `DISCORD_GUILD_ID`, then run `node --env-file=bridge.env bridge.js`.
   `http://chat:3000`, exits when `/app/.version` changes so Docker restarts it on
   new code). `relay.js` also starts it when `DISCORD_BOT_TOKEN` and
   `DISCORDS_BRIDGE_KEY` are set on Render.
-- `server.js`: the `bridges` table (key stored as a SHA-256 hash only) and these routes:
-  - `POST /admin/bridge`, `GET /admin/bridge` and `POST /admin/bridge/off` (site admins).
+- `server.js`: the `bridges` table (key stored as a SHA-256 hash only), `bridge_links`
+  (one row per chat channel: `discord_guild_id` NULL = every Discord server the bot is
+  in, `discord_channel_id` NULL = find/make a channel with the chat channel's name),
+  and these routes:
+  - `POST /admin/bridge`, `GET /admin/bridge`, `POST /admin/bridge/off`,
+    `POST /admin/bridge/links` and `POST /admin/bridge/links/:id/remove` (site admins).
   - `GET /bridge/discord` and `POST /bridge/discord/messages` (the bridge key, in `X-Bridge-Key`).
-  - The socket.io namespace `/bridge`, where `bridgeOut()` sends people's messages from that channel.
+  - The socket.io namespace `/bridge`: the chat sends `ready`/`links` (what to bridge) and
+    `message` (with `linkId`, from `bridgeOut()`); the bot sends `discordInfo` (its Discord
+    servers and channels, for the picker) and `linkStatus`. `bridgeLinks()` only returns
+    public text channels, checked fresh for every message.
 - Bridged messages are `"user" = 'bridge:discord'`, `source = 'discord'`, with
   `author_name` and `author_avatar` set. They're bot messages: no profile, no pings,
   and `bridgeOut()` never sends them back.

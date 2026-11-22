@@ -1,6 +1,8 @@
 // Part of the regression suites - see regression/README.md.
-// The Discord bridge, minus Discord itself (that part runs in the Render
-// relay): a site admin turns it on (makes #cross-platform, gets a key once);
+// The Discord bridge, minus Discord itself (that part runs in the bridge
+// process - chat-bridge on the NAS): a site admin turns it on (makes
+// #cross-platform, gets a key once) and picks which channels are linked with
+// which Discord server + channel;
 // the relay posts Discord messages with the key (shown "from Discord" with the
 // Discord name and picture, never pinging); people's messages in the channel
 // go out on the /bridge socket - but bridged ones never echo back. Plus the
@@ -37,6 +39,8 @@ const { screenFromDiscord, screenForDiscord, webhookName } = require('../discord
   const on = await post('/admin/bridge', A, {});
   check('a site admin turns it on and gets a key once', on.status === 200 && /^brg_/.test(on.data.key || '') && on.data.channel === 'cross-platform', on.data);
   const key = on.data.key, room = on.data.room;
+  // a reused test database may have links from earlier runs: start from #cross-platform only
+  for (const l of (await get('/admin/bridge', A)).data.links || []) if (l.channelName !== 'cross-platform') await post('/admin/bridge/links/' + l.id + '/remove', A, {});
   const status = (await get('/admin/bridge', A)).data;
   check('status says on (key not shown again)', status.on && !JSON.stringify(status).includes(key));
   const general = (await get('/servers', B)).data.find(s => s.isDefault);
@@ -74,6 +78,59 @@ const { screenFromDiscord, screenForDiscord, webhookName } = require('../discord
   await bridgePost(key, { authorName: 'Eve', avatarUrl: 'https://evil.example/x.png', text: 'sneaky' });
   check('pictures only from Discord\'s own servers', (await get('/history?room=' + encodeURIComponent(room), B)).data.messages.pop().avatarUrl === '');
 
+  // ---- links: only chosen channels, each with a chosen Discord server + channel
+  let st = (await get('/admin/bridge', A)).data;
+  check('turning it on links #cross-platform with every Discord server the bot is in', st.links.length >= 1 && st.links[0].channelName === 'cross-platform' && st.links[0].discordGuildId === null, st.links);
+  check('members can\'t see or change the links', (await get('/admin/bridge', B)).status === 403 && (await post('/admin/bridge/links', B, {})).status === 403);
+  const generalCh = st.servers.find(sv => sv.id === general.id).channels.find(c => c.name === 'general');
+  check('the picker lists public text channels by server', !!generalCh && st.servers.every(sv => sv.channels.every(c => typeof c.name === 'string')));
+  const G = '111111111111111111', DCH = '222222222222222222', DCH2 = '333333333333333333';
+  relay.emit('discordInfo', { guilds: [{ id: G, name: 'My Discord <b>', canMakeChannels: true, channels: [{ id: DCH, name: 'chat' }, { id: DCH2, name: 'memes' }] }, { id: 'not-an-id', name: 'x', channels: [] }] });
+  await sleep(300);
+  st = (await get('/admin/bridge', A)).data;
+  check('the bot tells the page which Discord servers and channels it sees', st.discord.guilds.length === 1 && st.discord.guilds[0].channels.length === 2, st.discord);
+  check('a Discord server the bot isn\'t in is refused', (await post('/admin/bridge/links', A, { channelId: generalCh.id, discordGuildId: '999999999999999999', discordChannelId: DCH })).status === 400);
+  check('a channel from another Discord server is refused', (await post('/admin/bridge/links', A, { channelId: generalCh.id, discordGuildId: G, discordChannelId: '444444444444444444' })).status === 400);
+  check('a channel that isn\'t here is refused', (await post('/admin/bridge/links', A, { channelId: 99999999, discordGuildId: G, discordChannelId: DCH })).status === 404);
+  const privCh = await db.query(`INSERT INTO server_channels (server_id, name, room, is_private) VALUES ($1, $2, $2, 1) RETURNING id`, [general.id, 'secret' + id]);
+  check('private channels can\'t be bridged', (await post('/admin/bridge/links', A, { channelId: privCh.rows[0].id, discordGuildId: G, discordChannelId: DCH })).status === 400);
+  const linksSeen = [];
+  relay.on('links', d => linksSeen.push(d.links));
+  const made = await post('/admin/bridge/links', A, { channelId: generalCh.id, discordGuildId: G, discordChannelId: DCH });
+  check('a site admin links #general with a Discord server + channel', made.status === 200 && made.data.links.some(l => l.channelId === generalCh.id && l.discordGuildId === G && l.discordChannelId === DCH && l.discordChannelName === 'chat' && l.discordGuildName === 'My Discord <b>'), made.data);
+  await sleep(300);
+  const genLink = made.data.links.find(l => l.channelId === generalCh.id);
+  check('…and the bot is told at once', linksSeen.length === 1 && linksSeen[0].some(l => l.id === genLink.id && l.guildId === G && l.discordChannelId === DCH), linksSeen);
+  const xpLink = made.data.links.find(l => l.channelName === 'cross-platform');
+  check('one Discord channel can\'t be linked twice', (await post('/admin/bridge/links', A, { channelId: xpLink.channelId, discordGuildId: G, discordChannelId: DCH })).status === 409);
+  const before = out.length;
+  const gs = await emit(sB, 'message', { room: 'general', text: 'now bridged' });
+  await sleep(500);
+  check('a linked channel\'s messages go out, marked with their link', out.length === before + 1 && out[out.length - 1].id === gs.id && out[out.length - 1].linkId === genLink.id && out[out.length - 1].room === 'general', out.slice(before));
+  const toGeneral = await bridgePost(key, { linkId: genLink.id, authorName: 'Kim on Discord', text: 'hello #general from Discord' });
+  check('a Discord message for a link lands in that channel', toGeneral.status === 200 && (await get('/history?room=general', B)).data.messages.pop().text === 'hello #general from Discord');
+  check('a link that doesn\'t exist is refused', (await bridgePost(key, { linkId: 987654, authorName: 'x', text: 'nope' })).status === 404);
+  relay.emit('linkStatus', [{ id: genLink.id, ok: true, where: ['My Discord #chat'] }, { id: xpLink.id, ok: false, error: 'no #cross-platform and no permission to make it' }]);
+  await sleep(300);
+  st = (await get('/admin/bridge', A)).data;
+  check('the page shows which links work', st.links.find(l => l.id === genLink.id).status.ok === true && st.links.find(l => l.id === xpLink.id).status.error.includes('no permission'), st.links);
+  // a linked channel made private stops at once (both ways)
+  await db.query(`UPDATE server_channels SET is_private = 1 WHERE room = 'general' AND server_id = $1`, [general.id]);
+  const n2 = out.length;
+  await emit(sB, 'message', { room: 'general', text: 'private now' }).catch(() => null);
+  await sleep(500);
+  check('a channel made private is no longer sent to Discord', out.length === n2);
+  check('…nor posted into from Discord', (await bridgePost(key, { linkId: genLink.id, authorName: 'x', text: 'into private' })).status === 404);
+  await db.query(`UPDATE server_channels SET is_private = 0 WHERE room = 'general' AND server_id = $1`, [general.id]);
+  await db.query(`DELETE FROM server_channels WHERE id = $1`, [privCh.rows[0].id]);
+  const removed = await post('/admin/bridge/links/' + genLink.id + '/remove', A, {});
+  check('removing a link', removed.status === 200 && !removed.data.links.some(l => l.id === genLink.id));
+  await sleep(300);
+  const n3 = out.length;
+  await emit(sB, 'message', { room: 'general', text: 'not bridged again' });
+  await sleep(500);
+  check('…stops that channel at once', out.length === n3 && linksSeen.length >= 2 && !linksSeen[linksSeen.length - 1].some(l => l.id === genLink.id));
+
   // ---- what people see
   const browser = await chromium.launch({ executablePath: CHROME });
   const errors = [];
@@ -93,8 +150,28 @@ const { screenFromDiscord, screenForDiscord, webhookName } = require('../discord
   check('the tag sits at the far right', tagBox.right < 4, tagBox);
   await page.screenshot({ path: SHOTS + 'discord-bridge.png', clip: { x: 300, y: 500, width: 980, height: 300 } });
 
-  // ---- admin page, new key, off
+  // ---- the Site Admin page: links and the picker
   await page.close();
+  await post('/admin/bridge/links', A, { channelId: generalCh.id, discordGuildId: G, discordChannelId: DCH2 });
+  const admin = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+  admin.on('pageerror', e => errors.push(e.message));
+  await admin.goto(BASE);
+  await admin.fill('#username', a); await admin.fill('#password', 'secret123'); await admin.click('#loginSubmit');
+  await admin.waitForSelector('#app.ready'); await sleep(800);
+  await admin.evaluate(() => openSettings('site'));
+  await admin.waitForSelector('#bridgeLinks .bridgeLinkRow');
+  const rows = await admin.$$eval('#bridgeLinks .bridgeLinkName', els => els.map(e => e.textContent));
+  check('the page lists the links', rows.some(t => t.includes('#general') && t.includes('My Discord <b> #memes')) && rows.some(t => t.includes('#cross-platform')), rows);
+  await admin.selectOption('#bridgeGuild', G);
+  const chOpts = await admin.$$eval('#bridgeDiscordChannel option', els => els.map(e => e.textContent));
+  check('picking a Discord server lists its channels', chOpts.includes('#chat') && chOpts.includes('#memes'), chOpts);
+  await admin.$eval('#bridgeLinks', el => el.scrollIntoView()); await sleep(1200);
+  await admin.screenshot({ path: SHOTS + 'discord-bridge-links.png' });
+  const genNow = (await get('/admin/bridge', A)).data.links.find(l => l.channelId === generalCh.id);
+  await post('/admin/bridge/links/' + genNow.id + '/remove', A, {});
+  await admin.close();
+
+  // ---- new key, off
   const again = await post('/admin/bridge', A, {});
   check('a new key replaces the old one', again.data.key !== key && (await bridgePost(key, { authorName: 'x', text: 'old key' })).status === 401 && (await bridgePost(again.data.key, { authorName: 'x', text: 'new key' })).status === 200);
   await post('/admin/bridge/off', A, {});

@@ -749,6 +749,24 @@ async function setupSchema() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       last_seen_at TIMESTAMPTZ
     )`);
+  // Which channels are bridged, and with what on Discord: one row per chat
+  // channel. discord_guild_id NULL = every Discord server the bot is in (the
+  // original #cross-platform link); discord_channel_id NULL = the bot finds or
+  // makes a channel with the chat channel's name in that Discord server.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS bridge_links (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL UNIQUE,
+      discord_guild_id TEXT,
+      discord_channel_id TEXT,
+      created_by TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS bridge_links_discord_channel ON bridge_links (discord_channel_id) WHERE discord_channel_id IS NOT NULL`);
+  await pool.query(`ALTER TABLE bridges ADD COLUMN IF NOT EXISTS links_made INTEGER DEFAULT 0`);
+  // a bridge from before links existed keeps its #cross-platform link (once)
+  await pool.query(`INSERT INTO bridge_links (channel_id, created_by) SELECT channel_id, created_by FROM bridges WHERE COALESCE(links_made, 0) = 0 ON CONFLICT (channel_id) DO NOTHING`);
+  await pool.query(`UPDATE bridges SET links_made = 1 WHERE COALESCE(links_made, 0) = 0`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS avatar_video TEXT`);
   await pool.query(`ALTER TABLE servers ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
   await pool.query(`ALTER TABLE server_members ADD COLUMN IF NOT EXISTS banner_pos TEXT`);
@@ -4982,18 +5000,29 @@ app.post('/api/webhooks/:id/:token', route(async (req, res) => {
 }));
 
 // ---------------- DISCORD BRIDGE ----------------
-// Links one channel here (#cross-platform in the original chat) with a channel
-// on real Discord. The Discord side runs in the Render relay (discord-bridge.js),
-// not here: it holds the Discord bot login. A site admin turns it on in
-// Settings > Site Admin, which makes the channel and shows a bridge key once
-// (stored here only as its hash, like webhook tokens). The relay uses the key:
-//   GET  /bridge/discord            -> which channel
-//   POST /bridge/discord/messages   -> a Discord message, posted here labelled "from Discord"
-//   socket.io namespace /bridge     -> people's messages in that channel, to send to Discord
-// Bridged messages are bot messages (no profile, never ping anyone).
+// Links chosen channels here with channels on real Discord. The Discord side
+// runs as its own process (bridge.js / discord-bridge.js: the NAS's chat-bridge
+// container, or the Render relay): it holds the Discord bot login. A site admin
+// turns it on in Settings > Site Admin, which shows a bridge key once (stored
+// here only as its hash, like webhook tokens), and picks the links there: a
+// public text channel here <-> a Discord server + channel (bridge_links).
+// The bot uses the key:
+//   GET  /bridge/discord            -> the links
+//   POST /bridge/discord/messages   -> a Discord message for one link, posted here labelled "from Discord"
+//   socket.io namespace /bridge     -> 'links' (what to bridge), people's messages in linked
+//                                      channels ('message', with linkId); the bot sends back
+//                                      'discordInfo' (its Discord servers/channels, for the picker)
+//                                      and 'linkStatus' (which links work)
+// Bridged messages are bot messages (no profile, never ping anyone). Private
+// channels are never bridged (checked on every message, both ways).
 const BRIDGE_CHANNEL_NAME = 'cross-platform';
+const BRIDGE_MAX_LINKS = 50;
+const DISCORD_ID_RE = /^[0-9]{5,25}$/;
 const DISCORD_AVATAR_RE = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\/[A-Za-z0-9_./?=&%-]{1,400}$/;
 let bridgeCache = { at: 0, row: null };
+let bridgeRooms = { at: 0, rooms: new Set() }; // rooms with a link (a quick skip for bridgeOut)
+let bridgeDiscordInfo = { guilds: [], at: null }; // what the bot last said it can see
+let bridgeLinkStatus = new Map(); // link id -> { ok, error, where }
 function bridgeKeyMatches(key, hash) {
   if (!/^brg_[A-Za-z0-9_-]{20,60}$/.test(String(key || '')) || !hash) return false;
   const a = Buffer.from(sha256Hex(key), 'hex');
@@ -5002,9 +5031,33 @@ function bridgeKeyMatches(key, hash) {
 }
 async function discordBridge() {
   if (Date.now() - bridgeCache.at < 10000) return bridgeCache.row;
-  const row = await one(`SELECT b.*, c.room FROM bridges b JOIN server_channels c ON c.id = b.channel_id WHERE b.platform = 'discord'`);
+  const row = await one(`SELECT b.* FROM bridges b WHERE b.platform = 'discord'`);
   bridgeCache = { at: Date.now(), row: row || null };
   return bridgeCache.row;
+}
+// Every link whose chat channel still exists and is public (private channels
+// are never bridged, even if one became private after it was linked).
+async function bridgeLinks(where = '', params = []) {
+  return (await pool.query(
+    `SELECT l.id, l.channel_id, l.discord_guild_id, l.discord_channel_id, l.created_by, l.created_at,
+            c.room, c.name AS channel_name, c.server_id, s.name AS server_name
+       FROM bridge_links l
+       JOIN server_channels c ON c.id = l.channel_id
+       JOIN servers s ON s.id = c.server_id
+      WHERE COALESCE(c.is_private, 0) = 0 AND COALESCE(c.kind, 'text') = 'text' ${where}
+      ORDER BY l.id`, params)).rows;
+}
+const linkForBot = l => ({ id: l.id, room: l.room, channelName: l.channel_name, serverName: l.server_name, guildId: l.discord_guild_id || null, discordChannelId: l.discord_channel_id || null });
+async function bridgeLinkedRooms() {
+  if (Date.now() - bridgeRooms.at < 10000) return bridgeRooms.rooms;
+  bridgeRooms = { at: Date.now(), rooms: new Set((await bridgeLinks()).map(l => l.room)) };
+  return bridgeRooms.rooms;
+}
+// After any change to the links: tell the bot straight away.
+async function bridgeLinksChanged() {
+  bridgeRooms = { at: 0, rooms: new Set() };
+  const links = (await bridgeLinks()).map(linkForBot);
+  bridgeNs.emit('links', { links });
 }
 async function bridgeFromRequest(req) {
   const header = String(req.headers['x-bridge-key'] || '');
@@ -5018,82 +5071,200 @@ bridgeNs.use(async (socket, next) => {
     const key = String((socket.handshake.auth && socket.handshake.auth.key) || '');
     const bridge = await discordBridge();
     if (!bridge || !key || !bridgeKeyMatches(key, bridge.key_hash)) return next(new Error('not authenticated'));
-    socket.data.room = bridge.room;
     next();
   } catch (err) { next(new Error('bridge unavailable')); }
 });
-bridgeNs.on('connection', socket => {
+const cleanDiscordName = v => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 100);
+bridgeNs.on('connection', async socket => {
   pool.query(`UPDATE bridges SET last_seen_at = NOW() WHERE platform = 'discord'`).catch(() => {});
-  socket.emit('ready', { room: socket.data.room, channel: BRIDGE_CHANNEL_NAME });
-});
-function bridgeOut(msg) {
-  if (!msg || msg.source) return; // never send a bridged message back where it came from
-  const bridge = bridgeCache.row;
-  if (!bridge || msg.room !== bridge.room) return;
-  bridgeNs.emit('message', {
-    id: msg.id, user: msg.user, displayName: msg.displayName, avatarUrl: msg.avatarUrl || '',
-    text: msg.text || '', createdAt: msg.createdAt,
-    attachments: (msg.attachments || []).map(a => ({ name: a.name, url: a.url })),
-    sticker: msg.sticker && msg.sticker.url ? { name: msg.sticker.name, url: msg.sticker.url } : null
+  try {
+    const links = (await bridgeLinks()).map(linkForBot);
+    socket.emit('ready', { links, channel: links[0] ? links[0].channelName : null });
+  } catch (err) { console.error('bridge ready failed:', err.message); }
+  // the bot's Discord servers and text channels, only to fill the Site Admin picker
+  socket.on('discordInfo', info => {
+    const guilds = (Array.isArray(info && info.guilds) ? info.guilds : []).slice(0, 100)
+      .filter(g => g && DISCORD_ID_RE.test(String(g.id)))
+      .map(g => ({
+        id: String(g.id), name: cleanDiscordName(g.name),
+        canMakeChannels: !!g.canMakeChannels,
+        channels: (Array.isArray(g.channels) ? g.channels : []).slice(0, 500)
+          .filter(c => c && DISCORD_ID_RE.test(String(c.id)))
+          .map(c => ({ id: String(c.id), name: cleanDiscordName(c.name) }))
+      }));
+    bridgeDiscordInfo = { guilds, at: new Date().toISOString() };
   });
+  socket.on('linkStatus', list => {
+    const next = new Map();
+    for (const st of (Array.isArray(list) ? list : []).slice(0, 200)) {
+      const id = Number(st && st.id);
+      if (!Number.isInteger(id)) continue;
+      next.set(id, { ok: !!st.ok, error: cleanDiscordName(st.error).slice(0, 200), where: (Array.isArray(st.where) ? st.where : []).slice(0, 20).map(cleanDiscordName) });
+    }
+    bridgeLinkStatus = next;
+  });
+});
+async function bridgeOut(msg) {
+  try {
+    if (!msg || msg.source) return; // never send a bridged message back where it came from
+    if (!bridgeCache.row || !bridgeNs.sockets.size) return;
+    if (!(await bridgeLinkedRooms()).has(msg.room)) return;
+    const link = (await bridgeLinks('AND c.room = $1', [msg.room]))[0]; // fresh: a channel made private stops at once
+    if (!link) return;
+    bridgeNs.emit('message', {
+      linkId: link.id, room: msg.room,
+      id: msg.id, user: msg.user, displayName: msg.displayName, avatarUrl: msg.avatarUrl || '',
+      text: msg.text || '', createdAt: msg.createdAt,
+      attachments: (msg.attachments || []).map(a => ({ name: a.name, url: a.url })),
+      sticker: msg.sticker && msg.sticker.url ? { name: msg.sticker.name, url: msg.sticker.url } : null
+    });
+  } catch (err) { console.error('bridgeOut failed:', err.message); }
 }
 app.get('/bridge/discord', route(async (req, res) => {
   const bridge = await bridgeFromRequest(req);
   if (!bridge) return res.status(401).json({ error: 'bad bridge key' });
   pool.query(`UPDATE bridges SET last_seen_at = NOW() WHERE platform = 'discord'`).catch(() => {});
-  res.json({ room: bridge.room, channel: BRIDGE_CHANNEL_NAME });
+  const links = (await bridgeLinks()).map(linkForBot);
+  res.json({ links, room: links[0] ? links[0].room : null, channel: links[0] ? links[0].channelName : null });
 }));
 app.post('/bridge/discord/messages', route(async (req, res) => {
-  if (rateLimited('bridgeip:' + req.ip, 120, 60 * 1000)) return res.status(429).json({ error: 'slow down' });
+  if (rateLimited('bridgeip:' + req.ip, 240, 60 * 1000)) return res.status(429).json({ error: 'slow down' });
   const bridge = await bridgeFromRequest(req);
   if (!bridge) return res.status(401).json({ error: 'bad bridge key' });
   const body = req.body && typeof req.body === 'object' ? req.body : {};
+  // which link: linkId (current bots); older bots sent none and meant the first link
+  const linkId = body.linkId == null ? null : Number(body.linkId);
+  const link = linkId == null ? (await bridgeLinks())[0] : (Number.isInteger(linkId) ? (await bridgeLinks('AND l.id = $1', [linkId]))[0] : null);
+  if (!link) return res.status(404).json({ error: 'that channel isn\'t bridged (any more)' });
   const text = cleanText(body.text, 4000);
   if (!text) return res.status(400).json({ error: 'empty message' });
   const name = cleanBotName(body.authorName) || 'Someone on Discord';
   const avatar = DISCORD_AVATAR_RE.test(String(body.avatarUrl || '')) ? String(body.avatarUrl) : '';
   const created = await one(
     `INSERT INTO messages (room, "user", text, is_group, author_name, source, author_avatar) VALUES ($1, 'bridge:discord', $2, 0, $3, 'discord', $4) RETURNING *`,
-    [bridge.room, text, name, avatar]
+    [link.room, text, name, avatar]
   );
   const msg = await normaliseMessage(created);
-  io.to(bridge.room).emit('message', msg);
+  io.to(link.room).emit('message', msg);
   res.json({ id: msg.id });
 }));
-// Site admins: turn it on (makes #cross-platform, gives a key), see it, turn it off.
+// Site admins: turn it on (gives a key), pick the links, see it, turn it off.
+async function bridgeAdminState() {
+  const bridge = await discordBridge();
+  const connected = bridgeNs.sockets.size > 0;
+  const links = (await bridgeLinks()).map(l => {
+    const guild = l.discord_guild_id ? bridgeDiscordInfo.guilds.find(g => g.id === l.discord_guild_id) : null;
+    const dch = guild && l.discord_channel_id ? guild.channels.find(c => c.id === l.discord_channel_id) : null;
+    const st = bridgeLinkStatus.get(l.id);
+    return {
+      id: l.id, serverId: l.server_id, serverName: l.server_name, channelId: l.channel_id, channelName: l.channel_name, room: l.room,
+      discordGuildId: l.discord_guild_id || null, discordGuildName: guild ? guild.name : null,
+      discordChannelId: l.discord_channel_id || null, discordChannelName: dch ? dch.name : (l.discord_channel_id ? null : l.channel_name),
+      status: st ? { ok: st.ok, error: st.error, where: st.where } : null
+    };
+  });
+  // public text channels people could link, by server
+  const rows = (await pool.query(
+    `SELECT s.id AS server_id, s.name AS server_name, c.id, c.name
+       FROM servers s JOIN server_channels c ON c.server_id = s.id
+      WHERE COALESCE(c.is_private, 0) = 0 AND COALESCE(c.kind, 'text') = 'text'
+      ORDER BY s.id, c.position, c.id`)).rows;
+  const servers = [];
+  for (const r of rows) {
+    let sv = servers.find(x => x.id === r.server_id);
+    if (!sv) servers.push(sv = { id: r.server_id, name: r.server_name, channels: [] });
+    sv.channels.push({ id: r.id, name: r.name });
+  }
+  return bridge
+    ? { on: true, connected, lastSeenAt: bridge.last_seen_at, createdBy: bridge.created_by, links, servers, discord: bridgeDiscordInfo, maxLinks: BRIDGE_MAX_LINKS }
+    : { on: false, connected: false, links, servers, discord: { guilds: [], at: null }, maxLinks: BRIDGE_MAX_LINKS };
+}
 app.get('/admin/bridge', requireAuth, route(async (req, res) => {
   if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
-  const bridge = await discordBridge();
-  const connected = [...bridgeNs.sockets.values()].length > 0;
-  res.json(bridge ? { on: true, channel: BRIDGE_CHANNEL_NAME, room: bridge.room, connected, lastSeenAt: bridge.last_seen_at, createdBy: bridge.created_by } : { on: false, connected: false });
+  res.json(await bridgeAdminState());
 }));
 app.post('/admin/bridge', requireAuth, route(async (req, res) => {
   if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
-  const serverId = DEFAULT_SERVER.id;
-  let channel = await one(`SELECT * FROM server_channels WHERE server_id = $1 AND name = $2`, [serverId, BRIDGE_CHANNEL_NAME]);
-  if (!channel) {
-    if (!(await getChannelByRoom(BRIDGE_CHANNEL_NAME))) await insertChannel(BRIDGE_CHANNEL_NAME, req.username);
-    channel = await insertServerChannel(serverId, BRIDGE_CHANNEL_NAME, BRIDGE_CHANNEL_NAME, (await getChannelsForServer(serverId)).length, req.username);
-    await pool.query(`UPDATE server_channels SET topic = $1 WHERE id = $2`, ['Linked with Discord: messages here appear there, and theirs appear here marked "from Discord".', channel.id]).catch(() => {});
-    io.emit('serversChanged', {});
+  const existing = await one(`SELECT 1 FROM bridges WHERE platform = 'discord'`);
+  let channel = null;
+  // the first time: #cross-platform in the original chat, linked with
+  // #cross-platform on every Discord server the bot is in (change it below)
+  if (!existing && !(await one(`SELECT 1 FROM bridge_links`))) {
+    const serverId = DEFAULT_SERVER.id;
+    channel = await one(`SELECT * FROM server_channels WHERE server_id = $1 AND name = $2`, [serverId, BRIDGE_CHANNEL_NAME]);
+    if (!channel) {
+      if (!(await getChannelByRoom(BRIDGE_CHANNEL_NAME))) await insertChannel(BRIDGE_CHANNEL_NAME, req.username);
+      channel = await insertServerChannel(serverId, BRIDGE_CHANNEL_NAME, BRIDGE_CHANNEL_NAME, (await getChannelsForServer(serverId)).length, req.username);
+      await pool.query(`UPDATE server_channels SET topic = $1 WHERE id = $2`, ['Linked with Discord: messages here appear there, and theirs appear here marked "from Discord".', channel.id]).catch(() => {});
+      io.emit('serversChanged', {});
+    }
+    await pool.query(`INSERT INTO bridge_links (channel_id, created_by) VALUES ($1, $2) ON CONFLICT (channel_id) DO NOTHING`, [channel.id, req.username]);
   }
   const key = 'brg_' + crypto.randomBytes(24).toString('base64url');
+  const anyLink = channel || (await one(`SELECT c.* FROM bridge_links l JOIN server_channels c ON c.id = l.channel_id ORDER BY l.id LIMIT 1`));
   await pool.query(
-    `INSERT INTO bridges (platform, server_id, channel_id, key_hash, created_by) VALUES ('discord', $1, $2, $3, $4)
-     ON CONFLICT (platform) DO UPDATE SET server_id = EXCLUDED.server_id, channel_id = EXCLUDED.channel_id, key_hash = EXCLUDED.key_hash, created_by = EXCLUDED.created_by, created_at = NOW(), last_seen_at = NULL`,
-    [serverId, channel.id, sha256Hex(key), req.username]
+    `INSERT INTO bridges (platform, server_id, channel_id, key_hash, created_by, links_made) VALUES ('discord', $1, $2, $3, $4, 1)
+     ON CONFLICT (platform) DO UPDATE SET key_hash = EXCLUDED.key_hash, created_by = EXCLUDED.created_by, created_at = NOW(), last_seen_at = NULL, links_made = 1`,
+    [anyLink ? anyLink.server_id : DEFAULT_SERVER.id, anyLink ? anyLink.id : 0, sha256Hex(key), req.username]
   );
   bridgeCache = { at: 0, row: null };
   for (const s of bridgeNs.sockets.values()) s.disconnect(true); // an old key stops working now
+  bridgeLinkStatus = new Map();
   await discordBridge();
-  res.json({ key, channel: BRIDGE_CHANNEL_NAME, room: channel.room });
+  await bridgeLinksChanged();
+  res.json({ key, channel: anyLink ? anyLink.name : null, room: anyLink ? anyLink.room : null });
 }));
 app.post('/admin/bridge/off', requireAuth, route(async (req, res) => {
   if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
-  await pool.query(`DELETE FROM bridges WHERE platform = 'discord'`);
+  await pool.query(`DELETE FROM bridges WHERE platform = 'discord'`); // the links stay, for turning it on again
   bridgeCache = { at: 0, row: null };
   for (const s of bridgeNs.sockets.values()) s.disconnect(true);
+  bridgeDiscordInfo = { guilds: [], at: null };
+  bridgeLinkStatus = new Map();
   res.json({ on: false });
+}));
+// Add or change a link: a public text channel here <-> a Discord server
+// (from the bot's list) and either one of its channels, or "a channel named
+// like this one" (the bot finds or makes it).
+app.post('/admin/bridge/links', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const channelId = Number(body.channelId);
+  const channel = Number.isInteger(channelId) ? await one(`SELECT * FROM server_channels WHERE id = $1`, [channelId]) : null;
+  if (!channel) return res.status(404).json({ error: 'pick a channel here' });
+  if (channel.is_private) return res.status(400).json({ error: 'private channels can\'t be bridged - everyone in the Discord channel would see them' });
+  if ((channel.kind || 'text') !== 'text') return res.status(400).json({ error: 'only text channels can be bridged' });
+  const guildId = String(body.discordGuildId || '').trim();
+  if (!DISCORD_ID_RE.test(guildId)) return res.status(400).json({ error: 'pick a Discord server' });
+  const discordChannelId = body.discordChannelId == null || body.discordChannelId === '' ? null : String(body.discordChannelId).trim();
+  if (discordChannelId !== null && !DISCORD_ID_RE.test(discordChannelId)) return res.status(400).json({ error: 'pick a Discord channel' });
+  // when the bot has told us what it sees, the choice must be one of those
+  const guild = bridgeDiscordInfo.guilds.find(g => g.id === guildId);
+  if (bridgeDiscordInfo.at && !guild) return res.status(400).json({ error: 'the bot isn\'t in that Discord server' });
+  if (guild && discordChannelId && !guild.channels.some(c => c.id === discordChannelId)) return res.status(400).json({ error: 'that channel isn\'t in that Discord server' });
+  if (discordChannelId) {
+    const taken = await one(`SELECT l.id FROM bridge_links l WHERE l.discord_channel_id = $1 AND l.channel_id <> $2`, [discordChannelId, channel.id]);
+    if (taken) return res.status(409).json({ error: 'that Discord channel is already linked with another channel' });
+  }
+  await pool.query(`DELETE FROM bridge_links l WHERE NOT EXISTS (SELECT 1 FROM server_channels c WHERE c.id = l.channel_id)`); // channels deleted since
+  const count = (await bridgeLinks()).filter(l => l.channel_id !== channel.id).length;
+  if (count >= BRIDGE_MAX_LINKS) return res.status(400).json({ error: `up to ${BRIDGE_MAX_LINKS} links` });
+  const row = await one(
+    `INSERT INTO bridge_links (channel_id, discord_guild_id, discord_channel_id, created_by) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (channel_id) DO UPDATE SET discord_guild_id = EXCLUDED.discord_guild_id, discord_channel_id = EXCLUDED.discord_channel_id, created_by = EXCLUDED.created_by, created_at = NOW()
+     RETURNING id`, [channel.id, guildId, discordChannelId, req.username]);
+  bridgeLinkStatus.delete(row.id);
+  await bridgeLinksChanged();
+  res.json({ id: row.id, ...(await bridgeAdminState()) });
+}));
+app.post('/admin/bridge/links/:id/remove', requireAuth, route(async (req, res) => {
+  if (!(await isAdmin(req.username))) return res.status(403).json({ error: 'site admins only' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(404).json({ error: 'no such link' });
+  await pool.query(`DELETE FROM bridge_links WHERE id = $1`, [id]);
+  bridgeLinkStatus.delete(id);
+  await bridgeLinksChanged();
+  res.json(await bridgeAdminState());
 }));
 
 // ---- managing webhooks (server admins)

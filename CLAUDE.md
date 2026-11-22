@@ -150,8 +150,9 @@ to do next) - read it before a big upgrade and add an entry after one.
   token once, compare with `webhookTokenMatches()` (constant time). Webhook
   messages are `"user" = 'webhook:<id>'` (never a real username) with
   `bot: true`; they never ping and the client shows no profile for them.
-- Discord bridge: one `bridges` row (key as `sha256Hex` only, `bridgeKeyMatches()`)
-  links #cross-platform in the original chat with Discord. Bridged messages are
+- Discord bridge: one `bridges` row (key as `sha256Hex` only, `bridgeKeyMatches()`);
+  `bridge_links` says which chat channels go with which Discord server + channel (site
+  admins pick them; only public text channels - `bridgeLinks()` filters, fresh per message). Bridged messages are
   `"user" = 'bridge:discord'`, `source = 'discord'` (+ `author_name`, `author_avatar`,
   Discord CDN pictures only): bot messages, no profile, never ping; `bridgeOut()` sends
   people's messages in that room to the `/bridge` namespace and never sends bridged ones

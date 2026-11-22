@@ -1355,7 +1355,13 @@ function cleanText(value, max = 4000) {
 // so nothing can lock them out, and a stolen admin password alone is no
 // longer enough to run the site. isSiteAdmin() is the role itself (who an
 // admin is, for "admins can't act against each other" and the badge).
+// Purple (the owner) is exempt at William's request: his powers never wait
+// on two-step login (he can still turn it on for himself if he wants).
 const ADMIN_REQUIRES_2FA = process.env.ADMIN_2FA !== 'off';
+const TWO_STEP_EXEMPT_ADMINS = new Set(['Purple']);
+function adminNeedsTwoStep(username) {
+  return ADMIN_REQUIRES_2FA && !TWO_STEP_EXEMPT_ADMINS.has(username);
+}
 async function isSiteAdmin(username) {
   if (username === 'Purple') return true;
   const user = await getUser(username);
@@ -1363,7 +1369,7 @@ async function isSiteAdmin(username) {
 }
 async function isAdmin(username) {
   if (!(await isSiteAdmin(username))) return false;
-  if (!ADMIN_REQUIRES_2FA) return true;
+  if (!adminNeedsTwoStep(username)) return true;
   const user = await getUser(username);
   return !!(user && user.totp_enabled);
 }
@@ -2345,8 +2351,8 @@ async function filterChannelViewers(channel, names) {
      UNION SELECT owner FROM servers WHERE id = $1
      UNION SELECT username FROM channel_access WHERE channel_id = $2 AND username IS NOT NULL
      UNION SELECT r.username FROM server_member_roles r JOIN channel_access a ON a.role_id = r.role_id WHERE a.channel_id = $2
-     UNION SELECT username FROM users WHERE (is_admin = 1 OR username = 'Purple') AND (NOT $3 OR totp_enabled = 1)`,
-    [channel.server_id, channel.id, ADMIN_REQUIRES_2FA]
+     UNION SELECT username FROM users WHERE (is_admin = 1 OR username = 'Purple') AND (NOT $3 OR totp_enabled = 1 OR username = ANY($4))`,
+    [channel.server_id, channel.id, ADMIN_REQUIRES_2FA, [...TWO_STEP_EXEMPT_ADMINS]]
   );
   const allowed = new Set(rows.map(r => r.username));
   return names.filter(n => allowed.has(n));
@@ -2480,7 +2486,7 @@ async function selfProfile(username) {
   if (!u) return null;
   const realAdmin = u.username === 'Purple' || !!u.is_admin;
   // isAdmin = admin powers (see isAdmin()); adminNeeds2fa = an admin who has to turn on two-step login first
-  const needs2fa = realAdmin && ADMIN_REQUIRES_2FA && !u.totp_enabled;
+  const needs2fa = realAdmin && adminNeedsTwoStep(u.username) && !u.totp_enabled;
   return { ...profileFromRow(u), isAdmin: realAdmin && !needs2fa, siteAdmin: realAdmin, adminNeeds2fa: needs2fa, twoStep: !!u.totp_enabled, adminHidden: realAdmin && !!u.hide_admin, readReceipts: u.read_receipts !== 0, presence: PRESENCE_VALUES.has(u.presence) ? u.presence : 'online' };
 }
 
@@ -3598,7 +3604,7 @@ async function twoStepStatus(username) {
   return {
     enabled: !!(user && user.totp_enabled),
     backupCodesLeft: user && user.totp_enabled ? await backupCodesLeft(username) : 0,
-    adminRequires: ADMIN_REQUIRES_2FA && await isSiteAdmin(username),
+    adminRequires: adminNeedsTwoStep(username) && await isSiteAdmin(username),
     passkeys: keys.map(k => ({ id: k.id, name: k.name || 'Passkey', site: k.rp_id, createdAt: k.created_at, lastUsedAt: k.last_used_at }))
   };
 }
@@ -5942,7 +5948,7 @@ app.get('/admin/overview', requireAuth, route(async (req, res) => {
   res.json({
     me: req.username,
     canManageAdmins: req.username === 'Purple',
-    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple', twoStep: !!a.totp_enabled })),
+    admins: admins.map(a => ({ username: a.username, displayName: a.display_name || a.username, hidden: !!a.hide_admin, permanent: a.username === 'Purple', twoStep: !!a.totp_enabled, twoStepExempt: TWO_STEP_EXEMPT_ADMINS.has(a.username) })),
     adminRequires2fa: ADMIN_REQUIRES_2FA,
     banned: banned.map(b => ({ username: b.username, displayName: b.display_name || b.username })),
     muted: muted.map(m => ({ username: m.username, until: m.muted_until, by: m.muted_by })),

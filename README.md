@@ -180,8 +180,8 @@ be created or made admins at startup via `SEED_ACCOUNTS` near the top of
 
 Settings > My Account has **Two-step login** (an authenticator app code at
 login, plus 10 single-use backup codes) and **Passkeys** (log in with a
-fingerprint, face or screen lock, no password). Site admins need two-step
-login for their admin powers: until they turn it on they keep their account
+fingerprint, face or screen lock, no password). Site admins (except
+`Purple`, the owner) need two-step login for their admin powers: until they turn it on they keep their account
 but the Site Admin page and admin actions are paused (`ADMIN_2FA=off` turns
 the requirement off).
 

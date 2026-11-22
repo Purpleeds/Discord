@@ -9,8 +9,10 @@ Discord server, both ways:
 - Something said on Discord shows up here with the person's Discord name and
   picture, and a small grey **from Discord** tag on the right.
 
-It runs inside the Render service (the relay), which is online all the time,
-so it doesn't need your PC or the NAS to run it.
+It runs on the NAS, as the `chat-bridge` container next to the chat
+(`deploy/nas/docker-compose.yml`). It can also run inside the Render service
+(the relay) instead - but only ever run one of the two, or every message shows
+up twice.
 
 ## What it does to messages ("screening")
 
@@ -46,41 +48,71 @@ Settings > **Site Admin > Discord bridge > Turn on the Discord bridge**. This
 makes #cross-platform in the original chat and shows a **bridge key** once.
 Copy it.
 
-### 3. Give both to Render
+### 3. Give both to the NAS
 
-In the Render dashboard, open the chat's service, then **Environment**, and add:
+Open the chat's project in the NAS's Docker app (the one made from
+`deploy/nas/docker-compose.yml`). In the settings block at the very top, fill in:
 
-| Key | Value |
-|---|---|
-| `DISCORD_BOT_TOKEN` | the bot token from step 1 |
-| `DISCORDS_BRIDGE_KEY` | the bridge key from step 2 |
-| `DISCORD_GUILD_ID` | *(optional)* your Discord server's ID, if the bot is in more than one |
+```yaml
+  discord-bot-token: &discord_token "the bot token from step 1"
+  discords-bridge-key: &bridge_key "the bridge key from step 2"
+```
 
-Save. Render restarts the service, and the bot then:
+If the bot is in more than one Discord server, also put your server's ID in
+`DISCORD_GUILD_ID` in the `bridge` service. Save and redeploy the project
+(if your file is older and has no `bridge` service yet, paste in the new
+`docker-compose.yml` first and keep your settings at the top).
 
-- signs in,
+The `chat-bridge` container then:
+
+- signs in to Discord,
 - makes **#cross-platform** on your Discord server (if it isn't there already),
-- connects to the chat.
+- connects to the chat straight inside the NAS (`http://chat:3000`).
 
-The Site Admin page then says "On and connected".
+The Site Admin page then says "On and connected". It updates itself: when the
+chat picks up a new version, the bridge restarts onto it within a minute.
+
+**Switch off the Render copy:** if the Render service has `DISCORD_BOT_TOKEN`
+set (from before), delete it there (Render > the service > Environment) -
+otherwise both copies post every message.
+
+<details><summary>Running it on Render instead</summary>
+
+In the Render dashboard, open the chat's service, then **Environment**, and add
+`DISCORD_BOT_TOKEN`, `DISCORDS_BRIDGE_KEY` and optionally `DISCORD_GUILD_ID`.
+Leave the two NAS settings empty then.
+</details>
+
+<details><summary>Running it on any other machine</summary>
+
+With Node 22 and a copy of this repo (`npm install`), make a `bridge.env` with
+`CHAT_URL` (the chat's address), `DISCORD_BOT_TOKEN`, `DISCORDS_BRIDGE_KEY` and
+optionally `DISCORD_GUILD_ID`, then run `node --env-file=bridge.env bridge.js`.
+</details>
 
 ## If something's wrong
 
-- **Site Admin says "On, but not connected":** check both Render values. The
-  Render service's **Logs** show lines starting with `[bridge]` that say what's wrong
-  (for example "Discord sign-in failed" or "check DISCORDS_BRIDGE_KEY").
+- **Site Admin says "On, but not connected":** check both values. The
+  `chat-bridge` container's log (or Render's **Logs**) shows lines starting with
+  `[bridge]` that say what's wrong (for example "Discord sign-in failed" or
+  "check DISCORDS_BRIDGE_KEY"). "off - fill in ..." means the settings are empty.
+- **Every message shows up twice on Discord:** the bridge runs both on the NAS and
+  on Render. Delete `DISCORD_BOT_TOKEN` on Render.
 - **Discord messages don't come through:** turn on **Message Content Intent**
   (step 1.2).
 - **The bot can't make the channel:** give it **Manage Channels**, or make
   #cross-platform yourself. It also needs **Manage Webhooks**.
 - **"New bridge key"** on the Site Admin page replaces the key, and the old one
-  stops working. Put the new one in Render. **Turn off** stops the bridge; the
+  stops working. Put the new one at the top of the NAS file and redeploy. **Turn off** stops the bridge; the
   channel stays.
 
 ## How it works (for developers)
 
-- `discord-bridge.js`: the bot (discord.js). It's started by `relay.js` when
-  `DISCORD_BOT_TOKEN` and `DISCORDS_BRIDGE_KEY` are set.
+- `discord-bridge.js`: the bot (discord.js). `bridge.js` runs it on its own
+  (the NAS's `bridge` service: the chat's code volume read-only, `CHAT_URL`
+  `http://chat:3000`, exits when `/app/.version` changes so Docker restarts it on
+  new code). `relay.js` also starts it when `DISCORD_BOT_TOKEN` and
+  `DISCORDS_BRIDGE_KEY` are set on Render.
 - `server.js`: the `bridges` table (key stored as a SHA-256 hash only) and these routes:
   - `POST /admin/bridge`, `GET /admin/bridge` and `POST /admin/bridge/off` (site admins).
   - `GET /bridge/discord` and `POST /bridge/discord/messages` (the bridge key, in `X-Bridge-Key`).

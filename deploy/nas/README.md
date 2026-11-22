@@ -74,6 +74,15 @@ Good to know:
 - To go back to direct calls for good, delete the two `LIVEKIT_` lines from
   the `chat` service and redeploy the project.
 
+## Discord bridge
+
+The `chat-bridge` container links #cross-platform with your real Discord
+server. It stays off until you fill in `discord-bot-token` and
+`discords-bridge-key` at the top of the file - the steps (making the bot,
+getting the key) are in [DISCORD_BRIDGE.md](../../DISCORD_BRIDGE.md). If
+Render still has `DISCORD_BOT_TOKEN` set, delete it there, or messages show
+up twice.
+
 ## Keeping an older address (e.g. Render)
 
 To keep using an address the chat had before, run that old copy in relay
